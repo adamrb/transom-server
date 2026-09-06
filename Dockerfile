@@ -6,6 +6,9 @@ COPY requirements.txt requirements-stt.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-stt.txt
 
 COPY app ./app
+# Optional: drop a built APK + manifest.json here (or bake via CI) and a fresh
+# server auto-hosts it for the Android app's self-update check.
+COPY bundled-apk/ ./bundled-apk/
 
 RUN useradd -u 1000 -m appuser && mkdir -p /data && chown appuser /data
 USER appuser

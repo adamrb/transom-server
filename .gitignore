@@ -6,3 +6,5 @@ __pycache__/
 venv/
 docker-compose.override.yml
 wheels-local/*.whl
+bundled-apk/*.apk
+bundled-apk/manifest.json

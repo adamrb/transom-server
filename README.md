@@ -26,10 +26,12 @@ git clone https://github.com/CHANGEME/plaud-bridge-server.git
 cd plaud-bridge-server
 cp .env.example .env
 # edit .env: Plaud credentials, an auth token (openssl rand -hex 32),
-# and your transcription endpoint
+# and your transcription engine settings
 docker compose up -d --build
 curl http://localhost:8090/api/v1/health
 ```
+
+Everything runs in the container — transcription included. Release images are published to `ghcr.io` (`:latest` CPU, `-cuda:latest` GPU) with the matching Android APK baked in, so updating the whole stack (server *and* the app it serves to your phone) is `docker compose pull && docker compose up -d`; the app's built-in update check then offers the new APK.
 
 The container binds to `127.0.0.1:8090` by default. Expose it through a reverse proxy that terminates **HTTPS** — the app authenticates with a static bearer token, so plaintext HTTP on an untrusted network means credential theft. Set a request-body limit and rate limiting at the proxy too. Then install the Android app and point it at your server URL + auth token.
 

@@ -1,0 +1,45 @@
+name: Release images
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - dockerfile: Dockerfile
+            suffix: ""
+          - dockerfile: Dockerfile.cuda
+            suffix: "-cuda"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Optional: bake the matching Android APK into the image so a fresh
+      # server auto-hosts it. Provide a repo variable APK_RELEASE_URL pointing
+      # at a plaud-bridge-android release asset pair (app.apk + manifest.json);
+      # skipped when unset.
+      - name: Fetch bundled APK
+        if: vars.APK_RELEASE_URL != ''
+        run: |
+          curl -fsSL "${{ vars.APK_RELEASE_URL }}/plaud-bridge.apk" -o bundled-apk/plaud-bridge.apk
+          curl -fsSL "${{ vars.APK_RELEASE_URL }}/manifest.json" -o bundled-apk/manifest.json
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}${{ matrix.suffix }}:latest
+            ghcr.io/${{ github.repository }}${{ matrix.suffix }}:${{ github.ref_name }}
