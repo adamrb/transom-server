@@ -121,9 +121,13 @@ body.tab-automations main{display:none}
   width:480px;max-width:100%;max-height:calc(100vh - 48px);overflow-y:auto}
 .modal h2{font-size:17px;margin:0 0 14px}
 .modal label{display:block;font-size:12.5px;color:var(--muted);margin:12px 0 4px}
-.modal input[type=text],.modal input[type=url],.modal textarea,.modal select{
+.modal input[type=text],.modal input[type=url],.modal input[type=number],
+.modal input[type=file],.modal textarea,.modal select{
   width:100%;font:inherit;background:var(--panel2);color:var(--text);
   border:1px solid var(--border);border-radius:8px;padding:8px 10px}
+.modal h3{font-size:12.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
+  margin:20px 0 6px;padding-top:14px;border-top:1px solid var(--border)}
+.modal progress{flex:1;height:8px}
 .modal textarea{min-height:96px;resize:vertical}
 .modal .m-btns{display:flex;gap:10px;margin-top:18px}
 .modal .m-btns .sp{flex:1}
@@ -258,6 +262,31 @@ body.tab-automations main{display:none}
       <button class="small" onclick="copyField('cp-token', this)">Copy</button>
     </div>
     <div class="caution">Caution: the QR code and text above contain your access token. Don't screenshot or share them.</div>
+
+    <h3>Android app</h3>
+    <div id="apk-info" class="muted" style="font-size:13.5px">Loading…</div>
+    <div id="apk-upload">
+      <label for="apk-file">Upload new APK</label>
+      <input type="file" id="apk-file" accept=".apk">
+      <div style="display:flex;gap:10px">
+        <div style="flex:1">
+          <label for="apk-vcode">Version code</label>
+          <input type="number" id="apk-vcode" min="1" step="1" placeholder="12">
+        </div>
+        <div style="flex:2">
+          <label for="apk-vname">Version name</label>
+          <input type="text" id="apk-vname" maxlength="50" placeholder="1.2.0">
+        </div>
+      </div>
+      <label for="apk-notes">Release notes (optional)</label>
+      <textarea id="apk-notes" maxlength="2000" style="min-height:48px"></textarea>
+      <div class="m-err" id="apk-err"></div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <button class="primary small" id="apk-upload-btn" onclick="uploadApk()">Upload</button>
+        <progress id="apk-progress" hidden></progress>
+      </div>
+    </div>
+
     <div class="m-btns">
       <div class="sp"></div>
       <button onclick="closeModals()">Close</button>
@@ -1220,6 +1249,101 @@ function openConnect() {
   $('cp-url').value = location.origin;
   $('cp-token').value = token;
   $('connect-overlay').hidden = false;
+  loadApkInfo();
+}
+
+/* ---------- Android app hosting (inside the connect modal) ---------- */
+let apkManifest = null;
+
+async function loadApkInfo() {
+  const el = $('apk-info');
+  el.innerHTML = '<span class="muted">Loading…</span>';
+  try {
+    const m = await apiJson('/apk/info');
+    apkManifest = m;
+    el.innerHTML = `
+      <div style="color:var(--text)"><b>${esc(m.version_name)}</b> (code ${esc(m.version_code)})
+        · ${fmtSize(m.size_bytes)} · uploaded ${fmtDate(m.uploaded_at)}</div>
+      ${m.notes ? `<div class="muted" style="margin-top:4px;white-space:pre-wrap">${esc(m.notes)}</div>` : ''}
+      <div class="actions" style="margin-top:8px">
+        <button class="small" onclick="downloadApk()">Download APK</button>
+        <button class="small" title="${esc(m.sha256)} — click to copy"
+          onclick="copySha(this, '${jsArg(m.sha256)}')">sha256 ${esc((m.sha256 || '').slice(0, 12))}…</button>
+      </div>`;
+  } catch (e) {
+    apkManifest = null;
+    if (e.message === 'unauthorized') return;
+    el.innerHTML = e.status === 404
+      ? '<span class="muted">No APK hosted yet.</span>'
+      : '<span class="err">Could not load APK info.</span>';
+  }
+}
+async function downloadApk() {
+  try {
+    const blob = await (await api('/apk/file')).blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = apkManifest?.filename || 'plaud-bridge.apk';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch {}
+}
+async function copySha(btn, sha) {
+  let ok = false;
+  try { await navigator.clipboard.writeText(sha); ok = true; }
+  catch {}
+  const old = btn.textContent;
+  btn.textContent = ok ? 'Copied' : 'Copy failed';
+  setTimeout(() => { btn.textContent = old; }, 1500);
+}
+function uploadApk() {
+  const errEl = $('apk-err');
+  errEl.textContent = '';
+  const f = $('apk-file').files[0];
+  const vcode = Math.floor(Number($('apk-vcode').value));
+  const vname = $('apk-vname').value.trim();
+  if (!f) { errEl.textContent = 'Choose an .apk file.'; return; }
+  if (!Number.isInteger(vcode) || vcode < 1 || $('apk-vcode').value.trim() === '') {
+    errEl.textContent = 'Version code must be a positive integer.'; return;
+  }
+  if (apkManifest && vcode < apkManifest.version_code) {
+    errEl.textContent = `Version code must be ≥ hosted (${apkManifest.version_code}). Delete the release first to roll back.`;
+    return;
+  }
+  if (!vname) { errEl.textContent = 'Version name is required.'; return; }
+  if (vname.length > 50) { errEl.textContent = 'Version name must be 50 characters or fewer.'; return; }
+  const meta = { version_code: vcode, version_name: vname };
+  const notes = $('apk-notes').value.trim();
+  if (notes) meta.notes = notes;
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('metadata', JSON.stringify(meta));
+
+  const btn = $('apk-upload-btn'), prog = $('apk-progress');
+  btn.disabled = true;
+  prog.hidden = false;
+  prog.removeAttribute('value');           // indeterminate until progress fires
+  const done = () => { btn.disabled = false; prog.hidden = true; };
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/v1/apk');
+  xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable) { prog.max = e.total; prog.value = e.loaded; }
+  };
+  xhr.onerror = () => { done(); errEl.textContent = 'Upload failed (network error).'; };
+  xhr.onload = () => {
+    done();
+    if (xhr.status === 201) {
+      $('apk-file').value = ''; $('apk-vcode').value = '';
+      $('apk-vname').value = ''; $('apk-notes').value = '';
+      loadApkInfo();
+      return;
+    }
+    let detail = '';
+    try { const d = JSON.parse(xhr.responseText).detail; detail = typeof d === 'string' ? d : JSON.stringify(d); } catch {}
+    errEl.textContent = `Upload failed (${xhr.status})${detail ? ': ' + detail.slice(0, 300) : ''}`;
+  };
+  xhr.send(fd);
 }
 async function copyField(id, btn) {
   const inp = $(id);

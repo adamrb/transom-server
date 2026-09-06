@@ -20,6 +20,10 @@ Endpoints (all under /api/v1, Bearer-token auth except /health):
   GET  /recordings/{id}/routing         runs + deliveries for one recording
   POST /recordings/{id}/route           rerun the router for a recording
   POST /deliveries/{id}/retry           re-execute a delivery's action
+  POST /apk                             upload/replace the hosted Android APK
+  GET  /apk/info                        hosted-APK manifest (404 if none)
+  GET  /apk/file                        download the hosted APK
+  DELETE /apk                           unhost the current APK
 """
 
 import hashlib
@@ -28,6 +32,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 from contextlib import asynccontextmanager
@@ -67,6 +72,7 @@ async def lifespan(app: FastAPI):
         plaud_client = PlaudClient(
             settings.plaud_api_base, settings.plaud_client_id, settings.plaud_secret_key
         )
+    install_bundled_apk()
     router_engine = Router(settings, store)
     transcriber = Transcriber(settings, store, router=router_engine)
     transcriber.start()
@@ -481,6 +487,215 @@ async def retry_delivery(delivery_id: str):
     if not delivery:
         raise HTTPException(status_code=404, detail="delivery not found")
     return _delivery_public(await router_engine.retry_delivery(delivery))
+
+
+# ── Android app distribution ─────────────────────────────────────────────────
+# One hosted release at a time (the latest); prior APK files stay on disk.
+# The manifest is a plain JSON file next to the APKs, replaced atomically.
+
+
+class ApkMetadata(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    version_code: int = Field(gt=0, le=2**31 - 1)
+    version_name: str = Field(min_length=1, max_length=50)
+    min_sdk: int | None = Field(default=None, ge=1, le=1000)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+def _apk_manifest_path() -> Path:
+    return settings.apk_dir / "latest.json"
+
+
+def _read_apk_manifest() -> dict | None:
+    try:
+        with open(_apk_manifest_path()) as fh:
+            return json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def _write_apk_manifest(manifest: dict) -> None:
+    """Atomic replace (tmp + rename) so readers never see a partial manifest."""
+    path = _apk_manifest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".json.part")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(manifest, fh, indent=2)
+        os.replace(tmp, path)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
+def _install_apk_file(
+    src: Path, original_name: str, meta: ApkMetadata,
+    sha256: str | None = None, size: int | None = None,
+) -> dict:
+    """Validate `src`, move it into place as the hosted APK, write the manifest.
+
+    `src` must live on the apk-dir filesystem (it is renamed, not copied).
+    Raises ValueError on validation failures; caller maps to HTTP as needed.
+    """
+    with open(src, "rb") as fh:
+        if fh.read(2) != b"PK":
+            raise ValueError("not an APK (file does not start with ZIP magic bytes)")
+    if sha256 is None or size is None:
+        hasher = hashlib.sha256()
+        size = 0
+        with open(src, "rb") as fh:
+            while chunk := fh.read(1024 * 1024):
+                hasher.update(chunk)
+                size += len(chunk)
+        sha256 = hasher.hexdigest()
+    if size == 0:
+        raise ValueError("empty file")
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", original_name or "app.apk")[:120]
+    if not safe_name.lower().endswith(".apk"):
+        safe_name += ".apk"
+    settings.apk_dir.mkdir(parents=True, exist_ok=True)
+    apk_path = settings.apk_dir / f"{meta.version_code}-{safe_name}"
+    os.replace(src, apk_path)
+    manifest = {
+        "version_code": meta.version_code,
+        "version_name": meta.version_name,
+        "filename": apk_path.name,
+        "sha256": sha256,
+        "size_bytes": size,
+        "uploaded_at": utcnow_iso(),
+        "min_sdk": meta.min_sdk,
+        "notes": meta.notes,
+    }
+    _write_apk_manifest(manifest)
+    return manifest
+
+
+def install_bundled_apk() -> None:
+    """Auto-publish an APK baked into the image (PB_BUNDLED_APK_DIR) at startup.
+
+    Expects exactly one *.apk plus a manifest.json ({version_code, version_name,
+    notes?}). Installs it as the hosted APK when nothing is hosted yet or the
+    hosted version_code is lower. Never raises — a bad bundle logs a warning.
+    """
+    d = settings.bundled_apk_dir
+    tmp_name: str | None = None
+    try:
+        if not d.is_dir():
+            return
+        apks = sorted(d.glob("*.apk"))
+        meta_path = d / "manifest.json"
+        if not apks and not meta_path.exists():
+            return
+        if len(apks) != 1 or not meta_path.exists():
+            log.warning(
+                "bundled apk: %s must contain exactly one *.apk plus manifest.json "
+                "(found %d apks, manifest %s) — skipping",
+                d, len(apks), "present" if meta_path.exists() else "missing",
+            )
+            return
+        meta = ApkMetadata.model_validate_json(meta_path.read_text())
+        current = _read_apk_manifest()
+        if current and current["version_code"] >= meta.version_code:
+            log.info(
+                "bundled apk (code %s) is not newer than hosted (code %s) — keeping hosted",
+                meta.version_code, current["version_code"],
+            )
+            return
+        settings.apk_dir.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=settings.apk_dir, suffix=".part")
+        os.close(fd)
+        shutil.copyfile(apks[0], tmp_name)
+        manifest = _install_apk_file(Path(tmp_name), apks[0].name, meta)
+        log.info(
+            "bundled apk installed: %s (code %s, %s)",
+            manifest["version_name"], manifest["version_code"], manifest["filename"],
+        )
+    except Exception as exc:  # startup must survive any bundle problem
+        log.warning("bundled apk install failed: %s", exc)
+    finally:
+        if tmp_name:
+            Path(tmp_name).unlink(missing_ok=True)
+
+
+@app.post("/api/v1/apk", dependencies=[Depends(require_auth)])
+async def upload_apk(file: UploadFile, metadata: str = Form(..., max_length=4096)):
+    try:
+        meta = ApkMetadata.model_validate_json(metadata)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid metadata: {exc}")
+    current = _read_apk_manifest()
+    if current and meta.version_code < current["version_code"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"version_code {meta.version_code} is lower than the hosted "
+                   f"{current['version_code']} — DELETE the hosted release first to roll back",
+        )
+
+    # Stream to a temp file in the target filesystem while hashing, then rename.
+    max_bytes = settings.apk_max_upload_mb * 1024 * 1024
+    hasher = hashlib.sha256()
+    size = 0
+    settings.apk_dir.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(dir=settings.apk_dir, suffix=".part", delete=False)
+    try:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > max_bytes:
+                raise HTTPException(status_code=413, detail=f"file exceeds {settings.apk_max_upload_mb} MB")
+            hasher.update(chunk)
+            tmp.write(chunk)
+        tmp.close()
+        if size == 0:
+            raise HTTPException(status_code=400, detail="empty file")
+        try:
+            manifest = _install_apk_file(
+                Path(tmp.name), file.filename or "app.apk", meta,
+                sha256=hasher.hexdigest(), size=size,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        # Covers error paths; no-op after the installer's os.replace.
+        if not tmp.closed:
+            tmp.close()
+        Path(tmp.name).unlink(missing_ok=True)
+    log.info("hosted apk updated: %s (code %s, %.1f MB)",
+             manifest["version_name"], manifest["version_code"], size / 1e6)
+    return JSONResponse(manifest, status_code=201)
+
+
+@app.get("/api/v1/apk/info", dependencies=[Depends(require_auth)])
+async def apk_info():
+    manifest = _read_apk_manifest()
+    if not manifest:
+        raise HTTPException(status_code=404, detail="no APK hosted")
+    return manifest
+
+
+@app.get("/api/v1/apk/file", dependencies=[Depends(require_auth)])
+async def apk_file():
+    manifest = _read_apk_manifest()
+    if not manifest:
+        raise HTTPException(status_code=404, detail="no APK hosted")
+    path = settings.apk_dir / manifest["filename"]
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="hosted APK file is missing on disk")
+    return FileResponse(
+        path,
+        media_type="application/vnd.android.package-archive",
+        filename=manifest["filename"],
+    )
+
+
+@app.delete("/api/v1/apk", dependencies=[Depends(require_auth)])
+async def delete_apk():
+    manifest = _read_apk_manifest()
+    if not manifest:
+        raise HTTPException(status_code=404, detail="no APK hosted")
+    (settings.apk_dir / manifest["filename"]).unlink(missing_ok=True)
+    _apk_manifest_path().unlink(missing_ok=True)
+    log.info("unhosted apk %s (code %s)", manifest["filename"], manifest["version_code"])
+    return Response(status_code=204)
 
 
 # ── Web dashboard ────────────────────────────────────────────────────────────

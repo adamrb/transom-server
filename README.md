@@ -63,6 +63,25 @@ Build with `docker compose build` after switching the service to `Dockerfile.cud
 
 The server root (`/`) serves a built-in dashboard: browse, search, and play recordings, read transcripts and AI summaries, re-transcribe, download, and delete. It unlocks with the same bearer token the app uses.
 
+## Android app distribution
+
+The server can host the Plaud Bridge APK itself, so phones install and update the app straight from your own server — no app store. One release is hosted at a time (the latest); its manifest lives at `PB_DATA_DIR/apk/latest.json` and prior APK files stay on disk.
+
+Upload a release from the dashboard ("Connect a phone" → Android app section) or with curl:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  -F "file=@app-release.apk" \
+  -F 'metadata={"version_code": 12, "version_name": "1.2.0", "notes": "BLE reconnect fixes"}' \
+  https://your-server/api/v1/apk
+```
+
+`version_code` (positive int, required) must be ≥ the hosted release's — a lower value gets `409`. Equal is allowed (re-upload of the same release). To roll back, `DELETE /api/v1/apk` first: that unhosts the current release and resets the version gate, then re-upload the older build with any version_code. `notes` (≤ 2000 chars) and `min_sdk` are optional; files are capped at `PB_APK_MAX_UPLOAD_MB` (default 300) and must start with the ZIP magic bytes (`PK`).
+
+**Update-check contract for the app:** `GET /api/v1/apk/info` returns `{version_code, version_name, filename, sha256, size_bytes, uploaded_at, min_sdk, notes}` (or `404` if nothing is hosted). The app compares `version_code` against its own; when the server's is higher, it downloads `GET /api/v1/apk/file` (served as `application/vnd.android.package-archive`) and verifies `sha256` before installing.
+
+**Bundled releases:** release docker images ship the matching APK preinstalled under `PB_BUNDLED_APK_DIR` (default `/srv/plaud-bridge/bundled-apk`: one `*.apk` plus a `manifest.json` with `version_code`/`version_name`/`notes`). At startup the server auto-publishes it as the hosted APK whenever nothing is hosted yet or the hosted `version_code` is lower — so a fresh server hosts the app out of the box, and `docker compose pull` keeps the hosted APK current with the image. Manually uploaded releases with an equal or higher `version_code` are never overwritten, and a malformed bundle directory only logs a warning.
+
 ## AI summaries (optional)
 
 Set `PB_SUMMARY_ENABLED=true` plus `PB_SUMMARY_BASE_URL` / `PB_SUMMARY_MODEL` (and `PB_SUMMARY_API_KEY` if needed) to run each transcript through any OpenAI-compatible chat endpoint — a local Ollama/llama.cpp/vLLM, LiteLLM, or a hosted API. The default prompt produces a title, summary, and action items; override it with `PB_SUMMARY_PROMPT`. Summaries appear in the dashboard, the markdown export, the webhook payload, and the transcript JSON.
@@ -92,6 +111,10 @@ All endpoints under `/api/v1`. Every route except `/health` requires `Authorizat
 | GET | `/recordings/{id}/routing` | router runs + deliveries for one recording |
 | POST | `/recordings/{id}/route` | rerun the router now (`409` if no transcript yet) |
 | POST | `/deliveries/{id}/retry` | re-execute a delivery's action |
+| POST | `/apk` | upload/replace the hosted Android APK: `file` + `metadata` JSON string |
+| GET | `/apk/info` | hosted-APK manifest (`404` if none) — the app's update check |
+| GET | `/apk/file` | download the hosted APK |
+| DELETE | `/apk` | unhost the current APK (enables rollback re-upload) |
 
 Upload `metadata` fields: `session_id` (int), `device_sn` (string), `started_at` (ISO-8601 UTC), `duration_s` (number), `source` (string). Duplicate uploads (same file hash, or same device+session) return `200 {"duplicate": true}` instead of creating a copy — the app can retry uploads safely.
 

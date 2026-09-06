@@ -36,6 +36,14 @@ class Settings:
     data_dir: Path = field(default_factory=lambda: Path(_env("PB_DATA_DIR", "/data")))
     max_upload_mb: int = field(default_factory=lambda: int(_env("PB_MAX_UPLOAD_MB", "500")))
 
+    # Android app distribution: hosted-APK upload size cap, and an optional
+    # directory (baked into release docker images) holding a bundled APK +
+    # manifest.json that gets auto-published at startup if newer than hosted.
+    apk_max_upload_mb: int = field(default_factory=lambda: int(_env("PB_APK_MAX_UPLOAD_MB", "300")))
+    bundled_apk_dir: Path = field(
+        default_factory=lambda: Path(_env("PB_BUNDLED_APK_DIR", "/srv/plaud-bridge/bundled-apk"))
+    )
+
     # Transcription. PB_STT_ENGINE selects the backend:
     #   local  — built-in faster-whisper (GPU/CPU), optional diarization (default)
     #   openai — external OpenAI-compatible /v1/audio/transcriptions endpoint
@@ -115,6 +123,10 @@ class Settings:
     @property
     def recordings_dir(self) -> Path:
         return self.data_dir / "recordings"
+
+    @property
+    def apk_dir(self) -> Path:
+        return self.data_dir / "apk"
 
     @property
     def db_path(self) -> Path:
