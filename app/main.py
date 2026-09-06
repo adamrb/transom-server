@@ -193,12 +193,11 @@ async def upload_recording(file: UploadFile, metadata: str = Form("{}", max_leng
         subdir.mkdir(parents=True, exist_ok=True)
         audio_path = subdir / f"{sha256[:16]}_{safe_name}"
         os.replace(tmp.name, audio_path)
-    except Exception:
-        Path(tmp.name).unlink(missing_ok=True)
-        raise
     finally:
+        # Covers error paths AND duplicate-return paths; no-op after os.replace.
         if not tmp.closed:
             tmp.close()
+        Path(tmp.name).unlink(missing_ok=True)
 
     try:
         rec_id = store.insert_recording(
@@ -215,9 +214,12 @@ async def upload_recording(file: UploadFile, metadata: str = Form("{}", max_leng
             status="pending",
         )
     except sqlite3.IntegrityError:
-        # Concurrent identical upload won the race; treat as duplicate.
+        # Concurrent identical upload won the race; treat as duplicate and
+        # drop our just-renamed copy if the winner owns a different path.
         existing = store.find_by_sha256(sha256)
         if existing:
+            if existing["audio_path"] != str(audio_path):
+                audio_path.unlink(missing_ok=True)
             return JSONResponse({"id": existing["id"], "duplicate": True}, status_code=200)
         raise
     transcriber.wake.set()
@@ -228,7 +230,7 @@ async def upload_recording(file: UploadFile, metadata: str = Form("{}", max_leng
 @app.get("/api/v1/recordings", dependencies=[Depends(require_auth)])
 async def list_recordings(
     limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=10**9),
     status: str | None = Query(None, max_length=20),
     q: str | None = Query(None, max_length=200),
 ):
@@ -284,6 +286,8 @@ async def retranscribe(rec_id: str):
     rec = store.get(rec_id)
     if not rec:
         raise HTTPException(status_code=404, detail="not found")
+    if rec.get("transcript_path"):
+        Path(rec["transcript_path"]).unlink(missing_ok=True)
     store.update(
         rec_id, status="pending", attempts=0, error=None,
         transcript_text=None, summary=None, transcript_path=None,

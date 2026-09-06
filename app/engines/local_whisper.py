@@ -112,7 +112,27 @@ class LocalWhisperEngine:
         async with self._lock:
             return await asyncio.to_thread(self._transcribe_sync, audio_path)
 
+    def _probe_duration(self, audio_path: Path) -> float | None:
+        """Container-header duration probe (cheap; no decode). Used to reject
+        over-limit files BEFORE whisper decodes the whole stream."""
+        try:
+            import av
+
+            with av.open(str(audio_path)) as container:
+                if container.duration:
+                    return container.duration / 1_000_000
+        except Exception:
+            pass
+        return None
+
     def _transcribe_sync(self, audio_path: Path) -> EngineResult:
+        probed = self._probe_duration(audio_path)
+        if probed and probed > self.max_duration_s:
+            raise EngineError(
+                f"audio is {probed / 3600:.1f} h, over the "
+                f"{self.max_duration_s / 3600:.1f} h limit (PB_STT_MAX_DURATION_S)"
+            )
+
         model = self._load_model()
         t0 = time.monotonic()
         try:
@@ -122,19 +142,20 @@ class LocalWhisperEngine:
                 beam_size=self.beam_size,
                 vad_filter=self.vad_filter,
             )
+            # Backstop for streams whose header lied or lacked a duration.
+            if info.duration and info.duration > self.max_duration_s:
+                raise EngineError(
+                    f"audio is {info.duration / 3600:.1f} h, over the "
+                    f"{self.max_duration_s / 3600:.1f} h limit (PB_STT_MAX_DURATION_S)"
+                )
+            segments = [
+                Segment(start=round(s.start, 2), end=round(s.end, 2), text=s.text.strip())
+                for s in seg_iter  # generator: inference happens during this loop
+            ]
+        except EngineError:
+            raise
         except Exception as exc:
             raise EngineError(f"whisper transcription failed: {exc}") from exc
-
-        if info.duration and info.duration > self.max_duration_s:
-            raise EngineError(
-                f"audio is {info.duration / 3600:.1f} h, over the "
-                f"{self.max_duration_s / 3600:.1f} h limit (PB_STT_MAX_DURATION_S)"
-            )
-
-        segments = [
-            Segment(start=round(s.start, 2), end=round(s.end, 2), text=s.text.strip())
-            for s in seg_iter  # generator: decoding happens during this loop
-        ]
         transcribe_s = time.monotonic() - t0
 
         diarize_s = 0.0
@@ -179,12 +200,14 @@ class LocalWhisperEngine:
         for seg in segments:
             if seg.start is None or seg.end is None:
                 continue
-            best, best_overlap = None, 0.0
+            # Cumulative overlap per speaker: a speaker's turns may be split
+            # around the segment; sum them rather than taking a single turn.
+            totals: dict[str, float] = {}
             for t_start, t_end, speaker in turns:
                 overlap = min(seg.end, t_end) - max(seg.start, t_start)
-                if overlap > best_overlap:
-                    best, best_overlap = speaker, overlap
-            seg.speaker = best
+                if overlap > 0:
+                    totals[speaker] = totals.get(speaker, 0.0) + overlap
+            seg.speaker = max(totals, key=totals.get) if totals else None
         # Normalize labels to appearance order: Speaker 1, Speaker 2, ...
         mapping: dict[str, str] = {}
         for seg in segments:

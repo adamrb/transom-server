@@ -16,6 +16,7 @@ word error rate (WER). Results print as a table and optionally save as JSON.
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 import time
@@ -23,6 +24,7 @@ from pathlib import Path
 
 
 def normalize_words(text: str) -> list[str]:
+    text = text.replace("’", "'")  # curly apostrophe -> straight
     return re.sub(r"[^\w\s']", " ", text.lower()).split()
 
 
@@ -97,7 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--compute", default="auto",
                    help="compute type: auto, int8, int8_float16, float16, float32")
     p.add_argument("--diarize", action="store_true", help="also benchmark speaker diarization")
-    p.add_argument("--hf-token", default=None, help="Hugging Face token (for diarization)")
+    p.add_argument("--hf-token", default=os.environ.get("PB_STT_HF_TOKEN"),
+                   help="Hugging Face token for diarization (default: $PB_STT_HF_TOKEN)")
     p.add_argument("--reference", type=Path, default=None,
                    help="reference transcript .txt for WER scoring")
     p.add_argument("--json", type=Path, default=None, help="also write results to this JSON file")
@@ -108,8 +111,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     reference = args.reference.read_text() if args.reference else None
 
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    if not models:
+        print("no models given (--models)", file=sys.stderr)
+        return 2
+
     rows = []
-    for model in [m.strip() for m in args.models.split(",") if m.strip()]:
+    for model in models:
         print(f"benchmarking {model} on {args.device} ...", file=sys.stderr)
         row = asyncio.run(bench_model(
             args.audio, model, args.device, args.compute, args.diarize, args.hf_token
@@ -125,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             indent=2,
         ))
         print(f"\nresults written to {args.json}")
-    return 0
+    return 0 if any(r.get("status") == "ok" for r in rows) else 1
 
 
 if __name__ == "__main__":

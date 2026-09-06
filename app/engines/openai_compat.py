@@ -2,6 +2,7 @@
 (speaches, faster-whisper-server, whisper.cpp server, hosted APIs)."""
 
 import logging
+import mimetypes
 import time
 from pathlib import Path
 
@@ -41,10 +42,11 @@ class OpenAICompatEngine:
                 data = {"model": self.model, "response_format": response_format}
                 if self.language:
                     data["language"] = self.language
+                mime = mimetypes.guess_type(audio_path.name)[0] or "application/octet-stream"
                 with audio_path.open("rb") as fh:
                     resp = await client.post(
                         url, headers=headers, data=data,
-                        files={"file": (audio_path.name, fh, "audio/mpeg")},
+                        files={"file": (audio_path.name, fh, mime)},
                     )
                 if resp.status_code == 200:
                     return self._parse(resp.json(), time.monotonic() - t0)

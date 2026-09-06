@@ -127,9 +127,11 @@ class Store:
         }
 
     def next_pending(self, max_attempts: int) -> dict | None:
+        # Fresh jobs (fewest attempts) first, so a failing recording does not
+        # starve newer uploads while it burns through its retries.
         return self._one(
             "SELECT * FROM recordings WHERE status IN ('pending', 'failed') "
-            "AND attempts < ? ORDER BY uploaded_at ASC LIMIT 1",
+            "AND attempts < ? ORDER BY attempts ASC, uploaded_at ASC LIMIT 1",
             (max_attempts,),
         )
 

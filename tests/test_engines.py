@@ -238,3 +238,38 @@ def test_print_table_smoke(capsys):
     )
     out = capsys.readouterr().out
     assert "tiny" in out and "FAILED — boom" in out
+
+
+def test_diarization_cumulative_overlap_beats_single_turn(monkeypatch, tmp_path):
+    # Speaker A has two short turns inside the segment (total 2.0s); speaker B
+    # one longer turn (1.5s). Cumulative overlap must pick A.
+    engine = LocalWhisperEngine(diarization=True)
+    annotation = _FakeAnnotation([
+        (0.0, 1.0, "A"), (1.0, 2.5, "B"), (2.5, 3.5, "A"),
+    ])
+    monkeypatch.setattr(engine, "_load_diarizer", lambda: (lambda path: annotation))
+    segments = [Segment(0.0, 3.5, "who said this")]
+    engine._apply_diarization(tmp_path / "x.wav", segments)
+    assert segments[0].speaker == "Speaker 1"  # A appears first -> Speaker 1
+
+
+def test_build_engine_backcompat_external_url_defaults_to_openai():
+    s = _settings(PB_TRANSCRIBE_BASE_URL="http://stt/v1", PB_TRANSCRIBE_ENABLED="true",
+                  PB_STT_ENGINE="")
+    assert isinstance(build_engine(s), OpenAICompatEngine)
+
+
+def test_duration_probe_rejects_before_model_load():
+    fixture = Path(__file__).parent / "fixtures" / "speech.wav"
+    engine = LocalWhisperEngine(model="tiny", max_duration_s=2)
+    probed = engine._probe_duration(fixture)
+    assert probed and 3 < probed < 10
+    from app.engines.base import EngineError
+
+    with pytest.raises(EngineError, match="over the"):
+        engine._transcribe_sync(fixture)
+    assert engine._model is None  # rejected before loading the model
+
+
+def test_wer_apostrophe_normalization():
+    assert word_error_rate("don't stop", "don’t stop") == 0.0

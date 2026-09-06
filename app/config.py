@@ -40,7 +40,13 @@ class Settings:
     #   local  — built-in faster-whisper (GPU/CPU), optional diarization (default)
     #   openai — external OpenAI-compatible /v1/audio/transcriptions endpoint
     transcribe_enabled: bool = field(default_factory=lambda: _env_bool("PB_TRANSCRIBE_ENABLED", True))
-    stt_engine: str = field(default_factory=lambda: _env("PB_STT_ENGINE", "local"))
+    # Default: local. Pre-engine deployments that configured an external
+    # endpoint (PB_TRANSCRIBE_BASE_URL) but no PB_STT_ENGINE keep using it.
+    stt_engine: str = field(
+        default_factory=lambda: _env(
+            "PB_STT_ENGINE", "openai" if _env("PB_TRANSCRIBE_BASE_URL") else "local"
+        )
+    )
 
     # -- built-in (local) engine --
     stt_model: str = field(default_factory=lambda: _env("PB_STT_MODEL", "base"))
