@@ -7,8 +7,10 @@
 # PyPI wheel automatically.
 FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
 
+# libopenblas: custom-built CTranslate2 wheels link the system BLAS rather
+# than bundling one (the PyPI wheel ships its own); harmless when unused.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.12 python3.12-venv python3-pip \
+        python3.12 python3.12-venv python3-pip libopenblas0-pthread libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /srv/plaud-bridge
