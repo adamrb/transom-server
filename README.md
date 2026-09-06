@@ -43,6 +43,14 @@ Anything that speaks the OpenAI audio transcription API works, for example:
 
 Set `PB_TRANSCRIBE_BASE_URL` (including `/v1`), optional `PB_TRANSCRIBE_API_KEY`, and `PB_TRANSCRIBE_MODEL`. The worker asks for `verbose_json` (timestamps + segments) and falls back to plain `json` if the server rejects it.
 
+## Web dashboard
+
+The server root (`/`) serves a built-in dashboard: browse, search, and play recordings, read transcripts and AI summaries, re-transcribe, download, and delete. It unlocks with the same bearer token the app uses.
+
+## AI summaries (optional)
+
+Set `PB_SUMMARY_ENABLED=true` plus `PB_SUMMARY_BASE_URL` / `PB_SUMMARY_MODEL` (and `PB_SUMMARY_API_KEY` if needed) to run each transcript through any OpenAI-compatible chat endpoint — a local Ollama/llama.cpp/vLLM, LiteLLM, or a hosted API. The default prompt produces a title, summary, and action items; override it with `PB_SUMMARY_PROMPT`. Summaries appear in the dashboard, the markdown export, the webhook payload, and the transcript JSON.
+
 ## API
 
 All endpoints under `/api/v1`. Every route except `/health` requires `Authorization: Bearer <token>` matching `PB_AUTH_TOKENS`.
@@ -59,6 +67,8 @@ All endpoints under `/api/v1`. Every route except `/health` requires `Authorizat
 | GET | `/recordings/{id}/audio` | the audio file |
 | GET | `/recordings/{id}/transcript` | transcript JSON; `409` while pending |
 | POST | `/recordings/{id}/retranscribe` | requeue for the worker |
+| DELETE | `/recordings/{id}` | remove recording + transcript |
+| GET | `/stats` | counts, total duration, bytes |
 
 Upload `metadata` fields: `session_id` (int), `device_sn` (string), `started_at` (ISO-8601 UTC), `duration_s` (number), `source` (string). Duplicate uploads (same file hash, or same device+session) return `200 {"duplicate": true}` instead of creating a copy — the app can retry uploads safely.
 

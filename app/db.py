@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS recordings (
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
     transcript_path TEXT,
+    transcript_text TEXT,
+    summary TEXT,
     error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_recordings_device_session
@@ -31,11 +33,12 @@ CREATE INDEX IF NOT EXISTS idx_recordings_device_session
 CREATE INDEX IF NOT EXISTS idx_recordings_status ON recordings(status);
 """
 
-COLUMNS = [
-    "id", "device_sn", "session_id", "filename", "sha256", "size_bytes",
-    "duration_s", "started_at", "source", "uploaded_at", "audio_path",
-    "status", "attempts", "transcript_path", "error",
-]
+# Columns added after the initial release; applied idempotently at startup so
+# existing databases upgrade in place.
+MIGRATION_COLUMNS = {
+    "transcript_text": "TEXT",
+    "summary": "TEXT",
+}
 
 
 class Store:
@@ -47,6 +50,10 @@ class Store:
         self._lock = threading.Lock()
         with self._lock:
             self._conn.executescript(SCHEMA)
+            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(recordings)")}
+            for col, coltype in MIGRATION_COLUMNS.items():
+                if col not in existing:
+                    self._conn.execute(f"ALTER TABLE recordings ADD COLUMN {col} {coltype}")
             self._conn.commit()
 
     def insert_recording(self, **fields) -> str:
@@ -74,17 +81,50 @@ class Store:
     def get(self, rec_id: str) -> dict | None:
         return self._one("SELECT * FROM recordings WHERE id = ?", (rec_id,))
 
-    def list(self, limit: int = 100, offset: int = 0, status: str | None = None) -> list[dict]:
+    def list(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        status: str | None = None,
+        query: str | None = None,
+    ) -> list[dict]:
         q = "SELECT * FROM recordings"
+        where: list[str] = []
         args: list = []
         if status:
-            q += " WHERE status = ?"
+            where.append("status = ?")
             args.append(status)
+        if query:
+            where.append("(transcript_text LIKE ? OR summary LIKE ? OR filename LIKE ?)")
+            like = f"%{query}%"
+            args += [like, like, like]
+        if where:
+            q += " WHERE " + " AND ".join(where)
         q += " ORDER BY uploaded_at DESC LIMIT ? OFFSET ?"
         args += [limit, offset]
         with self._lock:
             rows = self._conn.execute(q, args).fetchall()
         return [dict(r) for r in rows]
+
+    def delete(self, rec_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM recordings WHERE id = ?", (rec_id,))
+            self._conn.commit()
+
+    def stats(self) -> dict:
+        with self._lock:
+            counts = dict(
+                self._conn.execute("SELECT status, COUNT(*) FROM recordings GROUP BY status").fetchall()
+            )
+            totals = self._conn.execute(
+                "SELECT COUNT(*), COALESCE(SUM(size_bytes), 0), COALESCE(SUM(duration_s), 0) FROM recordings"
+            ).fetchone()
+        return {
+            "recordings": totals[0],
+            "total_bytes": totals[1],
+            "total_duration_s": totals[2],
+            "by_status": counts,
+        }
 
     def next_pending(self, max_attempts: int) -> dict | None:
         return self._one(

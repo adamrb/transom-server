@@ -19,6 +19,7 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -99,6 +100,9 @@ def _public(rec: dict) -> dict:
     rec = dict(rec)
     rec.pop("audio_path", None)
     rec.pop("transcript_path", None)
+    text = rec.pop("transcript_text", None)
+    rec["has_transcript"] = rec["status"] == "done"
+    rec["text_preview"] = (text or "")[:240] or None
     return rec
 
 
@@ -162,8 +166,20 @@ async def upload_recording(file: UploadFile, metadata: str = Form("{}")):
 
 
 @app.get("/api/v1/recordings", dependencies=[Depends(require_auth)])
-async def list_recordings(limit: int = 100, offset: int = 0, status: str | None = None):
-    return {"recordings": [_public(r) for r in store.list(limit=min(limit, 500), offset=offset, status=status)]}
+async def list_recordings(
+    limit: int = 100, offset: int = 0, status: str | None = None, q: str | None = None
+):
+    return {
+        "recordings": [
+            _public(r)
+            for r in store.list(limit=min(limit, 500), offset=offset, status=status, query=q)
+        ]
+    }
+
+
+@app.get("/api/v1/stats", dependencies=[Depends(require_auth)])
+async def stats():
+    return store.stats()
 
 
 @app.get("/api/v1/recordings/lookup", dependencies=[Depends(require_auth)])
@@ -209,3 +225,25 @@ async def retranscribe(rec_id: str):
     store.update(rec_id, status="pending", attempts=0, error=None)
     transcriber.wake.set()
     return {"id": rec_id, "status": "pending"}
+
+
+@app.delete("/api/v1/recordings/{rec_id}", dependencies=[Depends(require_auth)])
+async def delete_recording(rec_id: str):
+    rec = store.get(rec_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="not found")
+    for key in ("audio_path", "transcript_path"):
+        if rec.get(key):
+            Path(rec[key]).unlink(missing_ok=True)
+    store.delete(rec_id)
+    log.info("deleted recording %s", rec_id)
+    return Response(status_code=204)
+
+
+# ── Web dashboard ────────────────────────────────────────────────────────────
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@app.get("/", include_in_schema=False)
+async def dashboard():
+    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")

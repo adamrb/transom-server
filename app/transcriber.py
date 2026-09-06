@@ -88,12 +88,53 @@ class Transcriber:
                 for s in result.get("segments") or []
             ],
         }
+        summary = await self._summarize(transcript["text"])
+        if summary:
+            transcript["summary"] = summary
         transcript_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2))
-        self.store.update(rec_id, status="done", transcript_path=str(transcript_path), error=None)
-        log.info("transcribed %s (%d chars)", rec_id, len(transcript["text"]))
+        self.store.update(
+            rec_id,
+            status="done",
+            transcript_path=str(transcript_path),
+            transcript_text=transcript["text"],
+            summary=summary,
+            error=None,
+        )
+        log.info("transcribed %s (%d chars%s)", rec_id, len(transcript["text"]),
+                 ", summarized" if summary else "")
 
         self._export_markdown(rec, transcript)
         await self._fire_webhook(rec, transcript)
+
+    async def _summarize(self, text: str) -> str | None:
+        s = self.settings
+        if not (s.summary_enabled and s.summary_base_url and s.summary_model):
+            return None
+        if not text.strip():
+            return None
+        headers = {}
+        if s.summary_api_key:
+            headers["Authorization"] = f"Bearer {s.summary_api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=300) as client:
+                resp = await client.post(
+                    f"{s.summary_base_url.rstrip('/')}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": s.summary_model,
+                        "messages": [
+                            {"role": "system", "content": s.summary_prompt},
+                            {"role": "user", "content": text[: s.summary_max_chars]},
+                        ],
+                    },
+                )
+                if resp.status_code != 200:
+                    log.warning("summary endpoint returned %s: %s", resp.status_code, resp.text[:200])
+                    return None
+                return resp.json()["choices"][0]["message"]["content"].strip() or None
+        except Exception as exc:
+            log.warning("summarization failed: %s", exc)
+            return None
 
     async def _call_endpoint(self, audio_path: Path) -> dict:
         base = self.settings.transcribe_base_url.rstrip("/")
@@ -140,9 +181,10 @@ class Transcriber:
                 "source: plaud-bridge",
                 "---",
                 "",
-                transcript["text"].strip(),
-                "",
             ]
+            if transcript.get("summary"):
+                lines += ["## Summary", "", transcript["summary"], "", "## Transcript", ""]
+            lines += [transcript["text"].strip(), ""]
             md_path.write_text("\n".join(lines))
         except Exception:
             log.exception("markdown export failed for %s", rec["id"])
@@ -169,6 +211,7 @@ class Transcriber:
             "transcript": {
                 "language": transcript.get("language"),
                 "text": transcript["text"],
+                "summary": transcript.get("summary"),
             },
         }
         try:

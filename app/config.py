@@ -46,6 +46,22 @@ class Settings:
     transcribe_timeout_s: int = field(default_factory=lambda: int(_env("PB_TRANSCRIBE_TIMEOUT_S", "1800")))
     transcribe_max_attempts: int = field(default_factory=lambda: int(_env("PB_TRANSCRIBE_MAX_ATTEMPTS", "3")))
 
+    # Optional LLM summarization of each transcript (any OpenAI-compatible chat
+    # endpoint). Defaults to off; base URL should include the /v1 suffix.
+    summary_enabled: bool = field(default_factory=lambda: _env_bool("PB_SUMMARY_ENABLED", False))
+    summary_base_url: str | None = field(default_factory=lambda: _env("PB_SUMMARY_BASE_URL"))
+    summary_api_key: str | None = field(default_factory=lambda: _env("PB_SUMMARY_API_KEY"))
+    summary_model: str | None = field(default_factory=lambda: _env("PB_SUMMARY_MODEL"))
+    summary_prompt: str = field(
+        default_factory=lambda: _env(
+            "PB_SUMMARY_PROMPT",
+            "Summarize this voice recording transcript. Start with a one-line title, "
+            "then a concise summary, then any action items as a bullet list. "
+            "If the transcript is trivial (a few words), just restate it.",
+        )
+    )
+    summary_max_chars: int = field(default_factory=lambda: int(_env("PB_SUMMARY_MAX_CHARS", "60000")))
+
     # Optional: POSTed after each successful transcription (see README for payload)
     webhook_url: str | None = field(default_factory=lambda: _env("PB_WEBHOOK_URL"))
     webhook_auth_header: str | None = field(default_factory=lambda: _env("PB_WEBHOOK_AUTH_HEADER"))
@@ -75,6 +91,10 @@ class Settings:
             )
         if self.transcribe_enabled and not self.transcribe_base_url:
             warnings.append("PB_TRANSCRIBE_BASE_URL not set — uploads will be stored but not transcribed.")
+        if self.summary_enabled and not (self.summary_base_url and self.summary_model):
+            warnings.append(
+                "PB_SUMMARY_ENABLED is on but PB_SUMMARY_BASE_URL/PB_SUMMARY_MODEL are missing — summaries disabled."
+            )
         return warnings
 
 

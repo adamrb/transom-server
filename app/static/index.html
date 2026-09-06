@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plaud Bridge</title>
+<style>
+:root{
+  --bg:#0f1115;--panel:#181b22;--panel2:#1f232c;--border:#2a2f3a;
+  --text:#e6e9ef;--muted:#8b93a3;--accent:#5b9dff;--accent2:#3b7de0;
+  --ok:#3fb96f;--warn:#e0a03b;--err:#e05b5b;
+}
+@media (prefers-color-scheme: light){
+  :root{--bg:#f4f6f9;--panel:#ffffff;--panel2:#eef1f6;--border:#d8dee8;
+  --text:#1c2230;--muted:#5d6676;--accent:#2f6fd0;--accent2:#255cb0}
+}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
+header{display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel)}
+header h1{font-size:17px;margin:0;font-weight:650}
+header .dot{width:9px;height:9px;border-radius:50%;background:var(--ok)}
+header .spacer{flex:1}
+header .stats{color:var(--muted);font-size:13px}
+button{font:inherit;border:1px solid var(--border);background:var(--panel2);color:var(--text);
+  border-radius:8px;padding:6px 12px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover{background:var(--accent2)}
+button.danger:hover{border-color:var(--err);color:var(--err)}
+main{display:grid;grid-template-columns:minmax(320px,420px) 1fr;gap:0;height:calc(100vh - 61px)}
+#list-pane{border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
+#toolbar{display:flex;gap:8px;padding:12px;border-bottom:1px solid var(--border)}
+#toolbar input,#toolbar select{font:inherit;background:var(--panel2);color:var(--text);
+  border:1px solid var(--border);border-radius:8px;padding:6px 10px}
+#toolbar input{flex:1;min-width:0}
+#items{overflow-y:auto;flex:1}
+.item{padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer}
+.item:hover{background:var(--panel)}
+.item.active{background:var(--panel);box-shadow:inset 3px 0 0 var(--accent)}
+.item .row1{display:flex;gap:8px;align-items:baseline}
+.item .title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.item .meta{color:var(--muted);font-size:12.5px;margin-top:2px}
+.item .preview{color:var(--muted);font-size:13px;margin-top:4px;display:-webkit-box;
+  -webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.chip{font-size:11px;padding:2px 8px;border-radius:20px;white-space:nowrap}
+.chip.done{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.chip.pending,.chip.transcribing{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.chip.failed{background:color-mix(in srgb,var(--err) 18%,transparent);color:var(--err)}
+.chip.stored{background:var(--panel2);color:var(--muted)}
+#detail{overflow-y:auto;padding:26px 34px;min-height:0}
+#detail .placeholder{color:var(--muted);margin-top:40vh;text-align:center}
+#detail h2{margin:0 0 4px;font-size:20px}
+#detail .meta{color:var(--muted);font-size:13.5px;margin-bottom:16px}
+audio{width:100%;margin:10px 0 20px}
+.section{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-bottom:16px}
+.section h3{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.section .body{white-space:pre-wrap}
+.actions{display:flex;gap:10px;margin-top:6px}
+.err{color:var(--err)}
+#gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center}
+#gate form{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:30px;width:360px}
+#gate h1{font-size:18px;margin:0 0 6px}
+#gate p{color:var(--muted);font-size:13.5px;margin:0 0 16px}
+#gate input{width:100%;font:inherit;background:var(--panel2);color:var(--text);
+  border:1px solid var(--border);border-radius:8px;padding:9px 12px;margin-bottom:12px}
+#gate button{width:100%}
+#gate .err{font-size:13px;min-height:18px;margin-top:8px}
+.seg{color:var(--muted);font-size:12px;margin-right:8px;font-variant-numeric:tabular-nums}
+@media (max-width:800px){main{grid-template-columns:1fr}#detail{display:none}
+  #detail.open{display:block;position:fixed;inset:61px 0 0;background:var(--bg);z-index:5}}
+</style>
+</head>
+<body>
+<div id="gate" hidden>
+  <form onsubmit="return gateSubmit(event)">
+    <h1>Plaud Bridge</h1>
+    <p>Enter the server access token (<code>PB_AUTH_TOKENS</code>) to open the dashboard.</p>
+    <input id="gate-token" type="password" placeholder="access token" autocomplete="current-password">
+    <button class="primary">Unlock</button>
+    <div class="err" id="gate-err"></div>
+  </form>
+</div>
+
+<header>
+  <div class="dot" id="statusdot"></div>
+  <h1>Plaud Bridge</h1>
+  <span class="stats" id="stats"></span>
+  <div class="spacer"></div>
+  <button onclick="logout()">Lock</button>
+</header>
+
+<main>
+  <div id="list-pane">
+    <div id="toolbar">
+      <input id="search" placeholder="Search transcripts…" oninput="debouncedLoad()">
+      <select id="statusFilter" onchange="loadList()">
+        <option value="">all</option><option>done</option><option>pending</option>
+        <option>transcribing</option><option>failed</option><option>stored</option>
+      </select>
+    </div>
+    <div id="items"></div>
+  </div>
+  <div id="detail"><div class="placeholder">Select a recording</div></div>
+</main>
+
+<script>
+let token = localStorage.getItem('pb_token') || '';
+let currentId = null, audioUrl = null, timer = null;
+
+const $ = id => document.getElementById(id);
+const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function api(path, opts = {}) {
+  const r = await fetch('/api/v1' + path, {
+    ...opts, headers: { 'Authorization': 'Bearer ' + token, ...(opts.headers || {}) }
+  });
+  if (r.status === 401) { showGate(); throw new Error('unauthorized'); }
+  return r;
+}
+
+function showGate() { $('gate').hidden = false; }
+async function gateSubmit(e) {
+  e.preventDefault();
+  token = $('gate-token').value.trim();
+  const r = await fetch('/api/v1/auth/check', { headers: { 'Authorization': 'Bearer ' + token } });
+  if (r.status === 204) {
+    localStorage.setItem('pb_token', token);
+    $('gate').hidden = true; init();
+  } else { $('gate-err').textContent = 'Invalid token'; }
+  return false;
+}
+function logout() { localStorage.removeItem('pb_token'); location.reload(); }
+
+function fmtDur(s) {
+  if (s == null) return '';
+  s = Math.round(s);
+  return s >= 3600 ? `${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m` :
+         s >= 60 ? `${Math.floor(s/60)}m ${s%60}s` : `${s}s`;
+}
+function fmtSize(b) { return b >= 1e6 ? (b/1e6).toFixed(1) + ' MB' : Math.round(b/1e3) + ' kB'; }
+function fmtDate(iso) { return iso ? new Date(iso).toLocaleString() : ''; }
+
+async function loadStats() {
+  try {
+    const s = await (await api('/stats')).json();
+    $('stats').textContent =
+      `${s.recordings} recordings · ${fmtDur(s.total_duration_s)} · ${fmtSize(s.total_bytes)}`;
+    $('statusdot').style.background = 'var(--ok)';
+  } catch { $('statusdot').style.background = 'var(--err)'; }
+}
+
+async function loadList() {
+  const q = encodeURIComponent($('search').value.trim());
+  const st = encodeURIComponent($('statusFilter').value);
+  const r = await (await api(`/recordings?limit=200&q=${q}&status=${st}`)).json();
+  $('items').innerHTML = r.recordings.map(rec => `
+    <div class="item ${rec.id === currentId ? 'active' : ''}" onclick="openRec('${rec.id}')">
+      <div class="row1">
+        <span class="title">${esc(titleOf(rec))}</span>
+        <span class="chip ${esc(rec.status)}">${esc(rec.status)}</span>
+      </div>
+      <div class="meta">${fmtDate(rec.started_at || rec.uploaded_at)}
+        ${rec.duration_s ? '· ' + fmtDur(rec.duration_s) : ''} · ${fmtSize(rec.size_bytes)}</div>
+      ${rec.text_preview ? `<div class="preview">${esc(rec.text_preview)}</div>` : ''}
+    </div>`).join('') || '<div class="item">No recordings yet.</div>';
+}
+function titleOf(rec) {
+  if (rec.summary) { const l = rec.summary.split('\n')[0].replace(/^#+\s*/, ''); if (l) return l; }
+  return rec.filename;
+}
+let debounce;
+function debouncedLoad() { clearTimeout(debounce); debounce = setTimeout(loadList, 250); }
+
+async function openRec(id) {
+  currentId = id;
+  $('detail').classList.add('open');
+  const rec = await (await api('/recordings/' + id)).json();
+  let transcript = null;
+  if (rec.status === 'done') {
+    try { transcript = await (await api(`/recordings/${id}/transcript`)).json(); } catch {}
+  }
+  if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; }
+  $('detail').innerHTML = `
+    <h2>${esc(titleOf(rec))}</h2>
+    <div class="meta">${fmtDate(rec.started_at || rec.uploaded_at)}
+      ${rec.duration_s ? '· ' + fmtDur(rec.duration_s) : ''} · ${fmtSize(rec.size_bytes)}
+      · <span class="chip ${esc(rec.status)}">${esc(rec.status)}</span>
+      ${rec.device_sn ? '· SN ' + esc(rec.device_sn) : ''}</div>
+    <audio id="player" controls preload="none"></audio>
+    ${rec.error ? `<div class="section"><h3>Error</h3><div class="body err">${esc(rec.error)}</div></div>` : ''}
+    ${rec.summary ? `<div class="section"><h3>Summary</h3><div class="body">${esc(rec.summary)}</div></div>` : ''}
+    ${transcript ? `<div class="section"><h3>Transcript</h3><div class="body">${
+        transcript.segments?.length
+          ? transcript.segments.map(s => `<div><span class="seg">${fmtDur(s.start)}</span>${esc(s.text)}</div>`).join('')
+          : esc(transcript.text)}</div></div>`
+      : rec.status !== 'done' ? `<div class="section"><h3>Transcript</h3><div class="body" style="color:var(--muted)">Not ready (${esc(rec.status)}).</div></div>` : ''}
+    <div class="actions">
+      <button onclick="retranscribe('${rec.id}')">Re-transcribe</button>
+      <button onclick="downloadAudio('${rec.id}', '${esc(rec.filename)}')">Download audio</button>
+      <button class="danger" onclick="del('${rec.id}')">Delete</button>
+      <button onclick="$('detail').classList.remove('open')" style="margin-left:auto">Close</button>
+    </div>`;
+  loadAudio(rec.id);
+  loadList();
+}
+
+async function loadAudio(id) {
+  try {
+    const blob = await (await api(`/recordings/${id}/audio`)).blob();
+    audioUrl = URL.createObjectURL(blob);
+    const p = $('player'); if (p) p.src = audioUrl;
+  } catch {}
+}
+async function downloadAudio(id, name) {
+  const blob = await (await api(`/recordings/${id}/audio`)).blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  URL.revokeObjectURL(a.href);
+}
+async function retranscribe(id) { await api(`/recordings/${id}/retranscribe`, { method: 'POST' }); openRec(id); }
+async function del(id) {
+  if (!confirm('Delete this recording and its transcript from the server?')) return;
+  await api('/recordings/' + id, { method: 'DELETE' });
+  currentId = null;
+  $('detail').innerHTML = '<div class="placeholder">Select a recording</div>';
+  loadList(); loadStats();
+}
+
+async function init() {
+  await loadStats(); await loadList();
+  clearInterval(timer);
+  timer = setInterval(() => { loadStats(); if (!document.hidden) loadList(); }, 15000);
+}
+
+(async () => {
+  if (!token) return showGate();
+  const r = await fetch('/api/v1/auth/check', { headers: { 'Authorization': 'Bearer ' + token } });
+  if (r.status === 204) init(); else showGate();
+})();
+</script>
+</body>
+</html>
