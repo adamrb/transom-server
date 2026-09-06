@@ -1,0 +1,13 @@
+services:
+  plaud-bridge:
+    build: .
+    container_name: plaud-bridge
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+      # Optional: mount a notes folder and set PB_MARKDOWN_EXPORT_DIR=/notes
+      # - /path/to/obsidian/vault/Plaud:/notes
