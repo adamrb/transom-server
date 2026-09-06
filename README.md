@@ -15,7 +15,7 @@ Plaud device ──BLE/WiFi──> Android app ──HTTPS──> plaud-bridge-s
 
 ## What touches Plaud's cloud
 
-Only device authentication. The Plaud Embedded SDK requires a signed user token from Plaud's partner API to complete the encrypted BLE handshake with the device. This server mints those tokens using your (free) developer credentials and hands them to the app. Audio, transcripts, and metadata never leave your infrastructure.
+Only device authentication. The Plaud Embedded SDK requires a signed user token from Plaud's partner API to complete the encrypted BLE handshake with the device. This server mints those tokens using your (free) developer credentials and hands them to the app. Plaud never receives your audio or transcripts. Where they *do* go is up to your configuration: point transcription and summaries at local endpoints and everything stays on your hardware; point them at hosted APIs (or configure a webhook) and audio/text flows to those services instead.
 
 You need a free account at [portal.plaud.ai](https://portal.plaud.ai): create an **Embedded SDK Application** and copy its Client ID and Secret Key. The free tier covers 50 connected devices; the (paid) Plaud transcription API is not used at all.
 
@@ -31,7 +31,9 @@ docker compose up -d --build
 curl http://localhost:8090/api/v1/health
 ```
 
-Expose it with your reverse proxy of choice (HTTPS strongly recommended — the app authenticates with a bearer token). Then install the Android app and point it at your server URL + auth token.
+The container binds to `127.0.0.1:8090` by default. Expose it through a reverse proxy that terminates **HTTPS** — the app authenticates with a static bearer token, so plaintext HTTP on an untrusted network means credential theft. Set a request-body limit and rate limiting at the proxy too. Then install the Android app and point it at your server URL + auth token.
+
+> **Security model:** a single bearer token grants full access — uploads, reads, deletes, and Plaud token minting. That is a deliberate simplification for a personal/self-hosted deployment. Don't share tokens across trust boundaries, rotate via the comma-separated `PB_AUTH_TOKENS`, and keep the service off the open internet unless it's behind TLS.
 
 ### Transcription endpoint
 

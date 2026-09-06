@@ -9,6 +9,7 @@ webhook so downstream automation can react to new transcripts.
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 
 import httpx
@@ -29,6 +30,9 @@ class Transcriber:
         self._task: asyncio.Task | None = None
 
     def start(self) -> None:
+        # Recover rows left mid-flight by a previous shutdown/crash.
+        for rec in self.store.list(limit=500, status="transcribing"):
+            self.store.update(rec["id"], status="pending")
         self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
@@ -42,9 +46,10 @@ class Transcriber:
     async def _run(self) -> None:
         while True:
             try:
+                # Clear before querying so a wake fired mid-query isn't lost.
+                self.wake.clear()
                 rec = self.store.next_pending(self.settings.transcribe_max_attempts)
                 if rec is None:
-                    self.wake.clear()
                     try:
                         await asyncio.wait_for(self.wake.wait(), timeout=POLL_INTERVAL_S * 12)
                     except TimeoutError:
@@ -58,6 +63,18 @@ class Transcriber:
                 await asyncio.sleep(POLL_INTERVAL_S)
 
     async def _process(self, rec: dict) -> None:
+        rec_id = rec["id"]
+        try:
+            await self._process_inner(rec)
+        except asyncio.CancelledError:
+            # Shutdown mid-transcription: hand the row back to the queue.
+            self.store.update(rec_id, status="pending")
+            raise
+        except Exception as exc:
+            log.exception("processing failed for %s", rec_id)
+            self.store.update(rec_id, status="failed", error=str(exc)[:1000])
+
+    async def _process_inner(self, rec: dict) -> None:
         if not self.settings.transcribe_enabled or not self.settings.transcribe_base_url:
             self.store.update(rec["id"], status="stored")
             return
@@ -91,7 +108,13 @@ class Transcriber:
         summary = await self._summarize(transcript["text"])
         if summary:
             transcript["summary"] = summary
-        transcript_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2))
+        if self.store.get(rec_id) is None:
+            # Deleted from the dashboard while we were transcribing; drop the result.
+            log.info("recording %s deleted mid-transcription, discarding result", rec_id)
+            return
+        tmp_path = transcript_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2))
+        tmp_path.replace(transcript_path)
         self.store.update(
             rec_id,
             status="done",
@@ -167,17 +190,21 @@ class Transcriber:
             return
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
-            stamp = (rec["started_at"] or rec["uploaded_at"]).replace(":", "-")
+            stamp = re.sub(r"[^0-9TZ-]", "-", (rec["started_at"] or rec["uploaded_at"]))[:24]
             md_path = out_dir / f"plaud-{stamp}-{rec['id'][:8]}.md"
+
+            def yq(value) -> str:  # YAML-safe scalar via JSON quoting
+                return json.dumps("" if value is None else str(value), ensure_ascii=False)
+
             lines = [
                 "---",
-                f"recording_id: {rec['id']}",
-                f"device_sn: {rec['device_sn'] or ''}",
-                f"session_id: {rec['session_id'] if rec['session_id'] is not None else ''}",
-                f"recorded: {rec['started_at'] or ''}",
-                f"uploaded: {rec['uploaded_at']}",
-                f"duration_s: {transcript.get('duration_s') or ''}",
-                f"language: {transcript.get('language') or ''}",
+                f"recording_id: {yq(rec['id'])}",
+                f"device_sn: {yq(rec['device_sn'])}",
+                f"session_id: {yq(rec['session_id'])}",
+                f"recorded: {yq(rec['started_at'])}",
+                f"uploaded: {yq(rec['uploaded_at'])}",
+                f"duration_s: {yq(transcript.get('duration_s'))}",
+                f"language: {yq(transcript.get('language'))}",
                 "source: plaud-bridge",
                 "---",
                 "",

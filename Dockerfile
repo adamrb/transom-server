@@ -7,6 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 
+RUN useradd -u 1000 -m appuser
+USER appuser
+
 ENV PB_DATA_DIR=/data
 VOLUME /data
 EXPOSE 8090

@@ -17,11 +17,15 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
+import sqlite3
+import tempfile
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
@@ -59,12 +63,43 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Plaud Bridge", version=VERSION, lifespan=lifespan)
 
+PUBLIC_PATHS = {"/api/v1/health"}
+
+
+def _token_ok(request: Request) -> bool:
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token:
+        return False
+    return any(hmac.compare_digest(token, t) for t in settings.auth_tokens)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Reject unauthenticated API requests before any body parsing happens."""
+    path = request.url.path
+    if path.startswith("/api/") and path not in PUBLIC_PATHS and not _token_ok(request):
+        return JSONResponse(
+            {"detail": "invalid or missing bearer token"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+    return response
+
 
 def require_auth(request: Request) -> None:
-    header = request.headers.get("authorization", "")
-    token = header.removeprefix("Bearer ").strip() if header.startswith("Bearer ") else ""
-    if not token or not any(hmac.compare_digest(token, t) for t in settings.auth_tokens):
-        raise HTTPException(status_code=401, detail="invalid or missing bearer token")
+    # Defense in depth behind auth_middleware (covers direct route calls in tests).
+    if not _token_ok(request):
+        raise HTTPException(
+            status_code=401,
+            detail="invalid or missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 @app.get("/api/v1/health")
@@ -93,7 +128,7 @@ async def plaud_user_token(body: UserTokenRequest):
         return await plaud_client.get_user_token(body.user_id, body.expires_in)
     except PlaudAuthError as exc:
         log.error("plaud auth error: %s", exc)
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail="Plaud partner API request failed (see server logs)")
 
 
 def _public(rec: dict) -> dict:
@@ -106,60 +141,85 @@ def _public(rec: dict) -> dict:
     return rec
 
 
-@app.post("/api/v1/recordings", dependencies=[Depends(require_auth)])
-async def upload_recording(file: UploadFile, metadata: str = Form("{}")):
-    try:
-        meta = json.loads(metadata)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="metadata is not valid JSON")
+class UploadMetadata(BaseModel):
+    model_config = {"extra": "ignore"}
 
+    session_id: int | None = Field(default=None, ge=0, le=2**62)
+    device_sn: str | None = Field(default=None, max_length=64)
+    started_at: str | None = Field(default=None, max_length=40)
+    duration_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    source: str | None = Field(default=None, max_length=64)
+
+
+@app.post("/api/v1/recordings", dependencies=[Depends(require_auth)])
+async def upload_recording(file: UploadFile, metadata: str = Form("{}", max_length=4096)):
+    try:
+        meta = UploadMetadata.model_validate_json(metadata)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid metadata: {exc}")
+    if meta.started_at:
+        try:
+            datetime.fromisoformat(meta.started_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="started_at is not an ISO-8601 timestamp")
+
+    # Stream to a temp file in the target filesystem while hashing, then rename.
     max_bytes = settings.max_upload_mb * 1024 * 1024
     hasher = hashlib.sha256()
-    chunks: list[bytes] = []
     size = 0
-    while chunk := await file.read(1024 * 1024):
-        size += len(chunk)
-        if size > max_bytes:
-            raise HTTPException(status_code=413, detail=f"file exceeds {settings.max_upload_mb} MB")
-        hasher.update(chunk)
-        chunks.append(chunk)
-    if size == 0:
-        raise HTTPException(status_code=400, detail="empty file")
-    sha256 = hasher.hexdigest()
+    settings.recordings_dir.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(dir=settings.recordings_dir, suffix=".part", delete=False)
+    try:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > max_bytes:
+                raise HTTPException(status_code=413, detail=f"file exceeds {settings.max_upload_mb} MB")
+            hasher.update(chunk)
+            tmp.write(chunk)
+        tmp.close()
+        if size == 0:
+            raise HTTPException(status_code=400, detail="empty file")
+        sha256 = hasher.hexdigest()
 
-    existing = store.find_by_sha256(sha256)
-    if existing:
-        return JSONResponse({"id": existing["id"], "duplicate": True}, status_code=200)
-
-    device_sn = meta.get("device_sn")
-    session_id = meta.get("session_id")
-    if device_sn is not None and session_id is not None:
-        existing = store.find_by_session(str(device_sn), int(session_id))
+        existing = store.find_by_sha256(sha256)
+        if not existing and meta.device_sn is not None and meta.session_id is not None:
+            existing = store.find_by_session(meta.device_sn, meta.session_id)
         if existing:
             return JSONResponse({"id": existing["id"], "duplicate": True}, status_code=200)
 
-    uploaded_at = utcnow_iso()
-    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "recording.mp3")
-    subdir = settings.recordings_dir / uploaded_at[:4] / uploaded_at[5:7]
-    subdir.mkdir(parents=True, exist_ok=True)
-    audio_path = subdir / f"{sha256[:16]}_{safe_name}"
-    with audio_path.open("wb") as fh:
-        for chunk in chunks:
-            fh.write(chunk)
+        uploaded_at = utcnow_iso()
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", file.filename or "recording.mp3")[:120]
+        subdir = settings.recordings_dir / uploaded_at[:4] / uploaded_at[5:7]
+        subdir.mkdir(parents=True, exist_ok=True)
+        audio_path = subdir / f"{sha256[:16]}_{safe_name}"
+        os.replace(tmp.name, audio_path)
+    except Exception:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
+    finally:
+        if not tmp.closed:
+            tmp.close()
 
-    rec_id = store.insert_recording(
-        device_sn=str(device_sn) if device_sn is not None else None,
-        session_id=int(session_id) if session_id is not None else None,
-        filename=safe_name,
-        sha256=sha256,
-        size_bytes=size,
-        duration_s=meta.get("duration_s"),
-        started_at=meta.get("started_at"),
-        source=meta.get("source"),
-        uploaded_at=uploaded_at,
-        audio_path=str(audio_path),
-        status="pending",
-    )
+    try:
+        rec_id = store.insert_recording(
+            device_sn=meta.device_sn,
+            session_id=meta.session_id,
+            filename=safe_name,
+            sha256=sha256,
+            size_bytes=size,
+            duration_s=meta.duration_s,
+            started_at=meta.started_at,
+            source=meta.source,
+            uploaded_at=uploaded_at,
+            audio_path=str(audio_path),
+            status="pending",
+        )
+    except sqlite3.IntegrityError:
+        # Concurrent identical upload won the race; treat as duplicate.
+        existing = store.find_by_sha256(sha256)
+        if existing:
+            return JSONResponse({"id": existing["id"], "duplicate": True}, status_code=200)
+        raise
     transcriber.wake.set()
     log.info("stored recording %s (%s, %.1f MB)", rec_id, safe_name, size / 1e6)
     return JSONResponse({"id": rec_id, "duplicate": False}, status_code=201)
@@ -167,12 +227,14 @@ async def upload_recording(file: UploadFile, metadata: str = Form("{}")):
 
 @app.get("/api/v1/recordings", dependencies=[Depends(require_auth)])
 async def list_recordings(
-    limit: int = 100, offset: int = 0, status: str | None = None, q: str | None = None
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    status: str | None = Query(None, max_length=20),
+    q: str | None = Query(None, max_length=200),
 ):
     return {
         "recordings": [
-            _public(r)
-            for r in store.list(limit=min(limit, 500), offset=offset, status=status, query=q)
+            _public(r) for r in store.list(limit=limit, offset=offset, status=status, query=q)
         ]
     }
 
@@ -222,7 +284,10 @@ async def retranscribe(rec_id: str):
     rec = store.get(rec_id)
     if not rec:
         raise HTTPException(status_code=404, detail="not found")
-    store.update(rec_id, status="pending", attempts=0, error=None)
+    store.update(
+        rec_id, status="pending", attempts=0, error=None,
+        transcript_text=None, summary=None, transcript_path=None,
+    )
     transcriber.wake.set()
     return {"id": rec_id, "status": "pending"}
 
