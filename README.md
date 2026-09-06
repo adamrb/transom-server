@@ -85,6 +85,13 @@ All endpoints under `/api/v1`. Every route except `/health` requires `Authorizat
 | POST | `/recordings/{id}/retranscribe` | requeue for the worker |
 | DELETE | `/recordings/{id}` | remove recording + transcript |
 | GET | `/stats` | counts, total duration, bytes |
+| GET/POST | `/routes` | list / create AI routing routes |
+| PUT/DELETE | `/routes/{id}` | update / delete a route |
+| GET | `/router/status` | `{enabled, configured, model}` |
+| GET | `/routing/log?limit=50` | recent router runs with their deliveries |
+| GET | `/recordings/{id}/routing` | router runs + deliveries for one recording |
+| POST | `/recordings/{id}/route` | rerun the router now (`409` if no transcript yet) |
+| POST | `/deliveries/{id}/retry` | re-execute a delivery's action |
 
 Upload `metadata` fields: `session_id` (int), `device_sn` (string), `started_at` (ISO-8601 UTC), `duration_s` (number), `source` (string). Duplicate uploads (same file hash, or same device+session) return `200 {"duplicate": true}` instead of creating a copy — the app can retry uploads safely.
 
@@ -98,6 +105,37 @@ Two hooks, use either or both:
 - **Markdown export** — set `PB_MARKDOWN_EXPORT_DIR` (mount it in docker-compose). Each transcript is written as a standalone `.md` with YAML frontmatter (device, session, timestamps, language) — drop it in an Obsidian vault, a syncthing folder, or anywhere a file watcher can pick it up.
 
 Raw data lives under `PB_DATA_DIR`: `recordings/YYYY/MM/<hash>_<name>.mp3` with a sibling `.transcript.json`, and a SQLite index at `plaud-bridge.sqlite3`.
+
+## AI routing (optional)
+
+Where the hooks above fire for *every* transcript, AI routing lets an LLM decide *which* automations each recording should trigger. You define **routes** — each one a name, a free-text description, and an action — and after every transcription (and summary) a router LLM call matches the transcript against the enabled routes. The description doubles as the routing criterion and the downstream instruction, e.g.:
+
+> **Work meetings** — anything that sounds like a work meeting or standup. Log it verbatim and summarized.
+
+Multiple routes can match one recording; zero matches is a normal outcome. Actions:
+
+- **`webhook`** — POST the payload below to `action_config.url`, with an optional static header (`{"auth_header": "Name: value"}`).
+- **`markdown`** — write a note (same frontmatter as the markdown export, plus `route:`) into `PB_MARKDOWN_EXPORT_DIR/<action_config.folder>/`. The folder must be a relative subpath of the export root.
+- **`none`** — record the decision only (useful for auditing before wiring an action).
+
+Enable with `PB_ROUTER_ENABLED=true` and point `PB_ROUTER_BASE_URL` / `PB_ROUTER_MODEL` (plus `PB_ROUTER_API_KEY` if needed) at any OpenAI-compatible chat endpoint; when unset they fall back to the `PB_SUMMARY_*` values, so a single configured LLM serves both features. `PB_ROUTER_MAX_CHARS` (default 4000) caps how much of the transcript the router sees. The legacy `PB_WEBHOOK_URL` hook is independent and keeps firing regardless of routing.
+
+Routes are managed over the API (see the table above): `GET/POST /routes`, `PUT/DELETE /routes/{id}`. Every decision is recorded as a **router run** and every executed action as a **delivery**, inspectable via `GET /routing/log` and `GET /recordings/{id}/routing`; `POST /recordings/{id}/route` reruns the router for one recording and `POST /deliveries/{id}/retry` re-executes a failed delivery. Router failures never affect a recording's `done` status.
+
+Webhook payload contract (stable — safe to build consumers against):
+
+```json
+{
+  "event": "route.matched",
+  "route": {"name": "Work meetings", "description": "anything that sounds like ..."},
+  "recording": {
+    "id": "abc123...", "device_sn": "881A...", "session_id": 1,
+    "filename": "rec.mp3", "started_at": "2026-09-06T12:00:00Z",
+    "duration_s": 123.4, "url": "/api/v1/recordings/abc123..."
+  },
+  "transcript": {"text": "full transcript ...", "summary": "AI summary or null", "language": "en"}
+}
+```
 
 ## Configuration reference
 
