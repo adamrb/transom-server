@@ -31,6 +31,38 @@ CREATE TABLE IF NOT EXISTS recordings (
 CREATE INDEX IF NOT EXISTS idx_recordings_device_session
     ON recordings(device_sn, session_id);
 CREATE INDEX IF NOT EXISTS idx_recordings_status ON recordings(status);
+
+CREATE TABLE IF NOT EXISTS routes (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT NOT NULL,
+    action_type TEXT NOT NULL CHECK (action_type IN ('webhook', 'markdown', 'none')),
+    action_config TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT,
+    updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS router_runs (
+    id TEXT PRIMARY KEY,
+    recording_id TEXT,
+    created_at TEXT,
+    model TEXT,
+    decision TEXT,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_router_runs_recording ON router_runs(recording_id);
+CREATE TABLE IF NOT EXISTS deliveries (
+    id TEXT PRIMARY KEY,
+    recording_id TEXT,
+    route_id TEXT,
+    route_name TEXT,
+    status TEXT,
+    attempts INTEGER,
+    last_error TEXT,
+    payload TEXT,
+    created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_deliveries_recording ON deliveries(recording_id);
 """
 
 # Columns added after the initial release; applied idempotently at startup so
@@ -57,16 +89,7 @@ class Store:
             self._conn.commit()
 
     def insert_recording(self, **fields) -> str:
-        rec_id = fields.pop("id", None) or uuid.uuid4().hex
-        fields["id"] = rec_id
-        cols = ", ".join(fields)
-        marks = ", ".join("?" for _ in fields)
-        with self._lock:
-            self._conn.execute(
-                f"INSERT INTO recordings ({cols}) VALUES ({marks})", list(fields.values())
-            )
-            self._conn.commit()
-        return rec_id
+        return self._insert("recordings", fields)
 
     def find_by_sha256(self, sha256: str) -> dict | None:
         return self._one("SELECT * FROM recordings WHERE sha256 = ?", (sha256,))
@@ -87,7 +110,7 @@ class Store:
         offset: int = 0,
         status: str | None = None,
         query: str | None = None,
-    ) -> list[dict]:
+    ) -> "list[dict]":
         q = "SELECT * FROM recordings"
         where: list[str] = []
         args: list = []
@@ -142,6 +165,97 @@ class Store:
                 f"UPDATE recordings SET {sets} WHERE id = ?", [*fields.values(), rec_id]
             )
             self._conn.commit()
+
+    # ── AI routing ────────────────────────────────────────────────────────
+
+    def insert_route(self, **fields) -> str:
+        return self._insert("routes", fields)
+
+    def get_route(self, route_id: str) -> dict | None:
+        return self._one("SELECT * FROM routes WHERE id = ?", (route_id,))
+
+    def get_route_by_name(self, name: str) -> dict | None:
+        return self._one("SELECT * FROM routes WHERE name = ?", (name,))
+
+    def list_routes(self, enabled_only: bool = False) -> "list[dict]":
+        q = "SELECT * FROM routes"
+        if enabled_only:
+            q += " WHERE enabled = 1"
+        q += " ORDER BY created_at ASC, name ASC"
+        with self._lock:
+            rows = self._conn.execute(q).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_route(self, route_id: str, **fields) -> None:
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE routes SET {sets} WHERE id = ?", [*fields.values(), route_id]
+            )
+            self._conn.commit()
+
+    def delete_route(self, route_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM routes WHERE id = ?", (route_id,))
+            self._conn.commit()
+
+    def insert_router_run(self, **fields) -> str:
+        return self._insert("router_runs", fields)
+
+    def get_router_run(self, run_id: str) -> dict | None:
+        return self._one("SELECT * FROM router_runs WHERE id = ?", (run_id,))
+
+    def list_router_runs(self, limit: int = 50) -> "list[dict]":
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM router_runs ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def router_runs_for_recording(self, recording_id: str) -> "list[dict]":
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM router_runs WHERE recording_id = ? "
+                "ORDER BY created_at DESC, rowid DESC",
+                (recording_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def insert_delivery(self, **fields) -> str:
+        return self._insert("deliveries", fields)
+
+    def get_delivery(self, delivery_id: str) -> dict | None:
+        return self._one("SELECT * FROM deliveries WHERE id = ?", (delivery_id,))
+
+    def update_delivery(self, delivery_id: str, **fields) -> None:
+        sets = ", ".join(f"{k} = ?" for k in fields)
+        with self._lock:
+            self._conn.execute(
+                f"UPDATE deliveries SET {sets} WHERE id = ?", [*fields.values(), delivery_id]
+            )
+            self._conn.commit()
+
+    def deliveries_for_recording(self, recording_id: str) -> "list[dict]":
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM deliveries WHERE recording_id = ? "
+                "ORDER BY created_at DESC, rowid DESC",
+                (recording_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def _insert(self, table: str, fields: dict) -> str:
+        row_id = fields.pop("id", None) or uuid.uuid4().hex
+        fields["id"] = row_id
+        cols = ", ".join(fields)
+        marks = ", ".join("?" for _ in fields)
+        with self._lock:
+            self._conn.execute(
+                f"INSERT INTO {table} ({cols}) VALUES ({marks})", list(fields.values())
+            )
+            self._conn.commit()
+        return row_id
 
     def _one(self, q: str, args: tuple) -> dict | None:
         with self._lock:

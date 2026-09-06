@@ -85,6 +85,23 @@ class Settings:
     )
     summary_max_chars: int = field(default_factory=lambda: int(_env("PB_SUMMARY_MAX_CHARS", "60000")))
 
+    # Optional AI routing: after transcription (and summarization) an LLM
+    # decides which configured routes apply and their actions run. The chat
+    # endpoint settings fall back to the PB_SUMMARY_* equivalents so a single
+    # configured LLM can serve both features.
+    router_enabled: bool = field(default_factory=lambda: _env_bool("PB_ROUTER_ENABLED", False))
+    router_base_url: str | None = field(
+        default_factory=lambda: _env("PB_ROUTER_BASE_URL") or _env("PB_SUMMARY_BASE_URL")
+    )
+    router_api_key: str | None = field(
+        default_factory=lambda: _env("PB_ROUTER_API_KEY") or _env("PB_SUMMARY_API_KEY")
+    )
+    router_model: str | None = field(
+        default_factory=lambda: _env("PB_ROUTER_MODEL") or _env("PB_SUMMARY_MODEL")
+    )
+    # How much of the transcript the router sees (≈ first 500-800 words)
+    router_max_chars: int = field(default_factory=lambda: int(_env("PB_ROUTER_MAX_CHARS", "4000")))
+
     # Optional: POSTed after each successful transcription (see README for payload)
     webhook_url: str | None = field(default_factory=lambda: _env("PB_WEBHOOK_URL"))
     webhook_auth_header: str | None = field(default_factory=lambda: _env("PB_WEBHOOK_AUTH_HEADER"))
@@ -119,6 +136,11 @@ class Settings:
         if self.summary_enabled and not (self.summary_base_url and self.summary_model):
             warnings.append(
                 "PB_SUMMARY_ENABLED is on but PB_SUMMARY_BASE_URL/PB_SUMMARY_MODEL are missing — summaries disabled."
+            )
+        if self.router_enabled and not (self.router_base_url and self.router_model):
+            warnings.append(
+                "PB_ROUTER_ENABLED is on but no chat endpoint is configured "
+                "(PB_ROUTER_BASE_URL/PB_ROUTER_MODEL or the PB_SUMMARY_* equivalents) — routing disabled."
             )
         return warnings
 

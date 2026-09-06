@@ -1,0 +1,303 @@
+"""AI routing engine.
+
+After a recording is transcribed (and summarized), a small LLM call decides
+which of the user-configured routes apply to it. Each route pairs a free-text
+description (the routing criterion) with an action: POST a webhook, write a
+markdown note, or nothing (decision-only). Every decision is recorded in
+router_runs and every action in deliveries, so the whole pipeline is auditable
+and individual deliveries can be retried.
+"""
+
+import json
+import logging
+import re
+from pathlib import Path
+
+import httpx
+
+from .config import Settings
+from .db import Store, utcnow_iso
+
+log = logging.getLogger("plaud-bridge.router")
+
+SYSTEM_PROMPT = (
+    "You route voice-recording transcripts to configured destinations. "
+    'Reply ONLY with JSON: {"routes": [{"name": ..., "reason": ...}]}. '
+    "Only use names from the provided list. An empty list is a valid answer."
+)
+
+RETRY_NUDGE = "Reply with only valid JSON."
+
+
+def folder_error(folder: str) -> str | None:
+    """Validate a markdown route folder (a relative subpath, no escapes).
+    Returns a human-readable error, or None when the folder is acceptable."""
+    rel = Path(folder) if folder else Path(".")
+    if rel.is_absolute():
+        return "folder must be a relative path"
+    if any(part == ".." for part in rel.parts):
+        return "folder must not contain '..'"
+    return None
+
+
+class Router:
+    def __init__(self, settings: Settings, store: Store):
+        self.settings = settings
+        self.store = store
+        # Test hook: an httpx transport (e.g. httpx.MockTransport) used for
+        # all outbound HTTP so tests never touch the network.
+        self.transport: httpx.AsyncBaseTransport | None = None
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.settings.router_base_url and self.settings.router_model)
+
+    def _client(self, timeout: float) -> httpx.AsyncClient:
+        kwargs: dict = {"timeout": timeout}
+        if self.transport is not None:
+            kwargs["transport"] = self.transport
+        return httpx.AsyncClient(**kwargs)
+
+    # ── decision ───────────────────────────────────────────────────────────
+
+    async def route_recording(self, rec: dict) -> dict:
+        """Decide which routes match `rec` and execute their actions.
+
+        Returns the recorded router_runs row with the deliveries it created
+        embedded under "deliveries".
+        """
+        routes = self.store.list_routes(enabled_only=True)
+        created_at = utcnow_iso()
+        deliveries: list[dict] = []
+
+        if not routes:
+            matched: list[dict] = []
+            error = None
+        elif not self.configured:
+            matched, error = [], (
+                "router LLM endpoint not configured "
+                "(PB_ROUTER_BASE_URL/PB_ROUTER_MODEL or PB_SUMMARY_* equivalents)"
+            )
+        else:
+            matched, error = await self._decide(rec, routes)
+
+        run_id = self.store.insert_router_run(
+            recording_id=rec["id"],
+            created_at=created_at,
+            model=self.settings.router_model if routes else None,
+            decision=None if error else json.dumps({"routes": matched}),
+            error=error,
+        )
+
+        if not error:
+            by_name = {r["name"]: r for r in routes}
+            for item in matched:
+                deliveries.append(await self.deliver(by_name[item["name"]], rec))
+
+        run = self.store.get_router_run(run_id)
+        run["deliveries"] = deliveries
+        return run
+
+    async def _decide(self, rec: dict, routes: list[dict]) -> tuple[list[dict], str | None]:
+        """One LLM call (plus at most one bad-JSON retry). Returns
+        (matched [{name, reason}], error) — error is None on success."""
+        route_list = [{"name": r["name"], "description": r["description"]} for r in routes]
+        excerpt = (rec.get("transcript_text") or "")[: self.settings.router_max_chars]
+        user = f"Transcript excerpt:\n{excerpt}"
+        if rec.get("summary"):
+            user += f"\n\nSummary:\n{rec['summary']}"
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT + "\n\nRoutes:\n"
+             + json.dumps(route_list, ensure_ascii=False)},
+            {"role": "user", "content": user},
+        ]
+        allowed = {r["name"] for r in routes}
+        try:
+            content = await self._chat(messages)
+            matched = self._parse_decision(content, allowed)
+            if matched is None:
+                # One retry with an explicit JSON nudge.
+                content = await self._chat(messages + [
+                    {"role": "assistant", "content": content},
+                    {"role": "user", "content": RETRY_NUDGE},
+                ])
+                matched = self._parse_decision(content, allowed)
+                if matched is None:
+                    return [], f"router returned unparseable JSON: {content[:200]}"
+            return matched, None
+        except Exception as exc:
+            return [], f"router LLM call failed: {exc}"[:1000]
+
+    async def _chat(self, messages: list[dict]) -> str:
+        s = self.settings
+        headers = {}
+        if s.router_api_key:
+            headers["Authorization"] = f"Bearer {s.router_api_key}"
+        async with self._client(timeout=120) as client:
+            resp = await client.post(
+                f"{s.router_base_url.rstrip('/')}/chat/completions",
+                headers=headers,
+                json={"model": s.router_model, "messages": messages},
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(f"router endpoint returned {resp.status_code}: {resp.text[:200]}")
+            return resp.json()["choices"][0]["message"]["content"]
+
+    @staticmethod
+    def _parse_decision(content: str, allowed: set[str]) -> list[dict] | None:
+        """Strictly parse the LLM reply. Accepts route items as "name" strings
+        or {"name", "reason"} objects; drops names not in the enabled set.
+        Returns None on any malformed reply (caller retries once)."""
+        text = content.strip()
+        if text.startswith("```"):  # tolerate a fenced code block around the JSON
+            text = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", text).strip()
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("routes"), list):
+            return None
+        matched: list[dict] = []
+        seen: set[str] = set()
+        for item in data["routes"]:
+            if isinstance(item, str):
+                name, reason = item, None
+            elif isinstance(item, dict) and isinstance(item.get("name"), str):
+                name, reason = item["name"], item.get("reason")
+            else:
+                return None
+            if name in allowed and name not in seen:
+                seen.add(name)
+                matched.append({"name": name, "reason": reason})
+        return matched
+
+    # ── actions ────────────────────────────────────────────────────────────
+
+    def build_payload(self, route: dict, rec: dict) -> dict:
+        """The webhook payload contract (LOCKED — external consumers rely on it)."""
+        return {
+            "event": "route.matched",
+            "route": {"name": route["name"], "description": route["description"]},
+            "recording": {
+                "id": rec["id"],
+                "device_sn": rec["device_sn"],
+                "session_id": rec["session_id"],
+                "filename": rec["filename"],
+                "started_at": rec["started_at"],
+                "duration_s": rec["duration_s"],
+                "url": f"/api/v1/recordings/{rec['id']}",
+            },
+            "transcript": {
+                "text": rec.get("transcript_text") or "",
+                "summary": rec.get("summary"),
+                "language": self._language_of(rec),
+            },
+        }
+
+    @staticmethod
+    def _language_of(rec: dict) -> str | None:
+        path = rec.get("transcript_path")
+        if not path:
+            return None
+        try:
+            return json.loads(Path(path).read_text()).get("language")
+        except Exception:
+            return None
+
+    async def deliver(self, route: dict, rec: dict) -> dict:
+        payload = {} if route["action_type"] == "none" else self.build_payload(route, rec)
+        status, error = await self._execute(route, payload)
+        delivery_id = self.store.insert_delivery(
+            recording_id=rec["id"],
+            route_id=route["id"],
+            route_name=route["name"],
+            status=status,
+            attempts=1,
+            last_error=error,
+            payload=json.dumps(payload, ensure_ascii=False),
+            created_at=utcnow_iso(),
+        )
+        if error:
+            log.warning("delivery to route %r failed for %s: %s", route["name"], rec["id"], error)
+        return self.store.get_delivery(delivery_id)
+
+    async def retry_delivery(self, delivery: dict) -> dict:
+        """Re-execute a delivery's action using its payload snapshot and the
+        route's current configuration."""
+        route = self.store.get_route(delivery["route_id"])
+        if route is None:
+            status, error = "failed", "route no longer exists"
+        else:
+            payload = json.loads(delivery["payload"] or "{}")
+            status, error = await self._execute(route, payload)
+        self.store.update_delivery(
+            delivery["id"], status=status, attempts=delivery["attempts"] + 1, last_error=error
+        )
+        return self.store.get_delivery(delivery["id"])
+
+    async def _execute(self, route: dict, payload: dict) -> tuple[str, str | None]:
+        config = json.loads(route["action_config"] or "{}")
+        try:
+            if route["action_type"] == "webhook":
+                await self._action_webhook(config, payload)
+            elif route["action_type"] == "markdown":
+                self._action_markdown(route["name"], config, payload)
+            # "none": decision-only, nothing to do
+            return "ok", None
+        except Exception as exc:
+            return "failed", str(exc)[:1000]
+
+    async def _action_webhook(self, config: dict, payload: dict) -> None:
+        url = config.get("url")
+        if not url:
+            raise RuntimeError("webhook route has no url configured")
+        headers = {}
+        if config.get("auth_header"):
+            name, _, value = config["auth_header"].partition(":")
+            headers[name.strip()] = value.strip()
+        async with self._client(timeout=30) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if not (200 <= resp.status_code < 300):
+                raise RuntimeError(f"webhook returned {resp.status_code}")
+
+    def _action_markdown(self, route_name: str, config: dict, payload: dict) -> None:
+        root = self.settings.markdown_export_dir
+        if not root:
+            raise RuntimeError(
+                "PB_MARKDOWN_EXPORT_DIR is not set — markdown routes need an export root"
+            )
+        folder = config.get("folder") or ""
+        if err := folder_error(folder):
+            raise RuntimeError(f"invalid folder {folder!r}: {err}")
+        out_dir = (root / folder).resolve() if folder else root.resolve()
+        if not out_dir.is_relative_to(root.resolve()):
+            raise RuntimeError(f"folder {folder!r} escapes the export root")
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        rec = payload.get("recording") or {}
+        transcript = payload.get("transcript") or {}
+        if "id" not in rec:
+            raise RuntimeError("delivery payload has no recording snapshot")
+        stamp = re.sub(r"[^0-9TZ-]", "-", (rec.get("started_at") or utcnow_iso()))[:24]
+        md_path = out_dir / f"plaud-{stamp}-{rec['id'][:8]}.md"
+
+        def yq(value) -> str:  # YAML-safe scalar via JSON quoting
+            return json.dumps("" if value is None else str(value), ensure_ascii=False)
+
+        lines = [
+            "---",
+            f"recording_id: {yq(rec.get('id'))}",
+            f"device_sn: {yq(rec.get('device_sn'))}",
+            f"session_id: {yq(rec.get('session_id'))}",
+            f"recorded: {yq(rec.get('started_at'))}",
+            f"duration_s: {yq(rec.get('duration_s'))}",
+            f"language: {yq(transcript.get('language'))}",
+            f"route: {yq(route_name)}",
+            "source: plaud-bridge",
+            "---",
+            "",
+        ]
+        if transcript.get("summary"):
+            lines += ["## Summary", "", transcript["summary"], "", "## Transcript", ""]
+        lines += [(transcript.get("text") or "").strip(), ""]
+        md_path.write_text("\n".join(lines))

@@ -17,6 +17,7 @@ import httpx
 from .config import Settings
 from .db import Store, utcnow_iso
 from .engines import EngineError, TranscriptionEngine, build_engine
+from .router import Router
 
 log = logging.getLogger("plaud-bridge.transcriber")
 
@@ -29,10 +30,12 @@ class Transcriber:
         settings: Settings,
         store: Store,
         engine: "TranscriptionEngine | None" = None,
+        router: "Router | None" = None,
     ):
         self.settings = settings
         self.store = store
         self.engine = engine if engine is not None else build_engine(settings)
+        self.router = router if router is not None else Router(settings, store)
         self.wake = asyncio.Event()
         self._task: asyncio.Task | None = None
 
@@ -135,6 +138,20 @@ class Transcriber:
 
         self._export_markdown(rec, transcript)
         await self._fire_webhook(rec, transcript)
+        await self._run_router(rec_id)
+
+    async def _run_router(self, rec_id: str) -> None:
+        """AI routing: never allowed to affect the recording's 'done' status."""
+        if not self.settings.router_enabled:
+            return
+        try:
+            if not self.store.list_routes(enabled_only=True):
+                return
+            rec = self.store.get(rec_id)
+            if rec:
+                await self.router.route_recording(rec)
+        except Exception:
+            log.exception("routing failed for %s", rec_id)
 
     async def _summarize(self, text: str) -> str | None:
         s = self.settings

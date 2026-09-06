@@ -11,6 +11,15 @@ Endpoints (all under /api/v1, Bearer-token auth except /health):
   GET  /recordings/{id}/audio           audio file
   GET  /recordings/{id}/transcript      transcript JSON (409 while pending)
   POST /recordings/{id}/retranscribe    reset a recording for the worker
+  GET  /routes                          list AI routing routes
+  POST /routes                          create a route
+  PUT  /routes/{id}                     update a route
+  DELETE /routes/{id}                   delete a route
+  GET  /router/status                   router enabled/configured/model
+  GET  /routing/log                     recent router runs with deliveries
+  GET  /recordings/{id}/routing         runs + deliveries for one recording
+  POST /recordings/{id}/route           rerun the router for a recording
+  POST /deliveries/{id}/retry           re-execute a delivery's action
 """
 
 import hashlib
@@ -24,6 +33,7 @@ import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -32,6 +42,7 @@ from pydantic import BaseModel, Field
 from .config import settings
 from .db import Store, utcnow_iso
 from .plaud import PlaudAuthError, PlaudClient
+from .router import Router, folder_error
 from .transcriber import Transcriber
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -42,11 +53,12 @@ VERSION = "0.1.0"
 store: Store | None = None
 transcriber: Transcriber | None = None
 plaud_client: PlaudClient | None = None
+router_engine: Router | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global store, transcriber, plaud_client
+    global store, transcriber, plaud_client, router_engine
     settings.recordings_dir.mkdir(parents=True, exist_ok=True)
     store = Store(settings.db_path)
     for warning in settings.validate():
@@ -55,7 +67,8 @@ async def lifespan(app: FastAPI):
         plaud_client = PlaudClient(
             settings.plaud_api_base, settings.plaud_client_id, settings.plaud_secret_key
         )
-    transcriber = Transcriber(settings, store)
+    router_engine = Router(settings, store)
+    transcriber = Transcriber(settings, store, router=router_engine)
     transcriber.start()
     yield
     await transcriber.stop()
@@ -307,6 +320,167 @@ async def delete_recording(rec_id: str):
     store.delete(rec_id)
     log.info("deleted recording %s", rec_id)
     return Response(status_code=204)
+
+
+# ── AI routing ───────────────────────────────────────────────────────────────
+
+
+class RouteBody(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    description: str = Field(min_length=1, max_length=4000)
+    action_type: Literal["webhook", "markdown", "none"]
+    action_config: dict = Field(default_factory=dict)
+    enabled: bool = True
+
+
+def _validated_action_config(action_type: str, config: dict) -> str:
+    """Validate the per-action config shape; return it as canonical JSON."""
+    def bad(msg: str):
+        raise HTTPException(status_code=400, detail=f"invalid action_config: {msg}")
+
+    if action_type == "webhook":
+        url = config.get("url")
+        if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+            bad("webhook requires a 'url' starting with http:// or https://")
+        if len(url) > 2048:
+            bad("url too long")
+        auth = config.get("auth_header")
+        if auth is not None and (not isinstance(auth, str) or ":" not in auth or len(auth) > 512):
+            bad("auth_header must be a 'Name: value' string")
+        out = {"url": url}
+        if auth:
+            out["auth_header"] = auth
+        return json.dumps(out)
+    if action_type == "markdown":
+        folder = config.get("folder")
+        if not isinstance(folder, str) or not folder or len(folder) > 128:
+            bad("markdown requires a 'folder' string (1-128 chars)")
+        if err := folder_error(folder):
+            bad(err)
+        return json.dumps({"folder": folder})
+    # "none"
+    if config:
+        bad("'none' routes take no action_config")
+    return json.dumps({})
+
+
+def _route_public(route: dict) -> dict:
+    route = dict(route)
+    route["action_config"] = json.loads(route["action_config"] or "{}")
+    route["enabled"] = bool(route["enabled"])
+    return route
+
+
+def _delivery_public(delivery: dict) -> dict:
+    delivery = dict(delivery)
+    delivery["payload"] = json.loads(delivery["payload"] or "{}")
+    return delivery
+
+
+def _run_public(run: dict) -> dict:
+    run = dict(run)
+    run["decision"] = json.loads(run["decision"]) if run.get("decision") else None
+    if "deliveries" in run:
+        run["deliveries"] = [_delivery_public(d) for d in run["deliveries"]]
+    return run
+
+
+@app.get("/api/v1/routes", dependencies=[Depends(require_auth)])
+async def list_routes():
+    return {"routes": [_route_public(r) for r in store.list_routes()]}
+
+
+@app.post("/api/v1/routes", dependencies=[Depends(require_auth)])
+async def create_route(body: RouteBody):
+    config_json = _validated_action_config(body.action_type, body.action_config)
+    if store.get_route_by_name(body.name):
+        raise HTTPException(status_code=409, detail=f"route named {body.name!r} already exists")
+    now = utcnow_iso()
+    route_id = store.insert_route(
+        name=body.name,
+        description=body.description,
+        action_type=body.action_type,
+        action_config=config_json,
+        enabled=int(body.enabled),
+        created_at=now,
+        updated_at=now,
+    )
+    return JSONResponse(_route_public(store.get_route(route_id)), status_code=201)
+
+
+@app.put("/api/v1/routes/{route_id}", dependencies=[Depends(require_auth)])
+async def update_route(route_id: str, body: RouteBody):
+    if not store.get_route(route_id):
+        raise HTTPException(status_code=404, detail="route not found")
+    config_json = _validated_action_config(body.action_type, body.action_config)
+    existing = store.get_route_by_name(body.name)
+    if existing and existing["id"] != route_id:
+        raise HTTPException(status_code=409, detail=f"route named {body.name!r} already exists")
+    store.update_route(
+        route_id,
+        name=body.name,
+        description=body.description,
+        action_type=body.action_type,
+        action_config=config_json,
+        enabled=int(body.enabled),
+        updated_at=utcnow_iso(),
+    )
+    return _route_public(store.get_route(route_id))
+
+
+@app.delete("/api/v1/routes/{route_id}", dependencies=[Depends(require_auth)])
+async def delete_route(route_id: str):
+    if not store.get_route(route_id):
+        raise HTTPException(status_code=404, detail="route not found")
+    store.delete_route(route_id)
+    return Response(status_code=204)
+
+
+@app.get("/api/v1/router/status", dependencies=[Depends(require_auth)])
+async def router_status():
+    return {
+        "enabled": settings.router_enabled,
+        "configured": router_engine.configured,
+        "model": settings.router_model,
+    }
+
+
+@app.get("/api/v1/routing/log", dependencies=[Depends(require_auth)])
+async def routing_log(limit: int = Query(50, ge=1, le=200)):
+    runs = []
+    for run in store.list_router_runs(limit=limit):
+        run["deliveries"] = store.deliveries_for_recording(run["recording_id"])
+        runs.append(_run_public(run))
+    return {"runs": runs}
+
+
+@app.get("/api/v1/recordings/{rec_id}/routing", dependencies=[Depends(require_auth)])
+async def recording_routing(rec_id: str):
+    if not store.get(rec_id):
+        raise HTTPException(status_code=404, detail="not found")
+    return {
+        "runs": [_run_public(r) for r in store.router_runs_for_recording(rec_id)],
+        "deliveries": [_delivery_public(d) for d in store.deliveries_for_recording(rec_id)],
+    }
+
+
+@app.post("/api/v1/recordings/{rec_id}/route", dependencies=[Depends(require_auth)])
+async def rerun_router(rec_id: str):
+    rec = store.get(rec_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="not found")
+    if not rec.get("transcript_text"):
+        raise HTTPException(status_code=409, detail=f"no transcript yet (status: {rec['status']})")
+    run = await router_engine.route_recording(rec)
+    return _run_public(run)
+
+
+@app.post("/api/v1/deliveries/{delivery_id}/retry", dependencies=[Depends(require_auth)])
+async def retry_delivery(delivery_id: str):
+    delivery = store.get_delivery(delivery_id)
+    if not delivery:
+        raise HTTPException(status_code=404, detail="delivery not found")
+    return _delivery_public(await router_engine.retry_delivery(delivery))
 
 
 # ── Web dashboard ────────────────────────────────────────────────────────────
