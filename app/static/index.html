@@ -16,17 +16,22 @@
 }
 *{box-sizing:border-box}
 body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
-header{display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel)}
+header{display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel);flex-wrap:wrap}
 header h1{font-size:17px;margin:0;font-weight:650}
-header .dot{width:9px;height:9px;border-radius:50%;background:var(--ok)}
+header .dot{width:9px;height:9px;border-radius:50%;background:var(--ok);flex:none}
 header .spacer{flex:1}
 header .stats{color:var(--muted);font-size:13px}
+nav.tabs{display:flex;gap:2px;background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:2px}
+nav.tabs button{border:none;background:transparent;padding:4px 12px;border-radius:7px;color:var(--muted)}
+nav.tabs button:hover{color:var(--text)}
+nav.tabs button.active{background:var(--accent);color:#fff}
 button{font:inherit;border:1px solid var(--border);background:var(--panel2);color:var(--text);
   border-radius:8px;padding:6px 12px;cursor:pointer}
 button:hover{border-color:var(--accent)}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.primary:hover{background:var(--accent2)}
 button.danger:hover{border-color:var(--err);color:var(--err)}
+button.small{font-size:12.5px;padding:3px 9px}
 main{display:grid;grid-template-columns:minmax(320px,420px) 1fr;gap:0;height:calc(100vh - 61px)}
 #list-pane{border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
 #toolbar{display:flex;gap:8px;padding:12px;border-bottom:1px solid var(--border)}
@@ -43,10 +48,10 @@ main{display:grid;grid-template-columns:minmax(320px,420px) 1fr;gap:0;height:cal
 .item .preview{color:var(--muted);font-size:13px;margin-top:4px;display:-webkit-box;
   -webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .chip{font-size:11px;padding:2px 8px;border-radius:20px;white-space:nowrap}
-.chip.done{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.chip.done,.chip.ok{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
 .chip.pending,.chip.transcribing{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
 .chip.failed{background:color-mix(in srgb,var(--err) 18%,transparent);color:var(--err)}
-.chip.stored{background:var(--panel2);color:var(--muted)}
+.chip.stored,.chip.neutral{background:var(--panel2);color:var(--muted)}
 #detail{overflow-y:auto;padding:26px 34px;min-height:0}
 #detail .placeholder{color:var(--muted);margin-top:40vh;text-align:center}
 #detail h2{margin:0 0 4px;font-size:20px}
@@ -55,10 +60,11 @@ audio{width:100%;margin:10px 0 20px}
 .section{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-bottom:16px}
 .section h3{margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 .section .body{white-space:pre-wrap}
-.actions{display:flex;gap:10px;margin-top:6px}
+.actions{display:flex;gap:10px;margin-top:6px;flex-wrap:wrap}
 .err{color:var(--err)}
-#gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center}
-#gate form{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:30px;width:360px}
+.muted{color:var(--muted)}
+#gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:30}
+#gate form{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:30px;width:360px;max-width:calc(100vw - 32px)}
 #gate h1{font-size:18px;margin:0 0 6px}
 #gate p{color:var(--muted);font-size:13.5px;margin:0 0 16px}
 #gate input{width:100%;font:inherit;background:var(--panel2);color:var(--text);
@@ -66,8 +72,82 @@ audio{width:100%;margin:10px 0 20px}
 #gate button{width:100%}
 #gate .err{font-size:13px;min-height:18px;margin-top:8px}
 .seg{color:var(--muted);font-size:12px;margin-right:8px;font-variant-numeric:tabular-nums}
-@media (max-width:800px){main{grid-template-columns:1fr}#detail{display:none}
-  #detail.open{display:block;position:fixed;inset:61px 0 0;background:var(--bg);z-index:5}}
+
+/* --- Automations tab --- */
+#auto-pane{display:none;overflow-y:auto;height:calc(100vh - 61px);padding:22px}
+#auto-pane.open{display:block}
+body.tab-automations main{display:none}
+#auto-inner{max-width:860px;margin:0 auto}
+.banner{display:flex;align-items:center;gap:10px;border-radius:12px;padding:12px 16px;margin-bottom:18px;
+  border:1px solid var(--border);background:var(--panel);font-size:14px}
+.banner .bdot{width:10px;height:10px;border-radius:50%;flex:none}
+.banner.good{border-color:color-mix(in srgb,var(--ok) 40%,var(--border))}
+.banner.good .bdot{background:var(--ok)}
+.banner.warn{border-color:color-mix(in srgb,var(--warn) 45%,var(--border))}
+.banner.warn .bdot{background:var(--warn)}
+.banner code{font-size:12.5px;background:var(--panel2);padding:1px 5px;border-radius:5px}
+.sect-head{display:flex;align-items:center;gap:10px;margin:22px 0 10px}
+.sect-head h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0;flex:1}
+.route-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:10px}
+.route-card.disabled .r-name,.route-card.disabled .r-desc{opacity:.55}
+.route-card .r-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.route-card .r-name{font-weight:650;flex:1;min-width:120px;overflow-wrap:anywhere}
+.route-card .r-desc{color:var(--muted);font-size:13.5px;margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere}
+.route-card .r-action{font-size:12.5px;color:var(--muted);margin-top:8px;overflow-wrap:anywhere}
+.route-card .r-btns{display:flex;gap:8px;margin-top:10px}
+.switch{position:relative;width:36px;height:20px;flex:none;cursor:pointer}
+.switch input{position:absolute;opacity:0;inset:0;margin:0;cursor:pointer}
+.switch .tr{position:absolute;inset:0;border-radius:20px;background:var(--panel2);border:1px solid var(--border);transition:background .15s}
+.switch .tr::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;
+  background:var(--muted);transition:transform .15s,background .15s}
+.switch input:checked + .tr{background:var(--accent);border-color:var(--accent)}
+.switch input:checked + .tr::after{transform:translateX(16px);background:#fff}
+.log-entry{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px 16px;margin-bottom:10px;font-size:13.5px}
+.log-entry .l-head{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.log-entry .l-title{font-weight:600;flex:1;min-width:140px;overflow-wrap:anywhere}
+.log-entry .l-time{color:var(--muted);font-size:12.5px;white-space:nowrap}
+.log-entry .l-dec{margin-top:6px}
+.log-entry .l-dec .why{color:var(--muted)}
+.dlv{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;padding:6px 10px;background:var(--panel2);border-radius:8px}
+.dlv .d-name{font-weight:600}
+.dlv .d-err{color:var(--err);font-size:12.5px;flex-basis:100%;overflow-wrap:anywhere}
+.dlv .sp{flex:1}
+.empty-note{color:var(--muted);padding:8px 2px;font-size:14px}
+
+/* --- Modals --- */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}
+.overlay[hidden]{display:none}
+.modal{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:22px 24px;
+  width:480px;max-width:100%;max-height:calc(100vh - 48px);overflow-y:auto}
+.modal h2{font-size:17px;margin:0 0 14px}
+.modal label{display:block;font-size:12.5px;color:var(--muted);margin:12px 0 4px}
+.modal input[type=text],.modal input[type=url],.modal textarea,.modal select{
+  width:100%;font:inherit;background:var(--panel2);color:var(--text);
+  border:1px solid var(--border);border-radius:8px;padding:8px 10px}
+.modal textarea{min-height:96px;resize:vertical}
+.modal .m-btns{display:flex;gap:10px;margin-top:18px}
+.modal .m-btns .sp{flex:1}
+.modal .m-err{color:var(--err);font-size:13px;min-height:18px;margin-top:10px}
+#qr-holder{display:flex;justify-content:center;margin:8px 0 14px}
+#qr-holder svg{border-radius:10px}
+.copyrow{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.copyrow input{flex:1;min-width:0;font:13px/1.4 ui-monospace,monospace;background:var(--panel2);
+  color:var(--text);border:1px solid var(--border);border-radius:8px;padding:7px 10px}
+.caution{color:var(--warn);font-size:13px;margin-top:10px}
+
+@media (max-width:800px){
+  main{grid-template-columns:1fr}#detail{display:none}
+  #detail.open{display:block;position:fixed;inset:61px 0 0;background:var(--bg);z-index:5}
+  #auto-pane{padding:14px}
+  #detail{padding:20px 16px}
+}
+@media (max-width:700px){header .stats{display:none}}
+@media (max-width:480px){
+  header{gap:8px;padding:10px 12px}
+  header h1{font-size:15px}
+  nav.tabs button{padding:4px 9px;font-size:13.5px}
+  .modal{padding:18px 16px}
+}
 </style>
 </head>
 <body>
@@ -84,8 +164,13 @@ audio{width:100%;margin:10px 0 20px}
 <header>
   <div class="dot" id="statusdot"></div>
   <h1>Plaud Bridge</h1>
+  <nav class="tabs">
+    <button id="tab-rec" class="active" onclick="showTab('recordings')">Recordings</button>
+    <button id="tab-auto" onclick="showTab('automations')">Automations</button>
+  </nav>
   <span class="stats" id="stats"></span>
   <div class="spacer"></div>
+  <button onclick="openConnect()">Connect a phone</button>
   <button onclick="logout()">Lock</button>
 </header>
 
@@ -103,12 +188,620 @@ audio{width:100%;margin:10px 0 20px}
   <div id="detail"><div class="placeholder">Select a recording</div></div>
 </main>
 
+<div id="auto-pane">
+  <div id="auto-inner">
+    <div id="router-banner"></div>
+    <div id="auto-body">
+      <div class="sect-head">
+        <h2>Routes</h2>
+        <button class="primary small" onclick="openRouteEditor(null)">Add route</button>
+      </div>
+      <div id="routes-list"><div class="empty-note">Loading…</div></div>
+      <div class="sect-head">
+        <h2>Activity log</h2>
+        <button class="small" onclick="loadLog()">Refresh</button>
+      </div>
+      <div id="log-list"><div class="empty-note">Loading…</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="route-overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="route-modal-title">
+    <h2 id="route-modal-title">Edit route</h2>
+    <label for="rt-name">Name</label>
+    <input type="text" id="rt-name" maxlength="64" placeholder="Work meetings">
+    <label for="rt-desc">Description &mdash; this is the prompt the routing model matches against</label>
+    <textarea id="rt-desc" placeholder="Work meetings: anything that sounds like a work meeting, standup, or 1:1. Log it verbatim and summarized."></textarea>
+    <label for="rt-action">Action</label>
+    <select id="rt-action" onchange="routeActionChanged()">
+      <option value="webhook">Send to webhook</option>
+      <option value="markdown">Save markdown to folder</option>
+      <option value="none">Decision only (log it)</option>
+    </select>
+    <div id="rt-webhook-fields">
+      <label for="rt-url">Webhook URL</label>
+      <input type="url" id="rt-url" placeholder="https://example.com/hook">
+      <label for="rt-auth">Auth header (optional, &ldquo;Name: value&rdquo;)</label>
+      <input type="text" id="rt-auth" placeholder="Authorization: Bearer …">
+    </div>
+    <div id="rt-markdown-fields" hidden>
+      <label for="rt-folder">Folder (relative)</label>
+      <input type="text" id="rt-folder" placeholder="meetings/work">
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:14px;color:var(--text)">
+      <span class="switch"><input type="checkbox" id="rt-enabled" checked><span class="tr"></span></span>
+      Enabled
+    </label>
+    <div class="m-err" id="rt-err"></div>
+    <div class="m-btns">
+      <div class="sp"></div>
+      <button onclick="closeModals()">Cancel</button>
+      <button class="primary" id="rt-save" onclick="saveRoute()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="connect-overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="connect-title">
+    <h2 id="connect-title">Connect a phone</h2>
+    <p class="muted" style="margin:0 0 10px;font-size:13.5px">Scan this code with the Plaud Bridge app to link it to this server.</p>
+    <div id="qr-holder"></div>
+    <label for="cp-url">Server URL</label>
+    <div class="copyrow">
+      <input type="text" id="cp-url" readonly>
+      <button class="small" onclick="copyField('cp-url', this)">Copy</button>
+    </div>
+    <label for="cp-token">Access token</label>
+    <div class="copyrow">
+      <input type="text" id="cp-token" readonly>
+      <button class="small" onclick="copyField('cp-token', this)">Copy</button>
+    </div>
+    <div class="caution">Caution: the QR code and text above contain your access token. Don't screenshot or share them.</div>
+    <div class="m-btns">
+      <div class="sp"></div>
+      <button onclick="closeModals()">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* toqr v0.1.1 — tiny QR encoder. MIT License, Copyright (c) Phil Pluckthun, Copyright (c) 650 Industries, Inc. (aka Expo), Copyright (c) Project Nayuki. https://github.com/kitten/toqr — embedded so the dashboard works fully offline. */
+const toQR = (() => { const exports = {};
+Object.defineProperty(exports, "__esModule", {
+  value: !0
+});
+
+const t = new Uint8Array(512);
+
+const e = new Uint8Array(256);
+
+for (let n = 0, o = 1; n < 255; n++) {
+  t[n] = o;
+  e[o] = n;
+  o <<= 1;
+  if (256 & o) {
+    o ^= 285;
+  }
+}
+
+for (let e = 255; e < 512; e++) {
+  t[e] = t[e - 255];
+}
+
+const gmul = (n, o) => n > 0 && o > 0 ? t[e[n] + e[o]] : 0;
+
+const gpow = (n, o) => t[o * e[n] % 255];
+
+const genRS = t => {
+  const e = new Uint8Array(t + 2);
+  const n = new Uint8Array(t + 1);
+  n[0] = 1;
+  for (let o = 0; o < t; o++) {
+    const t = gpow(2, o);
+    e.fill(0, 0, o + 2);
+    for (let r = 0; r < o + 1; r++) {
+      e[r] ^= n[r];
+      e[r + 1] ^= gmul(n[r], t);
+    }
+    for (let t = 0; t < o + 2; t++) {
+      n[t] = e[t];
+    }
+  }
+  return n;
+};
+
+const encodeRS = (t, e) => {
+  const n = genRS(e);
+  const o = new Uint8Array(t.byteLength + n.byteLength - 1);
+  o.set(t);
+  for (let e = 0; e < t.byteLength; e++) {
+    const t = o[e];
+    if (t) {
+      for (let r = 1; r < n.byteLength; r++) {
+        o[e + r] ^= gmul(n[r], t);
+      }
+    }
+  }
+  return o.subarray(t.byteLength);
+};
+
+const n = [ 0, 26, 44, 70, 100, 134, 172, 196, 242, 292, 346, 404, 466, 532, 581, 655, 733, 815, 901, 991, 1085, 1156, 1258, 1364, 1474, 1588, 1706, 1828, 1921, 2051, 2185, 2323, 2465, 2611, 2761, 2876, 3034, 3196, 3362, 3532, 3706 ];
+
+const o = [ [ 0, 0, 0, 0 ], [ 10, 7, 17, 13 ], [ 16, 10, 28, 22 ], [ 26, 15, 44, 36 ], [ 36, 20, 64, 52 ], [ 48, 26, 88, 72 ], [ 64, 36, 112, 96 ], [ 72, 40, 130, 108 ], [ 88, 48, 156, 132 ], [ 110, 60, 192, 160 ], [ 130, 72, 224, 192 ], [ 150, 80, 264, 224 ], [ 176, 96, 308, 260 ], [ 198, 104, 352, 288 ], [ 216, 120, 384, 320 ], [ 240, 132, 432, 360 ], [ 280, 144, 480, 408 ], [ 308, 168, 532, 448 ], [ 338, 180, 588, 504 ], [ 364, 196, 650, 546 ], [ 416, 224, 700, 600 ], [ 442, 224, 750, 644 ], [ 476, 252, 816, 690 ], [ 504, 270, 900, 750 ], [ 560, 300, 960, 810 ], [ 588, 312, 1050, 870 ], [ 644, 336, 1110, 952 ], [ 700, 360, 1200, 1020 ], [ 728, 390, 1260, 1050 ], [ 784, 420, 1350, 1140 ], [ 812, 450, 1440, 1200 ], [ 868, 480, 1530, 1290 ], [ 924, 510, 1620, 1350 ], [ 980, 540, 1710, 1440 ], [ 1036, 570, 1800, 1530 ], [ 1064, 570, 1890, 1590 ], [ 1120, 600, 1980, 1680 ], [ 1204, 630, 2100, 1770 ], [ 1260, 660, 2220, 1860 ], [ 1316, 720, 2310, 1950 ], [ 1372, 750, 2430, 2040 ] ];
+
+const r = [ [ 0, 0, 0, 0 ], [ 1, 1, 1, 1 ], [ 1, 1, 1, 1 ], [ 1, 1, 2, 2 ], [ 2, 1, 4, 2 ], [ 2, 1, 4, 4 ], [ 4, 2, 4, 4 ], [ 4, 2, 5, 6 ], [ 4, 2, 6, 6 ], [ 5, 2, 8, 8 ], [ 5, 4, 8, 8 ], [ 5, 4, 11, 8 ], [ 8, 4, 11, 10 ], [ 9, 4, 16, 12 ], [ 9, 4, 16, 16 ], [ 10, 6, 18, 12 ], [ 10, 6, 16, 17 ], [ 11, 6, 19, 16 ], [ 13, 6, 21, 18 ], [ 14, 7, 25, 21 ], [ 16, 8, 25, 20 ], [ 17, 8, 25, 23 ], [ 17, 9, 34, 23 ], [ 18, 9, 30, 25 ], [ 20, 10, 32, 27 ], [ 21, 12, 35, 29 ], [ 23, 12, 37, 34 ], [ 25, 12, 40, 34 ], [ 26, 13, 42, 35 ], [ 28, 14, 45, 38 ], [ 29, 15, 48, 40 ], [ 31, 16, 51, 43 ], [ 33, 17, 54, 45 ], [ 35, 18, 57, 48 ], [ 37, 19, 60, 51 ], [ 38, 19, 63, 53 ], [ 40, 20, 66, 56 ], [ 43, 21, 70, 59 ], [ 45, 22, 74, 62 ], [ 47, 24, 77, 65 ], [ 49, 25, 81, 68 ] ];
+
+const s = [ 0, 21, 25, 29, 33, 37, 41, 45, 49, 53, 57, 61, 65, 69, 73, 77, 81, 85, 89, 93, 97, 101, 105, 109, 113, 117, 121, 125, 129, 133, 137, 141, 145, 149, 153, 157, 161, 165, 169, 173, 177 ];
+
+const c = [ [], [], [ 4, 16 ], [ 4, 20 ], [ 4, 24 ], [ 4, 28 ], [ 4, 32 ], [ 4, 20, 36 ], [ 4, 22, 40 ], [ 4, 24, 44 ], [ 4, 26, 48 ], [ 4, 28, 52 ], [ 4, 30, 56 ], [ 4, 32, 60 ], [ 4, 24, 44, 64 ], [ 4, 24, 46, 68 ], [ 4, 24, 48, 72 ], [ 4, 28, 52, 76 ], [ 4, 28, 54, 80 ], [ 4, 28, 56, 84 ], [ 4, 32, 60, 88 ], [ 4, 26, 48, 70, 92 ], [ 4, 24, 48, 72, 96 ], [ 4, 28, 52, 76, 100 ], [ 4, 26, 52, 78, 104 ], [ 4, 30, 56, 82, 108 ], [ 4, 28, 56, 84, 112 ], [ 4, 32, 60, 88, 116 ], [ 4, 24, 48, 72, 96, 120 ], [ 4, 28, 52, 76, 100, 124 ], [ 4, 24, 50, 76, 102, 128 ], [ 4, 28, 54, 80, 106, 132 ], [ 4, 32, 58, 84, 110, 136 ], [ 4, 28, 56, 84, 112, 140 ], [ 4, 32, 60, 88, 116, 144 ], [ 4, 28, 52, 76, 100, 124, 148 ], [ 4, 22, 48, 74, 100, 126, 152 ], [ 4, 26, 52, 78, 104, 130, 156 ], [ 4, 30, 56, 82, 108, 134, 160 ], [ 4, 24, 52, 80, 108, 136, 164 ], [ 4, 28, 56, 84, 112, 140, 168 ] ];
+
+const makeSegments = (t, e, r) => {
+  const s = n[e] - o[e][r];
+  const c = new Uint8Array(s);
+  let f = 0;
+  let l = 0;
+  if (e > 9) {
+    const e = 65535 & t.byteLength;
+    c[0] = 64 | e >>> 12 & 15;
+    c[1] = e >>> 4 & 255;
+    f = (15 & e) << 4;
+    l = 2;
+  } else {
+    const e = 255 & t.byteLength;
+    c[0] = 64 | e >>> 4 & 15;
+    f = (15 & e) << 4;
+    l = 1;
+  }
+  let i = 0;
+  while (i + 1 < t.byteLength) {
+    const e = t[i++] << 8 | t[i++];
+    c[l++] = f | e >>> 12;
+    c[l++] = e >>> 4 & 255;
+    f = e << 4 & 240;
+  }
+  if (i < t.byteLength) {
+    c[l++] = f | t[i] >>> 4;
+    f = t[i] << 4 & 240;
+  }
+  c[l++] = f;
+  for (let t = 0; l < s; t++) {
+    c[l++] = 1 & t ? 17 : 236;
+  }
+  return c;
+};
+
+const getBestVersion = (t, e) => {
+  for (let r = 1; r <= 40; r++) {
+    let s = n[r] - o[r][e];
+    s -= r > 9 ? 3 : 2;
+    if (s >= t.byteLength) {
+      return r;
+    }
+  }
+  throw new RangeError("Bytes exceed max length");
+};
+
+const encodeData = (t, e, n) => {
+  const s = t.byteLength + o[e][n];
+  const c = r[e][n];
+  const f = c - s % c;
+  const l = t.byteLength / c | 0;
+  const i = (s / c | 0) - l;
+  const y = t.byteLength;
+  const a = new Uint8Array(s);
+  for (let e = 0, n = 0; e < c; e++) {
+    const o = e < f ? l : l + 1;
+    const r = encodeRS(t.subarray(n, n + o), i);
+    for (let r = 0; r < o; r++) {
+      a[r < l ? r * c + e : l * c + (e - f)] = t[n + r];
+    }
+    for (let t = 0; t < i; t++) {
+      a[y + t * c + e] = r[t];
+    }
+    n += o;
+  }
+  return a;
+};
+
+const setSquare = (t, e, n, o, r) => {
+  const s = (n + r) * e;
+  for (let c = n * e; c < s; c += e) {
+    t.fill(1, c + o, c + o + r);
+  }
+};
+
+const setPattern = (t, e, n, o, r) => {
+  const s = n * e + o;
+  for (let n = 0; n < r; n++) {
+    for (let o = 0; o < r; o++) {
+      const c = o < r - 1 - o ? o : r - 1 - o;
+      const f = n < r - 1 - n ? n : r - 1 - n;
+      t[s + n * e + o] = 1 !== (c < f ? c : f) ? 1 : 0;
+    }
+  }
+};
+
+const writeFinderPatterns = (t, e, n) => {
+  const o = n - 7;
+  setPattern(t, n, 0, 0, 7);
+  setPattern(t, n, o, 0, 7);
+  setPattern(t, n, 0, o, 7);
+  setSquare(e, n, 0, 0, 8);
+  setSquare(e, n, o - 1, 0, 8);
+  setSquare(e, n, 0, o - 1, 8);
+};
+
+const writeAlignmentPatterns = (t, e, n, o) => {
+  const r = c[o];
+  for (let o = 0; o < r.length; o++) {
+    const s = r[o];
+    for (let c = 0; c < r.length; c++) {
+      if ((o || c % (r.length - 1)) && (c || o % (r.length - 1))) {
+        const o = r[c];
+        setPattern(t, n, s, o, 5);
+        setSquare(e, n, s, o, 5);
+      }
+    }
+  }
+};
+
+const writeTimingPatterns = (t, e, n) => {
+  const o = n - 7;
+  for (let r = 8; r < o; r++) {
+    const o = r * n + 6;
+    if (!e[o]) {
+      e[o] = 1;
+      t[o] = (r + 1) % 2;
+    }
+    const s = 6 * n + r;
+    if (!e[s]) {
+      e[s] = 1;
+      t[s] = (r + 1) % 2;
+    }
+  }
+};
+
+const reserveFormatInfo = (t, e) => {
+  const n = e - 7 - 1;
+  t[8 * e + 8] = 1;
+  for (let o = 0; o < 8; o++) {
+    t[o * e + 8] = 1;
+    t[8 * e + o] = 1;
+    t[(n + o) * e + 8] = 1;
+    t[8 * e + n + o] = 1;
+  }
+};
+
+const reserveVersionInfo = (t, e, n) => {
+  if (n >= 7) {
+    const n = e - 7 - 4;
+    for (let o = 0; o < 6; o++) {
+      for (let r = 0; r < 3; r++) {
+        t[(n + r) * e + o] = 1;
+        t[o * e + n + r] = 1;
+      }
+    }
+  }
+};
+
+const writeData = (t, e, n, o) => {
+  let r = 0;
+  let s = n - 1;
+  let c = -1;
+  let f = 7;
+  while (r < o.byteLength) {
+    if (6 === s) {
+      s--;
+    }
+    for (let l = 0; l < n; l++) {
+      for (let i = 0; i < 2; i++) {
+        const y = s - i;
+        const a = -1 === c ? n - l - 1 : l;
+        if (e[a * n + y]) {
+          continue;
+        }
+        t[a * n + y] = o[r] >>> f & 1;
+        if (0 === f--) {
+          f = 7;
+          if (++r >= o.byteLength) {
+            return;
+          }
+        }
+      }
+    }
+    c = -c;
+    s -= 2;
+  }
+};
+
+const xorPatternN0 = (t, e, n) => {
+  for (let o = 0, r = 0; o < n; o++, r += n) {
+    for (let s = 0; s < n; s++) {
+      const n = r + s;
+      if (!(e[n] || o + s & 1)) {
+        t[n] ^= 1;
+      }
+    }
+  }
+};
+
+const xorPatternN1 = (t, e, n) => {
+  for (let o = 0, r = 0; o < n; o++, r += n) {
+    for (let s = 0; s < n; s++) {
+      const n = r + s;
+      if (!(e[n] || 1 & o)) {
+        t[n] ^= 1;
+      }
+    }
+  }
+};
+
+const xorPatternN2 = (t, e, n) => {
+  for (let o = 0, r = 0; o < n; o++, r += n) {
+    for (let o = 0; o < n; o++) {
+      const n = r + o;
+      if (!e[n] && o % 3 == 0) {
+        t[n] ^= 1;
+      }
+    }
+  }
+};
+
+const xorPatternN3 = (t, e, n) => {
+  for (let o = 0, r = 0; o < n; o++, r += n) {
+    for (let s = 0; s < n; s++) {
+      const n = r + s;
+      if (!e[n] && (o + s) % 3 == 0) {
+        t[n] ^= 1;
+      }
+    }
+  }
+};
+
+const xorPatternN4 = (t, e, n) => {
+  for (let o = 0, r = 0; o < n; o++, r += n) {
+    const s = o / 2 | 0;
+    for (let o = 0; o < n; o++) {
+      const n = r + o;
+      if (!(e[n] || s + (o / 3 | 0) & 1)) {
+        t[n] ^= 1;
+      }
+    }
+  }
+};
+
+const xorPatternN5 = (t, e, n) => {
+  for (let o = 0, r = 0; o < n; o++, r += n) {
+    for (let s = 0; s < n; s++) {
+      const n = r + s;
+      const c = o * s;
+      if (!e[n] && (1 & c) + c % 3 == 0) {
+        t[n] ^= 1;
+      }
+    }
+  }
+};
+
+const xorPatternN6 = (t, e, n) => {
+  for (let o = 0, r = 0; o < n; o++, r += n) {
+    for (let s = 0; s < n; s++) {
+      const n = r + s;
+      const c = o * s;
+      if (!e[n] && ((1 & c) + c % 3) % 2 == 0) {
+        t[n] ^= 1;
+      }
+    }
+  }
+};
+
+const xorPatternN7 = (t, e, n) => {
+  for (let o = 0, r = 0; o < n; o++, r += n) {
+    for (let s = 0; s < n; s++) {
+      const n = r + s;
+      if (!(e[n] || o * s % 3 + (o + s & 1) & 1)) {
+        t[n] ^= 1;
+      }
+    }
+  }
+};
+
+const xorPattern = (t, e, n, o) => {
+  switch (o) {
+   case 0:
+    return xorPatternN0(t, e, n);
+
+   case 1:
+    return xorPatternN1(t, e, n);
+
+   case 2:
+    return xorPatternN2(t, e, n);
+
+   case 3:
+    return xorPatternN3(t, e, n);
+
+   case 4:
+    return xorPatternN4(t, e, n);
+
+   case 5:
+    return xorPatternN5(t, e, n);
+
+   case 6:
+    return xorPatternN6(t, e, n);
+
+   case 7:
+    return xorPatternN7(t, e, n);
+  }
+};
+
+const computePenalty = (t, e) => {
+  let n = 0;
+  let o = 0;
+  for (let r = 0; r < e; r++) {
+    let s = 1;
+    let c = 1;
+    let f = 0;
+    let l = 0;
+    for (let i = 0; i < e; i++) {
+      const y = r * e + i;
+      const a = i * e + r;
+      o += t[y];
+      if (i > 0) {
+        if (t[y - 1] === t[y]) {
+          s++;
+        } else {
+          if (s >= 5) {
+            n += s - 5 + 3;
+          }
+          s = 1;
+        }
+        if (t[a - e] === t[a]) {
+          c++;
+        } else {
+          if (c >= 5) {
+            n += c - 5 + 3;
+          }
+          c = 1;
+        }
+      }
+      if (r < e - 1 && i < e - 1 && t[y] === t[y + 1] && t[y] === t[y + e] && t[y] === t[y + e + 1]) {
+        n += 3;
+      }
+      f = f << 1 & 2047 | t[y];
+      l = l << 1 & 2047 | t[a];
+      if (i >= 10) {
+        if (1488 === f || 93 === f) {
+          n += 40;
+        }
+        if (1488 === l || 93 === l) {
+          n += 40;
+        }
+      }
+    }
+    if (s >= 5) {
+      n += s - 5 + 3;
+    }
+    if (c >= 5) {
+      n += c - 5 + 3;
+    }
+  }
+  const r = 100 * Math.abs(o / t.byteLength - .5);
+  n += 10 * Math.floor(r / 5);
+  return n;
+};
+
+const applyBestPattern = (t, e, n) => {
+  let o = 0;
+  let r = 0;
+  const s = new Uint8Array(t.byteLength);
+  for (let c = 0; c <= 7; c += 1) {
+    s.set(t);
+    xorPattern(s, e, n, c);
+    const f = computePenalty(s, n);
+    if (0 === c || f < o) {
+      o = f;
+      r = c;
+    }
+  }
+  xorPattern(t, e, n, r);
+  return r;
+};
+
+const encodeFormatInfo = (t, e) => {
+  const n = (t << 3 | e) << 10;
+  let o = n;
+  for (let t = 0; t < 5; t++) {
+    if (o & 1 << 14 - t) {
+      o ^= 1335 << 4 - t;
+    }
+  }
+  return 21522 ^ (o | n);
+};
+
+const writeFormatInfo = (t, e, n, o) => {
+  const r = encodeFormatInfo(n, o);
+  let s = 14;
+  for (let n = 0; n < 6; n++) {
+    t[8 * e + n] = r >> s-- & 1;
+  }
+  t[8 * e + 7] = r >> s-- & 1;
+  t[8 * e + 8] = r >> s-- & 1;
+  t[7 * e + 8] = r >> s-- & 1;
+  for (let n = 0; n < 6; n++) {
+    t[(5 - n) * e + 8] = r >> s-- & 1;
+  }
+  s = 14;
+  for (let n = 0; n < 7; n++) {
+    t[(e - 1 - n) * e + 8] = r >> s-- & 1;
+  }
+  t[(e - 8) * e + 8] = 1;
+  for (let n = 0; n < 8; n++) {
+    t[8 * e + e - 8 + n] = r >> s-- & 1;
+  }
+};
+
+const encodeVersionInfo = t => {
+  const e = t << 12;
+  let n = e;
+  for (let t = 0; t < 6; t++) {
+    if (n & 1 << 17 - t) {
+      n ^= 7973 << 5 - t;
+    }
+  }
+  return n | e;
+};
+
+const writeVersionInfo = (t, e, n) => {
+  if (n >= 7) {
+    const o = encodeVersionInfo(n);
+    for (let n = 0; n < 6; n++) {
+      for (let r = 0; r < 3; r++) {
+        const s = o >>> 3 * n + r & 1;
+        t[(e - 11 + r) * e + n] = s;
+        t[n * e + e - 11 + r] = s;
+      }
+    }
+  }
+};
+
+const encodeBytes = (t, e) => {
+  const n = getBestVersion(t, e);
+  const o = makeSegments(t, n, e);
+  const r = encodeData(o, n, e);
+  const c = s[n];
+  const f = new Uint8Array(c * c);
+  const l = new Uint8Array(c * c);
+  writeFinderPatterns(f, l, c);
+  writeAlignmentPatterns(f, l, c, n);
+  writeTimingPatterns(f, l, c);
+  reserveFormatInfo(l, c);
+  reserveVersionInfo(l, c, n);
+  writeData(f, l, c, r);
+  const i = applyBestPattern(f, l, c);
+  writeFormatInfo(f, c, e, i);
+  writeVersionInfo(f, c, n);
+  return f;
+};
+
+const f = new TextEncoder;
+
+exports.toQR = (t, e = 1) => {
+  const n = "string" == typeof t ? f.encode(t) : t;
+  return encodeBytes(n, e);
+};
+
+return exports.toQR; })();
+</script>
 <script>
 let token = localStorage.getItem('pb_token') || '';
 let currentId = null, audioUrl = null, timer = null;
+let currentTab = 'recordings';
+let routesCache = [], editingRouteId = null, routingSupported = null;
 
 const $ = id => document.getElementById(id);
-const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc = s => (s ?? '').toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// For string args inside inline onclick="fn('…')" handlers: JS-escape, then HTML-escape.
+const jsArg = s => esc((s ?? '').toString().replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
 
 async function api(path, opts = {}) {
   const r = await fetch('/api/v1' + path, {
@@ -116,6 +809,11 @@ async function api(path, opts = {}) {
   });
   if (r.status === 401) { showGate(); throw new Error('unauthorized'); }
   return r;
+}
+async function apiJson(path, opts) {
+  const r = await api(path, opts);
+  if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
+  return r.status === 204 ? null : r.json();
 }
 
 function showGate() { $('gate').hidden = false; }
@@ -140,6 +838,17 @@ function fmtDur(s) {
 function fmtSize(b) { return b >= 1e6 ? (b/1e6).toFixed(1) + ' MB' : Math.round(b/1e3) + ' kB'; }
 function fmtDate(iso) { return iso ? new Date(iso).toLocaleString() : ''; }
 
+/* ---------- tabs ---------- */
+function showTab(t) {
+  currentTab = t;
+  document.body.classList.toggle('tab-automations', t === 'automations');
+  $('auto-pane').classList.toggle('open', t === 'automations');
+  $('tab-rec').classList.toggle('active', t === 'recordings');
+  $('tab-auto').classList.toggle('active', t === 'automations');
+  if (t === 'automations') loadAutomations();
+}
+
+/* ---------- recordings (existing) ---------- */
 async function loadStats() {
   try {
     const s = await (await api('/stats')).json();
@@ -154,7 +863,7 @@ async function loadList() {
   const st = encodeURIComponent($('statusFilter').value);
   const r = await (await api(`/recordings?limit=200&q=${q}&status=${st}`)).json();
   $('items').innerHTML = r.recordings.map(rec => `
-    <div class="item ${rec.id === currentId ? 'active' : ''}" onclick="openRec('${rec.id}')">
+    <div class="item ${rec.id === currentId ? 'active' : ''}" onclick="openRec('${jsArg(rec.id)}')">
       <div class="row1">
         <span class="title">${esc(titleOf(rec))}</span>
         <span class="chip ${esc(rec.status)}">${esc(rec.status)}</span>
@@ -194,13 +903,15 @@ async function openRec(id) {
           ? transcript.segments.map(s => `<div><span class="seg">${fmtDur(s.start)}</span>${esc(s.text)}</div>`).join('')
           : esc(transcript.text)}</div></div>`
       : rec.status !== 'done' ? `<div class="section"><h3>Transcript</h3><div class="body" style="color:var(--muted)">Not ready (${esc(rec.status)}).</div></div>` : ''}
+    <div id="routing-box"></div>
     <div class="actions">
-      <button onclick="retranscribe('${rec.id}')">Re-transcribe</button>
-      <button onclick="downloadAudio('${rec.id}', '${esc(rec.filename)}')">Download audio</button>
-      <button class="danger" onclick="del('${rec.id}')">Delete</button>
+      <button onclick="retranscribe('${jsArg(rec.id)}')">Re-transcribe</button>
+      <button onclick="downloadAudio('${jsArg(rec.id)}', '${jsArg(rec.filename)}')">Download audio</button>
+      <button class="danger" onclick="del('${jsArg(rec.id)}')">Delete</button>
       <button onclick="$('detail').classList.remove('open')" style="margin-left:auto">Close</button>
     </div>`;
   loadAudio(rec.id);
+  loadRoutingSection(rec.id);
   loadList();
 }
 
@@ -226,10 +937,327 @@ async function del(id) {
   loadList(); loadStats();
 }
 
+/* ---------- routing: recording detail section ---------- */
+function actionLabel(rt) {
+  const cfg = rt?.action_config || {};
+  if (rt?.action_type === 'webhook') return 'Webhook → ' + (cfg.url || '(no url)');
+  if (rt?.action_type === 'markdown') return 'Markdown → ' + (cfg.folder || '(no folder)') + '/';
+  return 'Decision only (log it)';
+}
+function renderDecision(run) {
+  const routes = run?.decision?.routes || [];
+  let html = '';
+  if (run?.error) html += `<div class="err">${esc(run.error)}</div>`;
+  if (routes.length) {
+    html += routes.map(m => `<div>&rarr; <b>${esc(m?.name)}</b>${
+      m?.reason ? ` <span class="why">&mdash; ${esc(m.reason)}</span>` : ''}</div>`).join('');
+  } else if (!run?.error) {
+    html += '<div class="muted">no routes matched</div>';
+  }
+  return html;
+}
+function renderDelivery(d, ctx) {
+  const st = d?.status === 'ok' ? 'ok' : 'failed';
+  return `<div class="dlv">
+    <span class="d-name">${esc(d?.route_name ?? 'route')}</span>
+    <span class="chip ${st}">${st}</span>
+    ${d?.attempts > 1 ? `<span class="muted" style="font-size:12px">${esc(d.attempts)} attempts</span>` : ''}
+    <span class="sp"></span>
+    <button class="small" onclick="retryDelivery('${jsArg(d?.id)}', '${jsArg(ctx)}')">Retry</button>
+    ${st === 'failed' && d?.last_error ? `<div class="d-err">${esc(d.last_error)}</div>` : ''}
+  </div>`;
+}
+
+async function loadRoutingSection(id) {
+  if (id !== currentId) return;   // user moved on to another recording
+  const box = $('routing-box');
+  if (!box) return;
+  let data;
+  try { data = await apiJson(`/recordings/${id}/routing`); if (id !== currentId) return; }
+  catch (e) {
+    if (id !== currentId) return;
+    if (e.status === 404) { box.innerHTML = ''; return; }  // backend without routing yet
+    box.innerHTML = `<div class="section"><h3>Routing</h3><div class="body err">Failed to load routing info.</div></div>`;
+    return;
+  }
+  const runs = data?.runs || [];
+  const last = runs.length ? runs.reduce((a, b) =>
+    new Date(b?.created_at || 0) > new Date(a?.created_at || 0) ? b : a) : null;
+  const deliveries = (last?.deliveries?.length ? last.deliveries : data?.deliveries) || [];
+  box.innerHTML = `
+    <div class="section"><h3>Routing</h3>
+      <div class="body" style="white-space:normal">
+        ${last ? `
+          <div class="muted" style="font-size:12.5px;margin-bottom:6px">
+            Last run ${fmtDate(last.created_at)}${last.model ? ' · ' + esc(last.model) : ''}</div>
+          ${renderDecision(last)}
+          ${deliveries.map(d => renderDelivery(d, id)).join('')}`
+        : '<div class="muted">Not routed yet.</div>'}
+        <div class="actions" style="margin-top:12px">
+          <button id="run-routing-btn" onclick="runRouting('${jsArg(id)}')">Run routing</button>
+          <span id="routing-msg" class="muted" style="font-size:13px"></span>
+        </div>
+      </div>
+    </div>`;
+}
+async function runRouting(id) {
+  const btn = $('run-routing-btn'), msg = $('routing-msg');
+  if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+  try {
+    const r = await api(`/recordings/${id}/route`, { method: 'POST' });
+    if (r.status === 409) {
+      if (msg) { msg.textContent = 'No transcript yet — routing needs a finished transcript.'; msg.className = 'err'; }
+      if (btn) { btn.disabled = false; btn.textContent = 'Run routing'; }
+      return;
+    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    await loadRoutingSection(id);
+  } catch {
+    if (msg) { msg.textContent = 'Routing run failed.'; msg.className = 'err'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Run routing'; }
+  }
+}
+async function retryDelivery(id, ctx) {
+  try { await api(`/deliveries/${id}/retry`, { method: 'POST' }); } catch {}
+  if (ctx === 'log') loadLog(); else loadRoutingSection(ctx);
+}
+
+/* ---------- automations tab ---------- */
+async function loadAutomations() {
+  await loadRouterStatus();
+  if (routingSupported === false) {
+    $('auto-body').hidden = true;
+    return;
+  }
+  $('auto-body').hidden = false;
+  loadRoutes(); loadLog();
+}
+
+async function loadRouterStatus() {
+  const el = $('router-banner');
+  try {
+    const s = await apiJson('/router/status');
+    routingSupported = true;
+    if (s?.enabled && s?.configured) {
+      el.innerHTML = `<div class="banner good"><span class="bdot"></span>
+        Routing with <b>&nbsp;${esc(s.model || 'unknown model')}</b></div>`;
+    } else {
+      el.innerHTML = `<div class="banner warn"><span class="bdot"></span>
+        <span>Routing disabled — set <code>PB_ROUTER_ENABLED</code> / router endpoint to turn it on.</span></div>`;
+    }
+  } catch (e) {
+    if (e.status === 404) {
+      routingSupported = false;
+      el.innerHTML = `<div class="banner warn"><span class="bdot"></span>
+        This backend does not support routing yet. Update the server to use automations.</div>`;
+    } else if (e.message !== 'unauthorized') {
+      el.innerHTML = `<div class="banner warn"><span class="bdot"></span>
+        Could not load router status.</div>`;
+    }
+  }
+}
+
+async function loadRoutes() {
+  const el = $('routes-list');
+  try {
+    const data = await apiJson('/routes');
+    routesCache = data?.routes || [];
+  } catch (e) {
+    if (e.status === 404) { routingSupported = false; $('auto-body').hidden = true; return; }
+    el.innerHTML = '<div class="empty-note err">Failed to load routes.</div>';
+    return;
+  }
+  el.innerHTML = routesCache.map(rt => `
+    <div class="route-card ${rt.enabled ? '' : 'disabled'}">
+      <div class="r-top">
+        <span class="switch" title="${rt.enabled ? 'Enabled' : 'Disabled'}">
+          <input type="checkbox" ${rt.enabled ? 'checked' : ''} onchange="toggleRoute('${jsArg(rt.id)}', this.checked)">
+          <span class="tr"></span>
+        </span>
+        <span class="r-name">${esc(rt.name)}</span>
+        <span class="chip neutral">${esc(rt.action_type)}</span>
+      </div>
+      <div class="r-desc">${esc(rt.description)}</div>
+      <div class="r-action">${esc(actionLabel(rt))}</div>
+      <div class="r-btns">
+        <button class="small" onclick="openRouteEditor('${jsArg(rt.id)}')">Edit</button>
+        <button class="small danger" onclick="deleteRoute('${jsArg(rt.id)}')">Delete</button>
+      </div>
+    </div>`).join('') ||
+    '<div class="empty-note">No routes yet. Add one to start sorting recordings automatically.</div>';
+}
+
+function routePayload(rt) {
+  return { name: rt.name, description: rt.description, action_type: rt.action_type,
+           action_config: rt.action_config || {}, enabled: rt.enabled };
+}
+async function toggleRoute(id, enabled) {
+  const rt = routesCache.find(r => String(r.id) === String(id));
+  if (!rt) return;
+  try {
+    await apiJson('/routes/' + id, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...routePayload(rt), enabled })
+    });
+  } catch {}
+  loadRoutes();
+}
+async function deleteRoute(id) {
+  const rt = routesCache.find(r => String(r.id) === String(id));
+  if (!confirm(`Delete route "${rt ? rt.name : id}"? Its past activity stays in the log.`)) return;
+  try { await api('/routes/' + id, { method: 'DELETE' }); } catch {}
+  loadRoutes();
+}
+
+/* route editor modal */
+function openRouteEditor(id) {
+  editingRouteId = id;
+  const rt = id != null ? routesCache.find(r => String(r.id) === String(id)) : null;
+  $('route-modal-title').textContent = rt ? 'Edit route' : 'Add route';
+  $('rt-name').value = rt?.name || '';
+  $('rt-desc').value = rt?.description || '';
+  $('rt-action').value = rt?.action_type || 'webhook';
+  $('rt-url').value = rt?.action_config?.url || '';
+  $('rt-auth').value = rt?.action_config?.auth_header || '';
+  $('rt-folder').value = rt?.action_config?.folder || '';
+  $('rt-enabled').checked = rt ? !!rt.enabled : true;
+  $('rt-err').textContent = '';
+  routeActionChanged();
+  $('route-overlay').hidden = false;
+  $('rt-name').focus();
+}
+function routeActionChanged() {
+  const t = $('rt-action').value;
+  $('rt-webhook-fields').hidden = t !== 'webhook';
+  $('rt-markdown-fields').hidden = t !== 'markdown';
+}
+async function saveRoute() {
+  const name = $('rt-name').value.trim();
+  const description = $('rt-desc').value.trim();
+  const action_type = $('rt-action').value;
+  const errEl = $('rt-err');
+  if (!name) { errEl.textContent = 'Name is required.'; return; }
+  if (name.length > 64) { errEl.textContent = 'Name must be 64 characters or fewer.'; return; }
+  if (!description) { errEl.textContent = 'Description is required — the router matches on it.'; return; }
+  let action_config = {};
+  if (action_type === 'webhook') {
+    const url = $('rt-url').value.trim();
+    if (!url) { errEl.textContent = 'Webhook URL is required.'; return; }
+    action_config = { url };
+    const auth = $('rt-auth').value.trim();
+    if (auth) {
+      if (!/^[^:\s]+\s*:\s*.+$/.test(auth)) { errEl.textContent = 'Auth header must look like "Name: value".'; return; }
+      action_config.auth_header = auth;
+    }
+  } else if (action_type === 'markdown') {
+    const folder = $('rt-folder').value.trim().replace(/^\/+|\/+$/g, '');
+    if (!folder) { errEl.textContent = 'Folder is required.'; return; }
+    if (folder.split('/').includes('..')) { errEl.textContent = 'Folder must be a relative path without "..".'; return; }
+    action_config = { folder };
+  }
+  const body = JSON.stringify({ name, description, action_type, action_config,
+                                enabled: $('rt-enabled').checked });
+  const saveBtn = $('rt-save');
+  saveBtn.disabled = true; errEl.textContent = '';
+  try {
+    await apiJson(editingRouteId != null ? '/routes/' + editingRouteId : '/routes', {
+      method: editingRouteId != null ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' }, body
+    });
+    closeModals(); loadRoutes();
+  } catch (e) {
+    errEl.textContent = e.status === 404 ? 'Backend does not support routing yet.'
+      : 'Save failed (' + (e.status || 'network') + ').';
+  } finally { saveBtn.disabled = false; }
+}
+
+/* activity log */
+async function loadLog() {
+  const el = $('log-list');
+  let data;
+  try { data = await apiJson('/routing/log?limit=50'); }
+  catch (e) {
+    el.innerHTML = e.status === 404
+      ? '<div class="empty-note">This backend does not support routing yet.</div>'
+      : '<div class="empty-note err">Failed to load activity log.</div>';
+    return;
+  }
+  const runs = (data?.runs || []).slice().sort((a, b) =>
+    new Date(b?.created_at || 0) - new Date(a?.created_at || 0));
+  el.innerHTML = runs.map(run => {
+    const rec = run?.recording || {};
+    const title = rec.filename || (run?.recording_id ? 'Recording ' + run.recording_id : 'Recording');
+    return `<div class="log-entry">
+      <div class="l-head">
+        <span class="l-title">${esc(title)}</span>
+        ${run?.model ? `<span class="chip neutral">${esc(run.model)}</span>` : ''}
+        <span class="l-time">${fmtDate(run?.created_at)}</span>
+      </div>
+      ${rec.started_at ? `<div class="muted" style="font-size:12.5px">recorded ${fmtDate(rec.started_at)}</div>` : ''}
+      <div class="l-dec">${renderDecision(run)}</div>
+      ${(run?.deliveries || []).map(d => renderDelivery(d, 'log')).join('')}
+    </div>`;
+  }).join('') || '<div class="empty-note">No routing activity yet.</div>';
+}
+
+/* ---------- connect-a-phone modal ---------- */
+function qrSvg(text, size) {
+  const m = toQR(text, 0);           // EC level M
+  const n = Math.round(Math.sqrt(m.length));
+  let d = '';
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++)
+    if (m[y * n + x]) d += `M${x} ${y}h1v1h-1z`;
+  const q = 4; // quiet zone
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${-q} ${-q} ${n + 2*q} ${n + 2*q}"` +
+    ` width="${size}" height="${size}" shape-rendering="crispEdges" role="img" aria-label="Connection QR code">` +
+    `<rect x="${-q}" y="${-q}" width="${n + 2*q}" height="${n + 2*q}" fill="#ffffff"/>` +
+    `<path d="${d}" fill="#000000"/></svg>`;
+}
+function openConnect() {
+  const payload = JSON.stringify({ v: 1, url: location.origin, token });
+  try { $('qr-holder').innerHTML = qrSvg(payload, 232); }
+  catch { $('qr-holder').innerHTML = '<div class="err">Could not generate QR code.</div>'; }
+  $('cp-url').value = location.origin;
+  $('cp-token').value = token;
+  $('connect-overlay').hidden = false;
+}
+async function copyField(id, btn) {
+  const inp = $(id);
+  inp.select();
+  let ok = false;
+  try { await navigator.clipboard.writeText(inp.value); ok = true; }
+  catch { try { ok = document.execCommand('copy'); } catch {} }
+  const old = btn.textContent;
+  btn.textContent = ok ? 'Copied' : 'Select + copy';
+  setTimeout(() => { btn.textContent = old; }, 1500);
+}
+
+/* ---------- modal plumbing ---------- */
+function closeModals() {
+  $('route-overlay').hidden = true;
+  $('connect-overlay').hidden = true;
+  $('qr-holder').innerHTML = '';   // don't keep token-bearing QR in the DOM
+  $('cp-token').value = '';
+}
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (!$('route-overlay').hidden || !$('connect-overlay').hidden) closeModals();
+    else $('detail').classList.remove('open');
+  }
+});
+document.querySelectorAll('.overlay').forEach(ov =>
+  ov.addEventListener('mousedown', e => { if (e.target === ov) closeModals(); }));
+
+/* ---------- init / polling ---------- */
 async function init() {
   await loadStats(); await loadList();
   clearInterval(timer);
-  timer = setInterval(() => { loadStats(); if (!document.hidden) loadList(); }, 15000);
+  timer = setInterval(() => {
+    loadStats();
+    if (document.hidden) return;
+    if (currentTab === 'recordings') loadList();
+    else if (routingSupported !== false) loadLog();
+  }, 15000);
 }
 
 (async () => {
