@@ -1,0 +1,78 @@
+# agent-runner example config.
+# Copy next to agent_runner.py, edit, and run:
+#   python3 agent_runner.py --config config.toml
+
+[server]
+# Bind address. When plaud-bridge runs in Docker and this runner runs on the
+# host, 127.0.0.1 is NOT reachable from the container -- bind to the Docker
+# network's gateway IP (see README.md) or 0.0.0.0. Inside the runner
+# container, use 0.0.0.0.
+listen = "127.0.0.1:8091"
+# Shared secret; send as "X-Runner-Token: <token>" (or "Authorization:
+# Bearer <token>" on the chat endpoint). Generate: openssl rand -hex 24
+token = "CHANGE-ME"
+# queue_size = 16          # bounded job queue; 503 when full
+# log_file = "/var/log/agent-runner.jobs.jsonl"   # default: next to this file
+
+# ---------------------------------------------------------------------------
+# Webhook actions. Action names match plaud-bridge route names;
+# [actions.default] is the fallback for any route without its own action.
+#
+# Each action runs EITHER an ACP agent (`agent = [...]` -- the runner speaks
+# the Agent Client Protocol over the process's stdio, so it works with any
+# ACP agent on your local subscription auth, no API keys) OR a plain argv
+# (`command = [...]`) for non-agent work like appending to a file.
+#
+# SECURITY: `agent`/`command` must be argv LISTS (no shell is ever involved),
+# and only the known {tokens} below are substituted, in a single pass --
+# transcript content can never add arguments, shell syntax, or JSON-RPC.
+#
+# Tokens available in `prompt_template` and command args:
+#   {text} {summary} {route_name} {route_description}
+#   {recording_id} {filename} {started_at}
+#   {prompt}  -> the rendered prompt_template
+#   {file}    -> temp file path, when write_transcript_to_file = true
+
+# --- Claude Code over ACP (npm i -g @zed-industries/claude-code-acp) ---
+[actions.default]
+agent = ["claude-code-acp"]
+prompt_template = """You received a voice memo transcript. Follow the instruction.
+
+Instruction: {route_description}
+
+Transcript:
+{text}"""
+timeout_seconds = 600
+cwd = "/home/user"
+auto_approve = true          # answer session/request_permission with allow
+# model = "haiku"            # optional: sent via session/set_model
+# env = { CLAUDE_CONFIG_DIR = "/home/user/.claude" }   # extra env for the agent
+
+# --- OpenAI Codex over ACP ---
+[actions."codex-task"]
+agent = ["codex", "acp"]
+prompt_template = "Voice memo instruction: {route_description}\n\nTranscript:\n{text}"
+timeout_seconds = 900
+cwd = "/home/user/projects"
+auto_approve = false         # permission requests are rejected
+
+# --- Plain argv, no agent: append transcript to a file via your own script ---
+# write_transcript_to_file writes {text} to a temp file and substitutes {file}.
+[actions."obsidian-note"]
+command = ["/usr/local/bin/my-append-script", "{file}"]
+write_transcript_to_file = true
+timeout_seconds = 30
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible chat shim: POST /v1/chat/completions runs a one-shot ACP
+# session and returns the agent's answer. Point plaud-bridge's AI router or
+# summarizer at it:
+#   PB_ROUTER_BASE_URL=http://<runner>:8091/v1
+#   PB_ROUTER_API_KEY=<this token>
+[chat]
+agent = ["claude-code-acp"]
+timeout_seconds = 120
+cwd = "/home/user"
+auto_approve = false         # chat must not touch files/tools
+# model = "haiku"
+# prompt_template default: "Answer directly. Do not use tools or modify files.\n\n{prompt}"
