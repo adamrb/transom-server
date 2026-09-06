@@ -741,3 +741,25 @@ def test_deleting_recording_cascades_routing_history(client, tmp_path):
     assert appmain.store.deliveries_for_recording(rec_id) == []
     assert appmain.store.router_runs_for_recording(rec_id) == []
     assert client.get("/api/v1/routing/log", headers=AUTH).json()["runs"] == []
+
+
+def test_store_upgrades_pre_router_run_id_database(tmp_path):
+    """Regression: opening a DB created before deliveries.router_run_id existed
+    must not fail on the index that references the migrated column."""
+    import sqlite3
+
+    db = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE deliveries (id TEXT PRIMARY KEY, recording_id TEXT, route_id TEXT,"
+        " route_name TEXT, status TEXT, attempts INTEGER, last_error TEXT, payload TEXT,"
+        " created_at TEXT);"
+    )
+    conn.commit()
+    conn.close()
+
+    from app.db import Store
+
+    store = Store(db)  # must not raise
+    cols = {r[1] for r in store._conn.execute("PRAGMA table_info(deliveries)")}
+    assert {"router_run_id", "action_type", "action_config"} <= cols

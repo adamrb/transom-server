@@ -65,6 +65,11 @@ CREATE TABLE IF NOT EXISTS deliveries (
     payload TEXT,
     created_at TEXT
 );
+"""
+
+# Created AFTER column migrations run — an index on a migrated column would
+# otherwise fail against a database created before the column existed.
+SCHEMA_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_deliveries_recording ON deliveries(recording_id);
 CREATE INDEX IF NOT EXISTS idx_deliveries_run ON deliveries(router_run_id);
 """
@@ -98,6 +103,7 @@ class Store:
                 for col, coltype in columns.items():
                     if col not in existing:
                         self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
+            self._conn.executescript(SCHEMA_INDEXES)
             self._conn.commit()
 
     def insert_recording(self, **fields) -> str:
