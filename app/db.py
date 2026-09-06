@@ -54,22 +54,33 @@ CREATE INDEX IF NOT EXISTS idx_router_runs_recording ON router_runs(recording_id
 CREATE TABLE IF NOT EXISTS deliveries (
     id TEXT PRIMARY KEY,
     recording_id TEXT,
+    router_run_id TEXT,
     route_id TEXT,
     route_name TEXT,
     status TEXT,
     attempts INTEGER,
     last_error TEXT,
+    action_type TEXT,
+    action_config TEXT,
     payload TEXT,
     created_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_deliveries_recording ON deliveries(recording_id);
+CREATE INDEX IF NOT EXISTS idx_deliveries_run ON deliveries(router_run_id);
 """
 
-# Columns added after the initial release; applied idempotently at startup so
-# existing databases upgrade in place.
+# Columns added after a table's initial release; applied idempotently at
+# startup so existing databases upgrade in place.
 MIGRATION_COLUMNS = {
-    "transcript_text": "TEXT",
-    "summary": "TEXT",
+    "recordings": {
+        "transcript_text": "TEXT",
+        "summary": "TEXT",
+    },
+    "deliveries": {
+        "router_run_id": "TEXT",
+        "action_type": "TEXT",
+        "action_config": "TEXT",
+    },
 }
 
 
@@ -82,10 +93,11 @@ class Store:
         self._lock = threading.Lock()
         with self._lock:
             self._conn.executescript(SCHEMA)
-            existing = {r[1] for r in self._conn.execute("PRAGMA table_info(recordings)")}
-            for col, coltype in MIGRATION_COLUMNS.items():
-                if col not in existing:
-                    self._conn.execute(f"ALTER TABLE recordings ADD COLUMN {col} {coltype}")
+            for table, columns in MIGRATION_COLUMNS.items():
+                existing = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+                for col, coltype in columns.items():
+                    if col not in existing:
+                        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coltype}")
             self._conn.commit()
 
     def insert_recording(self, **fields) -> str:
@@ -130,8 +142,12 @@ class Store:
         return [dict(r) for r in rows]
 
     def delete(self, rec_id: str) -> None:
+        # Cascade routing history: delivery payload snapshots contain the full
+        # transcript, so they must not outlive the recording.
         with self._lock:
             self._conn.execute("DELETE FROM recordings WHERE id = ?", (rec_id,))
+            self._conn.execute("DELETE FROM router_runs WHERE recording_id = ?", (rec_id,))
+            self._conn.execute("DELETE FROM deliveries WHERE recording_id = ?", (rec_id,))
             self._conn.commit()
 
     def stats(self) -> dict:
@@ -235,6 +251,28 @@ class Store:
                 f"UPDATE deliveries SET {sets} WHERE id = ?", [*fields.values(), delivery_id]
             )
             self._conn.commit()
+
+    def claim_delivery_retry(self, delivery_id: str) -> bool:
+        """Atomically move a failed delivery to 'pending' (incrementing its
+        attempt count) so concurrent retries cannot double-execute. Returns
+        False when the delivery is not currently 'failed'."""
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE deliveries SET status = 'pending', attempts = attempts + 1 "
+                "WHERE id = ? AND status = 'failed'",
+                (delivery_id,),
+            )
+            self._conn.commit()
+        return cur.rowcount == 1
+
+    def deliveries_for_run(self, run_id: str) -> "list[dict]":
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM deliveries WHERE router_run_id = ? "
+                "ORDER BY created_at DESC, rowid DESC",
+                (run_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def deliveries_for_recording(self, recording_id: str) -> "list[dict]":
         with self._lock:

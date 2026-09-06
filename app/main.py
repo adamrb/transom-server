@@ -455,7 +455,7 @@ async def router_status():
 async def routing_log(limit: int = Query(50, ge=1, le=200)):
     runs = []
     for run in store.list_router_runs(limit=limit):
-        run["deliveries"] = store.deliveries_for_recording(run["recording_id"])
+        run["deliveries"] = store.deliveries_for_run(run["id"])
         runs.append(_run_public(run))
     return {"runs": runs}
 
@@ -464,8 +464,12 @@ async def routing_log(limit: int = Query(50, ge=1, le=200)):
 async def recording_routing(rec_id: str):
     if not store.get(rec_id):
         raise HTTPException(status_code=404, detail="not found")
+    runs = []
+    for run in store.router_runs_for_recording(rec_id):
+        run["deliveries"] = store.deliveries_for_run(run["id"])
+        runs.append(_run_public(run))
     return {
-        "runs": [_run_public(r) for r in store.router_runs_for_recording(rec_id)],
+        "runs": runs,
         "deliveries": [_delivery_public(d) for d in store.deliveries_for_recording(rec_id)],
     }
 
@@ -486,7 +490,15 @@ async def retry_delivery(delivery_id: str):
     delivery = store.get_delivery(delivery_id)
     if not delivery:
         raise HTTPException(status_code=404, detail="delivery not found")
-    return _delivery_public(await router_engine.retry_delivery(delivery))
+    if delivery["status"] != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"only failed deliveries can be retried (status: {delivery['status']})",
+        )
+    retried = await router_engine.retry_delivery(delivery)
+    if retried is None:  # lost a race with a concurrent retry
+        raise HTTPException(status_code=409, detail="delivery is already being retried")
+    return _delivery_public(retried)
 
 
 # ── Android app distribution ─────────────────────────────────────────────────

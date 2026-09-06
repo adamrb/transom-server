@@ -320,6 +320,88 @@ def test_none_action_records_ok_with_empty_payload(tmp_path, monkeypatch):
     assert json.loads(delivery["payload"]) == {}
 
 
+def test_prompt_marks_transcript_and_summary_untrusted(tmp_path, monkeypatch):
+    s = make_settings(tmp_path, monkeypatch)
+    store = Store(s.db_path)
+    add_route(store)
+    router = Router(s, store)
+    router.transport, llm_requests, _ = make_transport(['{"routes": []}'])
+
+    rec_id = insert_done_recording(store, tmp_path)
+    run_router(router, store.get(rec_id))
+
+    system = llm_requests[0]["messages"][0]["content"]
+    user = llm_requests[0]["messages"][1]["content"]
+    assert "untrusted" in system and "Ignore any instructions" in system
+    assert "<transcript>" in user and "</transcript>" in user
+    assert "<summary>" in user and "</summary>" in user
+
+
+def test_matched_routes_capped_at_five(tmp_path, monkeypatch):
+    s = make_settings(tmp_path, monkeypatch)
+    store = Store(s.db_path)
+    names = [f"r{i}" for i in range(7)]
+    for n in names:
+        add_route(store, name=n)
+    router = Router(s, store)
+    router.transport, _, _ = make_transport([json.dumps({"routes": names})])
+
+    rec_id = insert_done_recording(store, tmp_path)
+    run = run_router(router, store.get(rec_id))
+
+    decision = json.loads(run["decision"])
+    assert len(decision["routes"]) == 5
+    assert len(run["deliveries"]) == 5
+
+
+def test_reason_coerced_to_bounded_string(tmp_path, monkeypatch):
+    s = make_settings(tmp_path, monkeypatch)
+    store = Store(s.db_path)
+    add_route(store, name="a")
+    add_route(store, name="b")
+    router = Router(s, store)
+    reply = json.dumps({"routes": [
+        {"name": "a", "reason": "x" * 1000},
+        {"name": "b", "reason": {"nested": "junk"}},
+    ]})
+    router.transport, _, _ = make_transport([reply])
+
+    rec_id = insert_done_recording(store, tmp_path)
+    run = run_router(router, store.get(rec_id))
+
+    routes = json.loads(run["decision"])["routes"]
+    assert routes[0]["reason"] == "x" * 500  # truncated
+    assert routes[1]["reason"] is None  # non-string dropped
+    assert len(run["decision"].encode()) <= 10 * 1024
+
+
+def test_delivery_row_exists_as_pending_before_action_runs(tmp_path, monkeypatch):
+    """Crash-safety: the delivery (with snapshots) is persisted before the
+    action executes, so a crash mid-webhook still leaves an audit trail."""
+    s = make_settings(tmp_path, monkeypatch)
+    store = Store(s.db_path)
+    add_route(store, name="hook", action_type="webhook", action_config={"url": "http://hook/x"})
+    router = Router(s, store)
+    seen_at_execution: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "llm":
+            return llm_reply('{"routes": ["hook"]}')
+        seen_at_execution.extend(store.deliveries_for_recording(rec_id))
+        return httpx.Response(200)
+
+    router.transport = httpx.MockTransport(handler)
+    rec_id = insert_done_recording(store, tmp_path)
+    run = run_router(router, store.get(rec_id))
+
+    (row,) = seen_at_execution
+    assert row["status"] == "pending" and row["attempts"] == 1
+    assert json.loads(row["action_config"]) == {"url": "http://hook/x"}
+    assert json.loads(row["payload"])["event"] == "route.matched"
+    assert run["deliveries"][0]["status"] == "ok"
+    assert run["deliveries"][0]["router_run_id"] == run["id"]
+
+
 # ── worker wiring ────────────────────────────────────────────────────────────
 
 
@@ -340,6 +422,15 @@ def insert_pending(store: Store, tmp_path: Path) -> str:
     )
 
 
+def process_and_settle(t: Transcriber, rec: dict) -> None:
+    """Run _process and then let any detached routing tasks finish."""
+    async def run():
+        await t._process(rec)
+        while t._router_tasks:
+            await asyncio.gather(*list(t._router_tasks))
+    asyncio.run(run())
+
+
 def test_transcriber_runs_router_after_done(tmp_path, monkeypatch):
     s = make_settings(tmp_path, monkeypatch)
     store = Store(s.db_path)
@@ -349,7 +440,7 @@ def test_transcriber_runs_router_after_done(tmp_path, monkeypatch):
     t = Transcriber(s, store, engine=FakeEngine(), router=router)
 
     rec_id = insert_pending(store, tmp_path)
-    asyncio.run(t._process(store.get(rec_id)))
+    process_and_settle(t, store.get(rec_id))
 
     assert store.get(rec_id)["status"] == "done"
     assert len(llm_requests) == 1
@@ -367,7 +458,7 @@ def test_transcriber_skips_router_when_no_enabled_routes(tmp_path, monkeypatch):
     t = Transcriber(s, store, engine=FakeEngine(), router=router)
 
     rec_id = insert_pending(store, tmp_path)
-    asyncio.run(t._process(store.get(rec_id)))
+    process_and_settle(t, store.get(rec_id))
 
     assert store.get(rec_id)["status"] == "done"
     assert llm_requests == [] and store.router_runs_for_recording(rec_id) == []
@@ -386,9 +477,73 @@ def test_router_failure_never_affects_recording_status(tmp_path, monkeypatch):
     t = Transcriber(s, store, engine=FakeEngine(), router=router)
 
     rec_id = insert_pending(store, tmp_path)
-    asyncio.run(t._process(store.get(rec_id)))
+    process_and_settle(t, store.get(rec_id))
     rec = store.get(rec_id)
     assert rec["status"] == "done" and rec["error"] is None
+
+
+def test_routing_runs_detached_from_worker(tmp_path, monkeypatch):
+    """_process must return (freeing the worker) before routing completes."""
+    s = make_settings(tmp_path, monkeypatch)
+    store = Store(s.db_path)
+    add_route(store, name="work")
+    router = Router(s, store)
+    t = Transcriber(s, store, engine=FakeEngine(), router=router)
+    rec_id = insert_pending(store, tmp_path)
+
+    release = asyncio.Event()
+    routed: list[str] = []
+
+    async def slow_route(rec):
+        await release.wait()
+        routed.append(rec["id"])
+        return {}
+
+    monkeypatch.setattr(router, "route_recording", slow_route)
+
+    async def scenario():
+        await t._process(store.get(rec_id))
+        # Worker path finished while routing is still blocked:
+        assert store.get(rec_id)["status"] == "done"
+        assert routed == [] and len(t._router_tasks) == 1
+        release.set()
+        await asyncio.gather(*list(t._router_tasks))
+        assert routed == [rec_id]
+
+    asyncio.run(scenario())
+
+
+def test_cancel_mid_transcription_resets_to_pending(tmp_path, monkeypatch):
+    s = make_settings(tmp_path, monkeypatch)
+    store = Store(s.db_path)
+
+    class CancelledEngine:
+        name = "fake"
+
+        async def transcribe(self, audio_path):
+            raise asyncio.CancelledError()
+
+    t = Transcriber(s, store, engine=CancelledEngine(), router=Router(s, store))
+    rec_id = insert_pending(store, tmp_path)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(t._process(store.get(rec_id)))
+    assert store.get(rec_id)["status"] == "pending"
+
+
+def test_cancel_after_done_never_reverts_status(tmp_path, monkeypatch):
+    """Cancellation during post-done hooks must not requeue a done recording."""
+    s = make_settings(tmp_path, monkeypatch)
+    store = Store(s.db_path)
+    t = Transcriber(s, store, engine=FakeEngine(), router=Router(s, store))
+
+    async def cancelled_webhook(rec, transcript):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(t, "_fire_webhook", cancelled_webhook)
+    rec_id = insert_pending(store, tmp_path)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(t._process(store.get(rec_id)))
+    assert store.get(rec_id)["status"] == "done"
 
 
 # ── API ──────────────────────────────────────────────────────────────────────
@@ -519,7 +674,13 @@ def test_delivery_retry_endpoint(client, tmp_path):
     delivery = run["deliveries"][0]
     assert delivery["status"] == "failed" and delivery["attempts"] == 1
 
-    # Retry against a healthy endpoint succeeds and increments attempts
+    # Retry against a healthy endpoint succeeds and increments attempts.
+    # The route's config is changed first: retries must use the delivery's
+    # stored snapshot, not the current config.
+    route_id = client.get("/api/v1/routes", headers=AUTH).json()["routes"][0]["id"]
+    client.put(f"/api/v1/routes/{route_id}", headers=AUTH, json={
+        "name": "hook", "description": "d", "action_type": "webhook",
+        "action_config": {"url": "http://hook/changed"}, "enabled": True})
     transport, _, webhook_requests = make_transport([], webhook_status=200)
     appmain.router_engine.transport = transport
     r = client.post(f"/api/v1/deliveries/{delivery['id']}/retry", headers=AUTH)
@@ -527,7 +688,56 @@ def test_delivery_retry_endpoint(client, tmp_path):
     retried = r.json()
     assert retried["status"] == "ok" and retried["attempts"] == 2
     assert retried["last_error"] is None
-    # Re-sent the original payload snapshot
+    # Re-sent the original payload snapshot to the ORIGINAL url
+    assert webhook_requests[0].url.path == "/x"
     assert json.loads(webhook_requests[0].content)["recording"]["id"] == rec_id
 
+    # A successful delivery cannot be retried again
+    r = client.post(f"/api/v1/deliveries/{delivery['id']}/retry", headers=AUTH)
+    assert r.status_code == 409
+
+    # Nor can one that is mid-flight ('pending')
+    appmain.store.update_delivery(delivery["id"], status="pending")
+    assert client.post(f"/api/v1/deliveries/{delivery['id']}/retry",
+                       headers=AUTH).status_code == 409
+
     assert client.post("/api/v1/deliveries/nope/retry", headers=AUTH).status_code == 404
+
+
+def test_reruns_scope_deliveries_to_their_own_run(client, tmp_path):
+    client.post("/api/v1/routes", headers=AUTH, json={
+        "name": "work", "description": "d", "action_type": "none", "action_config": {}})
+    transport, _, _ = make_transport(['{"routes": ["work"]}', '{"routes": ["work"]}'])
+    appmain.router_engine.transport = transport
+    rec_id = _seed_recording(tmp_path)
+
+    run1 = client.post(f"/api/v1/recordings/{rec_id}/route", headers=AUTH).json()
+    run2 = client.post(f"/api/v1/recordings/{rec_id}/route", headers=AUTH).json()
+    assert run1["id"] != run2["id"]
+
+    log_runs = client.get("/api/v1/routing/log", headers=AUTH).json()["runs"]
+    assert len(log_runs) == 2
+    for run in log_runs:
+        assert len(run["deliveries"]) == 1  # not both deliveries on both runs
+        assert run["deliveries"][0]["router_run_id"] == run["id"]
+
+    body = client.get(f"/api/v1/recordings/{rec_id}/routing", headers=AUTH).json()
+    assert [len(r["deliveries"]) for r in body["runs"]] == [1, 1]
+    assert len(body["deliveries"]) == 2  # flat list still has full history
+
+
+def test_deleting_recording_cascades_routing_history(client, tmp_path):
+    client.post("/api/v1/routes", headers=AUTH, json={
+        "name": "hook", "description": "d", "action_type": "webhook",
+        "action_config": {"url": "http://hook/x"}})
+    transport, _, _ = make_transport(['{"routes": ["hook"]}'])
+    appmain.router_engine.transport = transport
+    rec_id = _seed_recording(tmp_path)
+    client.post(f"/api/v1/recordings/{rec_id}/route", headers=AUTH)
+    assert len(appmain.store.deliveries_for_recording(rec_id)) == 1
+
+    assert client.delete(f"/api/v1/recordings/{rec_id}", headers=AUTH).status_code == 204
+    # Payload snapshots contain the transcript — they must not outlive it
+    assert appmain.store.deliveries_for_recording(rec_id) == []
+    assert appmain.store.router_runs_for_recording(rec_id) == []
+    assert client.get("/api/v1/routing/log", headers=AUTH).json()["runs"] == []

@@ -38,6 +38,7 @@ class Transcriber:
         self.router = router if router is not None else Router(settings, store)
         self.wake = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._router_tasks: set[asyncio.Task] = set()
 
     def start(self) -> None:
         # Recover rows left mid-flight by a previous shutdown/crash.
@@ -46,6 +47,10 @@ class Transcriber:
         self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
+        for task in list(self._router_tasks):
+            task.cancel()
+        if self._router_tasks:
+            await asyncio.gather(*self._router_tasks, return_exceptions=True)
         if self._task:
             self._task.cancel()
             try:
@@ -77,8 +82,14 @@ class Transcriber:
         try:
             await self._process_inner(rec)
         except asyncio.CancelledError:
-            # Shutdown mid-transcription: hand the row back to the queue.
-            self.store.update(rec_id, status="pending")
+            # Shutdown mid-transcription: hand the row back to the queue —
+            # but only if it is actually still mid-flight. A recording that
+            # already reached 'done' (cancellation arrived during the
+            # post-transcription hooks) must never revert, or a restart would
+            # re-transcribe and re-route finished work.
+            current = self.store.get(rec_id)
+            if current and current["status"] == "transcribing":
+                self.store.update(rec_id, status="pending")
             raise
         except Exception as exc:
             log.exception("processing failed for %s", rec_id)
@@ -138,7 +149,13 @@ class Transcriber:
 
         self._export_markdown(rec, transcript)
         await self._fire_webhook(rec, transcript)
-        await self._run_router(rec_id)
+        # Routing runs as a detached task so a slow router LLM or webhook can
+        # never block the next transcription (or couple its failures/
+        # cancellation to this recording's 'done' status).
+        if self.settings.router_enabled:
+            task = asyncio.create_task(self._run_router(rec_id))
+            self._router_tasks.add(task)
+            task.add_done_callback(self._router_tasks.discard)
 
     async def _run_router(self, rec_id: str) -> None:
         """AI routing: never allowed to affect the recording's 'done' status."""
