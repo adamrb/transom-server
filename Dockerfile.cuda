@@ -13,6 +13,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.12 python3.12-venv python3-pip libopenblas0-pthread libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Drop the CUDA forward-compatibility driver the base image ships. When the
+# host driver is older than the container's CUDA version, the container
+# toolkit points libcuda.so.1 at these compat libs — but CUDA forward compat
+# only works on datacenter GPUs; on GeForce every call fails with
+# "CUDA error 804: forward compatibility was attempted on non supported HW".
+# Removing it binds the host driver and relies on CUDA minor-version
+# compatibility, which consumer cards support.
+RUN apt-get remove -y --purge cuda-compat-12-6 2>/dev/null; \
+    rm -rf /usr/local/cuda-12.6/compat /usr/local/cuda/compat && ldconfig
+
 WORKDIR /srv/plaud-bridge
 
 RUN python3.12 -m venv /opt/venv
