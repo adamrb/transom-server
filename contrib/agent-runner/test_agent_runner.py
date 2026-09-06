@@ -45,6 +45,7 @@ class RunnerTestBase(unittest.TestCase):
         cls.log_file = os.path.join(cls.tmpdir.name, "jobs.jsonl")
         config = {
             "server": {"token": TOKEN, "queue_size": cls.queue_size,
+                       "log_responses": True,
                        "_host": "127.0.0.1", "_port": 0},
             "actions": cls.actions,
         }
@@ -113,7 +114,11 @@ class TestAuthAndHealth(RunnerTestBase):
 
 
 class TestTemplateSafety(RunnerTestBase):
-    """Hostile transcript content must remain a single inert argv element."""
+    """Hostile transcript content must remain a single inert argv element.
+
+    Note: this action interpolates {prompt} into argv, which load_config now
+    only permits with allow_unsafe_interpolation = true (set below) -- the
+    test proves the argv-boundary guarantee that option relies on."""
 
     out_dir = tempfile.mkdtemp(prefix="runner-argv-")
     actions = {
@@ -126,6 +131,7 @@ class TestTemplateSafety(RunnerTestBase):
                 "id={recording_id}",
             ],
             "prompt_template": "Instruction: {route_description}\nTranscript:\n{text}",
+            "allow_unsafe_interpolation": True,
             "timeout_seconds": 30,
         }
     }
@@ -245,6 +251,14 @@ class TestACP(RunnerTestBase):
             "model": "haiku",
             "timeout_seconds": 30,
         },
+        "bigline": {
+            "agent": [sys.executable, FAKE_AGENT, "bigline"],
+            "timeout_seconds": 30,
+        },
+        "bigresponse": {
+            "agent": [sys.executable, FAKE_AGENT, "bigresponse"],
+            "timeout_seconds": 60,
+        },
     }
 
     def _end_event(self, job_id, timeout=20):
@@ -265,21 +279,23 @@ class TestACP(RunnerTestBase):
         self.assertFalse(end["timeout"])
         self.assertEqual(end["response"], "Hello world")
 
-    def test_permission_auto_approve(self):
+    def test_permission_auto_approve_picks_allow_once_only(self):
         status, body = self.request(body=payload(route_name="approve"))
         self.assertEqual(status, 202)
         end = self._end_event(body["job"])
-        self.assertEqual(end["response"], "APPROVED")
+        # the fake agent lists allow_always FIRST; the runner must still
+        # select the one-shot approval, never the persistent one
+        self.assertEqual(end["response"], "APPROVED:allow-once")
         perm = [e for e in self.log_events() if e.get("event") == "acp.permission"
                 and e.get("label") == f"job-{body['job']}"]
         self.assertTrue(perm and perm[0]["outcome"]["outcome"] == "selected")
-        self.assertTrue(perm[0]["outcome"]["optionId"].startswith("allow"))
+        self.assertEqual(perm[0]["outcome"]["optionId"], "allow-once")
 
     def test_permission_reject(self):
         status, body = self.request(body=payload(route_name="reject"))
         self.assertEqual(status, 202)
         end = self._end_event(body["job"])
-        self.assertEqual(end["response"], "REJECTED")
+        self.assertEqual(end["response"], "REJECTED:reject-once")
 
     def test_timeout_kills_agent(self):
         start = time.monotonic()
@@ -303,6 +319,33 @@ class TestACP(RunnerTestBase):
         self.assertEqual(end["response"], "Hello world")
         self.assertTrue(any(e.get("event") == "acp.garbage_line"
                             for e in self.log_events()))
+
+    def test_oversized_frame_kills_job(self):
+        status, body = self.request(body=payload(route_name="bigline"))
+        self.assertEqual(status, 202)
+        end = self._end_event(body["job"])
+        self.assertEqual(end["stop_reason"], "error")
+        self.assertIn("oversized frame", end["error"])
+
+    def test_oversized_response_truncated(self):
+        status, body = self.request(body=payload(route_name="bigresponse"))
+        self.assertEqual(status, 202)
+        end = self._end_event(body["job"], timeout=40)
+        self.assertTrue(end["truncated"])
+        self.assertLessEqual(end["response_chars"],
+                             agent_runner.MAX_RESPONSE_CHARS + 100)
+
+    def test_response_not_logged_when_disabled(self):
+        self.runner.config["server"]["log_responses"] = False
+        try:
+            status, body = self.request(body=payload())
+            self.assertEqual(status, 202)
+            end = self._end_event(body["job"])
+            self.assertNotIn("response", end)
+            self.assertNotIn("stderr_tail", end)
+            self.assertEqual(end["response_chars"], len("Hello world"))
+        finally:
+            self.runner.config["server"]["log_responses"] = True
 
 
 class TestChatShim(RunnerTestBase):
@@ -356,6 +399,153 @@ class TestChatShim(RunnerTestBase):
         self.assertEqual(status, 401)
 
 
+class TestStdinMode(RunnerTestBase):
+    """stdin_template is the safe path for payload text into plain commands."""
+
+    out_dir = tempfile.mkdtemp(prefix="runner-stdin-")
+    actions = {
+        "default": {
+            "command": [
+                sys.executable, "-c",
+                "import sys,json;open(sys.argv[1],'w').write("
+                "json.dumps({'argv':sys.argv[2:],'stdin':sys.stdin.read()}))",
+                os.path.join(out_dir, "stdin.json"),
+                "id={recording_id}",
+            ],
+            "stdin_template": "Instruction: {route_description}\n{text}",
+            "timeout_seconds": 30,
+        }
+    }
+
+    def test_hostile_text_arrives_via_stdin_not_argv(self):
+        hostile = "--delete-everything $(rm -rf /) {token} {text} -o /etc/passwd"
+        out_file = self.actions["default"]["command"][3]
+        if os.path.exists(out_file):
+            os.unlink(out_file)
+        status, _ = self.request(body=payload(text=hostile))
+        self.assertEqual(status, 202)
+        self.assertTrue(self.wait_for(
+            lambda: os.path.exists(out_file) and os.path.getsize(out_file) > 0))
+        with open(out_file, encoding="utf-8") as f:
+            result = json.load(f)
+        # argv is exactly the static config: no transcript-derived elements,
+        # so a leading "--" can never become an option
+        self.assertEqual(result["argv"], ["id=rec-1"])
+        self.assertIn(hostile, result["stdin"])
+        self.assertIn("Instruction: do the thing", result["stdin"])
+
+
+class TestChatSaturation(RunnerTestBase):
+    actions = {"default": {"command": ["/bin/true"]}}
+    chat = {
+        "agent": [sys.executable, FAKE_AGENT, "slow"],
+        "timeout_seconds": 30,
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.runner.config["chat"] = cls.chat
+
+    def test_third_concurrent_chat_gets_503(self):
+        results = []
+        def one():
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/v1/chat/completions",
+                method="POST",
+                data=json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode(),
+                headers={"X-Runner-Token": TOKEN})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    results.append(resp.status)
+            except urllib.error.HTTPError as e:
+                e.read()
+                results.append(e.code)
+        threads = [threading.Thread(target=one) for _ in range(4)]
+        for t in threads:
+            t.start()
+            time.sleep(0.1)  # ensure the first two occupy the slots
+        for t in threads:
+            t.join(timeout=40)
+        self.assertIn(503, results)
+        self.assertIn(200, results)
+        self.assertEqual(len(results), 4)
+
+
+class TestHTTPFraming(RunnerTestBase):
+    """Raw-socket tests for request-smuggling hardening."""
+
+    actions = {"default": {"command": ["/bin/true"]}}
+
+    def _raw(self, request_bytes):
+        import socket
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as s:
+            s.sendall(request_bytes)
+            s.shutdown(socket.SHUT_WR)
+            data = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+            return data
+
+    def test_duplicate_content_length_rejected_and_closed(self):
+        body = b'{"a":1}'
+        req = (b"POST / HTTP/1.1\r\nHost: x\r\n"
+               b"X-Runner-Token: " + TOKEN.encode() + b"\r\n"
+               b"Content-Length: 7\r\nContent-Length: 7\r\n\r\n" + body)
+        resp = self._raw(req)
+        self.assertIn(b" 400 ", resp.split(b"\r\n", 1)[0])
+        self.assertIn(b"exactly one content-length", resp.lower())
+        self.assertIn(b"connection: close", resp.lower())
+
+    def test_transfer_encoding_rejected(self):
+        req = (b"POST / HTTP/1.1\r\nHost: x\r\n"
+               b"X-Runner-Token: " + TOKEN.encode() + b"\r\n"
+               b"Transfer-Encoding: chunked\r\nContent-Length: 7\r\n\r\n"
+               b'{"a":1}')
+        resp = self._raw(req)
+        self.assertIn(b" 400 ", resp.split(b"\r\n", 1)[0])
+        self.assertIn(b"transfer-encoding", resp.lower())
+        self.assertIn(b"connection: close", resp.lower())
+
+    def test_auth_reject_closes_connection(self):
+        req = (b"POST / HTTP/1.1\r\nHost: x\r\n"
+               b"X-Runner-Token: wrong\r\nContent-Length: 7\r\n\r\n" + b'{"a":1}')
+        resp = self._raw(req)
+        self.assertIn(b" 401 ", resp.split(b"\r\n", 1)[0])
+        self.assertIn(b"connection: close", resp.lower())
+
+
+class TestLogger(unittest.TestCase):
+    def test_log_file_mode_0600_and_token_redacted(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "jobs.jsonl")
+            old_umask = os.umask(0o000)  # permissive umask must not matter
+            try:
+                logger = agent_runner.JobLogger(path, secret="sekrit-token-42")
+                logger.log(event="test", detail="agent printed sekrit-token-42 here")
+            finally:
+                os.umask(old_umask)
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+            self.assertNotIn("sekrit-token-42", content)
+            self.assertIn("[REDACTED]", content)
+
+    def test_log_fields_capped(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "jobs.jsonl")
+            logger = agent_runner.JobLogger(path)
+            logger.log(event="test", blob="z" * 100000)
+            with open(path, encoding="utf-8") as f:
+                entry = json.loads(f.read())
+            self.assertLess(len(entry["blob"]),
+                            agent_runner.MAX_LOG_FIELD_CHARS + 50)
+            self.assertTrue(entry["blob"].endswith("...[truncated]"))
+
+
 class TestConfigValidation(unittest.TestCase):
     def _load(self, toml_text):
         with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
@@ -391,6 +581,34 @@ class TestConfigValidation(unittest.TestCase):
         with self.assertRaises(agent_runner.ConfigError):
             self._load('[server]\ntoken="t"\n[actions.default]\ncommand=["/bin/true"]\n'
                        '[chat]\ncommand=["/bin/true"]\n')
+
+    def test_payload_var_in_command_argv_rejected(self):
+        with self.assertRaises(agent_runner.ConfigError):
+            self._load('[server]\ntoken="t"\n[actions.default]\n'
+                       'command=["/usr/bin/tool", "{text}"]\n')
+
+    def test_shell_wrapper_with_text_rejected(self):
+        with self.assertRaises(agent_runner.ConfigError):
+            self._load('[server]\ntoken="t"\n[actions.default]\n'
+                       'command=["/bin/sh", "-c", "echo {text}"]\n')
+
+    def test_unsafe_interpolation_optin_allowed(self):
+        cfg = self._load('[server]\ntoken="t"\n[actions.default]\n'
+                         'command=["/usr/bin/tool", "{text}"]\n'
+                         'allow_unsafe_interpolation=true\n')
+        self.assertTrue(cfg["actions"]["default"]["allow_unsafe_interpolation"])
+
+    def test_safe_vars_in_command_argv_allowed(self):
+        cfg = self._load('[server]\ntoken="t"\n[actions.default]\n'
+                         'command=["/usr/bin/tool", "{file}", "id={recording_id}"]\n'
+                         'stdin_template="{text}"\n')
+        self.assertEqual(cfg["actions"]["default"]["stdin_template"], "{text}")
+
+    def test_queue_size_zero_or_negative_rejected(self):
+        for bad in ("0", "-4", '"16"'):
+            with self.assertRaises(agent_runner.ConfigError, msg=bad):
+                self._load(f'[server]\ntoken="t"\nqueue_size={bad}\n'
+                           '[actions.default]\ncommand=["/bin/true"]\n')
 
     def test_render_single_pass(self):
         out = agent_runner.render("{text}|{prompt}", {"text": "{prompt}{text}", "prompt": "P"})

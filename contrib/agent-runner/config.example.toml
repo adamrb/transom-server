@@ -24,8 +24,13 @@ token = "CHANGE-ME"
 # (`command = [...]`) for non-agent work like appending to a file.
 #
 # SECURITY: `agent`/`command` must be argv LISTS (no shell is ever involved),
-# and only the known {tokens} below are substituted, in a single pass --
-# transcript content can never add arguments, shell syntax, or JSON-RPC.
+# and only the known {tokens} below are substituted, in a single pass, so
+# transcript content can never add argv elements or JSON-RPC structure.
+# That guarantee does NOT extend to what the executed program does with an
+# argument (sh -c executes it; most tools parse leading '-' as options), so
+# payload text ({text} {summary} {prompt} {route_description}) is FORBIDDEN
+# in `command` argv unless allow_unsafe_interpolation = true -- pass it via
+# stdin_template (rendered and piped to the command's stdin) instead.
 #
 # Tokens available in `prompt_template` and command args:
 #   {text} {summary} {route_name} {route_description}
@@ -44,7 +49,13 @@ Transcript:
 {text}"""
 timeout_seconds = 600
 cwd = "/home/user"
-auto_approve = true          # answer session/request_permission with allow
+# auto_approve answers the agent's permission requests with "allow once".
+# UNDERSTAND WHAT THAT MEANS: anyone whose speech reaches this route can make
+# the agent run arbitrary code AS THIS SERVICE USER. cwd is a working
+# directory, NOT confinement -- the agent can read ~/.ssh, your cloud creds,
+# this config, and write anywhere the user can. Leave it false unless the
+# runner itself is isolated (dedicated user, or the container variant).
+auto_approve = false
 # model = "haiku"            # optional: sent via session/set_model
 # env = { CLAUDE_CONFIG_DIR = "/home/user/.claude" }   # extra env for the agent
 
@@ -57,10 +68,12 @@ cwd = "/home/user/projects"
 auto_approve = false         # permission requests are rejected
 
 # --- Plain argv, no agent: append transcript to a file via your own script ---
-# write_transcript_to_file writes {text} to a temp file and substitutes {file}.
+# The transcript is piped to the command's stdin (safe: it can never become
+# an option or shell syntax). Alternatively write_transcript_to_file = true
+# writes {text} to a temp file and substitutes its path as {file}.
 [actions."obsidian-note"]
-command = ["/usr/local/bin/my-append-script", "{file}"]
-write_transcript_to_file = true
+command = ["/usr/local/bin/my-append-script", "{started_at}"]
+stdin_template = "{text}"
 timeout_seconds = 30
 
 # ---------------------------------------------------------------------------
@@ -73,6 +86,9 @@ timeout_seconds = 30
 agent = ["claude-code-acp"]
 timeout_seconds = 120
 cwd = "/home/user"
-auto_approve = false         # chat must not touch files/tools
+# Best effort only: rejecting permission requests does NOT disable tools the
+# agent may use without asking (reads, preapproved tools). The "do not use
+# tools" preamble is a request, not an enforcement boundary.
+auto_approve = false
 # model = "haiku"
 # prompt_template default: "Answer directly. Do not use tools or modify files.\n\n{prompt}"

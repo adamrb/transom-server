@@ -52,16 +52,21 @@ against `@zed-industries/claude-code-acp` 0.16.x. The exchange:
    runner sends `session/set_model` with that modelId.
 3. `session/prompt` — the rendered prompt as a single text content block.
    `session/update` notifications stream in; `agent_message_chunk` text is
-   collected as the response. Incoming `session/request_permission` requests
-   are answered from config: `auto_approve = true` picks an allow option,
-   `false` picks a reject option (or cancels). Other agent→client requests
-   (fs, terminal) are refused with JSON-RPC `-32601`.
+   collected as the response (capped at 2 MiB, truncated beyond; individual
+   frames over 1 MiB kill the job). Incoming `session/request_permission`
+   requests are answered from config: `auto_approve = true` picks the
+   `allow_once` option — never `allow_always`, so no approval persists past
+   the request — and `false` picks a reject option (or cancels). Other
+   agent→client requests (fs, terminal) are refused with JSON-RPC `-32601`.
 4. The `session/prompt` response's `stopReason` ends the job; the process is
    then killed. On timeout the whole process group is SIGKILLed.
 
 Actions with `command = [...]` instead run a plain argv (no agent, no shell)
-— useful for append-to-file scripts, and as a fallback executor
-(`command = ["claude", "-p", "{prompt}"]` also works if ACP ever misbehaves).
+— useful for append-to-file scripts, and as a fallback executor. Payload
+text goes to the command via `stdin_template` (rendered and piped to stdin);
+putting `{text}`/`{summary}`/`{prompt}`/`{route_description}` directly in the
+argv is rejected at config load unless the action sets
+`allow_unsafe_interpolation = true` (see Security).
 
 ### OpenAI-compat chat shim
 
@@ -80,25 +85,59 @@ PB_SUMMARY_BASE_URL=http://<runner>:8091/v1    # summaries too, if you like
 PB_SUMMARY_API_KEY=<runner token>
 ```
 
-Chat calls are serialized (one agent session at a time) and answered
-synchronously; size `timeout_seconds` accordingly (a routing call with
-claude-code-acp takes roughly 5–15 s).
+At most two chat sessions run concurrently (further requests get `503`,
+so callers should retry); answers are synchronous — size `timeout_seconds`
+accordingly (a routing call with claude-code-acp takes roughly 5–15 s).
 
-## Security notes
+## Security
+
+Threat model first: this service exists to turn **spoken words into agent
+actions**. Whoever can speak into the Plaud device (or reach the webhook
+endpoint with the token) holds that power. The layers below narrow how much.
+
+**What the runner guarantees**
 
 - `agent`/`command` must be argv **lists**; string commands are rejected and
-  no shell is ever invoked.
-- Template tokens (`{text}`, `{summary}`, `{route_name}`,
-  `{route_description}`, `{recording_id}`, `{filename}`, `{started_at}`,
-  `{prompt}`, `{file}`) are substituted in a **single pass**, so transcript
-  content containing `{token}`, `$(...)`, quotes, etc. stays inert data and
-  can never become extra argv elements, shell syntax, or JSON-RPC structure
-  (prompts travel as JSON string values).
-- Still: the whole point is driving an agent from spoken words. With
-  `auto_approve = true` anyone who can record on your Plaud device can make
-  the agent edit files in its cwd. Scope actions, cwd, and approval
-  accordingly, and keep the listener off untrusted networks (bind narrowly;
-  the token is a second layer, not the only one).
+  no shell is ever invoked by the runner itself.
+- Template tokens are substituted in a **single pass**, so transcript content
+  containing `{token}`, `$(...)`, quotes, etc. can never add argv elements or
+  JSON-RPC structure (prompts travel as JSON string values).
+- Payload text in a plain `command` argv is rejected at config load, because
+  the substitution guarantee stops at the argv boundary: the executed program
+  still *interprets* its arguments — `["sh","-c","echo {text}"]` executes
+  transcript shell syntax, and `["tool","{text}"]` lets a transcript starting
+  with `--` become an option. Use `stdin_template`, or opt in per action with
+  `allow_unsafe_interpolation = true` if you have verified the program treats
+  that argument as data.
+- Auto-approval only ever selects `allow_once`; persistent approvals are
+  never granted.
+- Resource bounds: bounded job queue, request-thread cap, 30 s socket
+  deadline, at most 2 concurrent chat sessions, 10 MiB request bodies, 1 MiB
+  ACP frames, 2 MiB collected response, 256 KiB captured stdout/stderr.
+- HTTP framing: `Transfer-Encoding` is rejected, exactly one
+  `Content-Length` is required, and connections are closed whenever a
+  request body wasn't fully consumed.
+- Logs are created `0600`; the configured token is redacted from every log
+  line; agent responses and stderr are only logged with
+  `log_responses = true` (default off); fields are capped at 4 KiB.
+
+**What it does NOT guarantee**
+
+- `auto_approve = true` is **arbitrary code execution as the service user**.
+  `cwd` is a working directory, not confinement: an approved agent can read
+  `~/.ssh`, cloud and Claude/Codex credentials, this config, and write
+  anywhere the user can. `auto_approve = false` is not tool isolation either
+  — rejecting permission requests does not disable tools the agent runs
+  without asking (reads, preapproved tools); the chat preamble ("do not use
+  tools") is best-effort, not an enforcement boundary. The isolation options
+  are the container variant below, or a dedicated low-privilege user.
+- Timeout/shutdown kill the child's **process group**; a tool that forks and
+  `setsid()`s escapes it and can outlive the job. On SIGTERM the runner kills
+  in-flight jobs' groups and logs when a child may have leaked, but full
+  containment again means the container variant.
+- The token is a second layer, not the only one: bind narrowly (a specific
+  gateway/LAN IP), keep it off untrusted networks, and put TLS in front if it
+  ever leaves the machine.
 
 ## Setup (host, systemd) — simplest auth
 
