@@ -35,15 +35,29 @@ The container binds to `127.0.0.1:8090` by default. Expose it through a reverse 
 
 > **Security model:** a single bearer token grants full access — uploads, reads, deletes, and Plaud token minting. That is a deliberate simplification for a personal/self-hosted deployment. Don't share tokens across trust boundaries, rotate via the comma-separated `PB_AUTH_TOKENS`, and keep the service off the open internet unless it's behind TLS.
 
-### Transcription endpoint
+### Transcription
 
-Anything that speaks the OpenAI audio transcription API works, for example:
+Two engines, selected with `PB_STT_ENGINE`:
 
-- [speaches](https://github.com/speaches-ai/speaches) (successor of faster-whisper-server) — local Whisper on CPU/GPU
-- [whisper.cpp server](https://github.com/ggml-org/whisper.cpp) with `--convert` OpenAI-compat mode
-- OpenAI's hosted `whisper-1` / `gpt-4o-transcribe` if you don't mind the cloud
+**`local` (default)** — built-in [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2). No external services; runs on CPU out of the box with the standard image, or on an NVIDIA GPU with `Dockerfile.cuda`. Pick any model with `PB_STT_MODEL` (`tiny` … `large-v3`, `distil-large-v3`, or any CTranslate2 repo id), tune `PB_STT_DEVICE`/`PB_STT_COMPUTE`. VAD silence-skipping is on by default and audio is decoded as a stream, so multi-hour files (Plaud hardware records up to ~5 h) work within bounded memory; `PB_STT_MAX_DURATION_S` caps accepted length.
 
-Set `PB_TRANSCRIBE_BASE_URL` (including `/v1`), optional `PB_TRANSCRIBE_API_KEY`, and `PB_TRANSCRIBE_MODEL`. The worker asks for `verbose_json` (timestamps + segments) and falls back to plain `json` if the server rejects it.
+**Speaker diarization** (multi-speaker labeling — segments and transcripts get `Speaker 1:` / `Speaker 2:` turns): set `PB_STT_DIARIZE=true` with the CUDA image (or install `requirements-diarization.txt`) and provide `PB_STT_HF_TOKEN` for a Hugging Face account that has accepted the [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) terms.
+
+**`openai`** — any external OpenAI-compatible `/v1/audio/transcriptions` endpoint ([speaches](https://github.com/speaches-ai/speaches), whisper.cpp server, hosted APIs). Set `PB_TRANSCRIBE_BASE_URL` (including `/v1`), optional `PB_TRANSCRIBE_API_KEY` and `PB_TRANSCRIBE_MODEL`.
+
+### Benchmarking models on your hardware
+
+```bash
+docker compose exec plaud-bridge \
+  python -m app.benchmark /data/recordings/<some-file>.mp3 \
+  --models tiny,base,small,medium,distil-large-v3 [--device cuda] [--diarize]
+```
+
+Prints load time, transcription time, speed (audio seconds per wall-clock second), and — with `--reference ref.txt` — word error rate, so you can pick the best model your hardware sustains. `--json out.json` saves the results.
+
+### GPU notes
+
+Build with `docker compose build` after switching the service to `Dockerfile.cuda` (see the comment in `docker-compose.yml`) and grant GPU access (`gpus: all` or `runtime: nvidia`). PyPI CTranslate2 wheels need compute capability ≥ 6.1 (Pascal+); for older cards, build a custom wheel with `CT2_CUDA_ARCH_LIST=<your capability>` and drop it in `wheels-local/` — the CUDA image installs it over the PyPI wheel automatically.
 
 ## Web dashboard
 
@@ -89,12 +103,15 @@ Raw data lives under `PB_DATA_DIR`: `recordings/YYYY/MM/<hash>_<name>.mp3` with 
 
 See [.env.example](.env.example) — every setting is an environment variable with a `PB_` prefix.
 
-## Development
+## Development & tests
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-stt.txt pytest
 PB_DATA_DIR=./data PB_AUTH_TOKENS=dev uvicorn app.main:app --reload --port 8090
+
+pytest -m "not integration"   # unit tests (fast, no models)
+pytest                        # + integration tests (real whisper-tiny inference)
 ```
 
 ## Disclaimer

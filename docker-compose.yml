@@ -1,3 +1,14 @@
+# CPU deployment (built-in faster-whisper on CPU). For GPU transcription +
+# speaker diarization, build with Dockerfile.cuda instead and give the
+# container GPU access, e.g.:
+#
+#   services:
+#     plaud-bridge:
+#       build: { context: ., dockerfile: Dockerfile.cuda }
+#       gpus: all            # or `runtime: nvidia` with the NVIDIA runtime in
+#                            # CDI mode (survives systemd daemon-reload)
+#       environment:
+#         - PB_STT_DEVICE=cuda
 services:
   plaud-bridge:
     build: .

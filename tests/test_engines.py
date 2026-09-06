@@ -1,0 +1,240 @@
+"""Unit tests for the transcription engine layer (no models required)."""
+
+import asyncio
+from pathlib import Path
+
+import pytest
+
+from app.benchmark import normalize_words, print_table, word_error_rate
+from app.config import Settings
+from app.engines import build_engine
+from app.engines.base import EngineResult, Segment, render_text
+from app.engines.local_whisper import LocalWhisperEngine
+from app.engines.openai_compat import OpenAICompatEngine
+
+# ── render_text ──────────────────────────────────────────────────────────────
+
+
+def test_render_text_without_speakers_uses_fallback():
+    segs = [Segment(0, 1, "hello"), Segment(1, 2, "world")]
+    assert render_text(segs, fallback="full text") == "full text"
+    assert render_text(segs) == "hello world"
+    assert render_text([], fallback="only text") == "only text"
+
+
+def test_render_text_with_speakers_labels_turns():
+    segs = [
+        Segment(0, 1, "hi there", speaker="Speaker 1"),
+        Segment(1, 2, "how are you", speaker="Speaker 1"),
+        Segment(2, 3, "fine thanks", speaker="Speaker 2"),
+        Segment(3, 4, "", speaker="Speaker 2"),  # empty text skipped
+        Segment(4, 5, "great", speaker="Speaker 1"),
+    ]
+    out = render_text(segs)
+    assert "Speaker 1: hi there how are you" in out
+    assert "Speaker 2: fine thanks" in out
+    assert out.rstrip().endswith("Speaker 1: great")
+
+
+def test_render_text_unlabeled_segment_between_speakers():
+    segs = [Segment(0, 1, "a", speaker="Speaker 1"), Segment(1, 2, "b", speaker=None)]
+    out = render_text(segs)
+    assert "Speaker 1: a" in out and "Unknown speaker: b" in out
+
+
+# ── diarization speaker assignment ───────────────────────────────────────────
+
+
+class _FakeTurn:
+    def __init__(self, start, end):
+        self.start, self.end = start, end
+
+
+class _FakeAnnotation:
+    def __init__(self, turns):
+        self._turns = turns
+
+    def itertracks(self, yield_label=True):
+        for start, end, label in self._turns:
+            yield _FakeTurn(start, end), None, label
+
+
+def test_diarization_assigns_speaker_by_overlap(monkeypatch, tmp_path):
+    engine = LocalWhisperEngine(diarization=True)
+    annotation = _FakeAnnotation([(0.0, 5.0, "A"), (5.0, 10.0, "B"), (10.0, 12.0, "A")])
+    monkeypatch.setattr(engine, "_load_diarizer", lambda: (lambda path: annotation))
+
+    segments = [
+        Segment(0.5, 4.0, "first"),
+        Segment(4.5, 7.0, "second"),   # overlaps A(0.5s) and B(2.0s) -> B
+        Segment(10.1, 11.0, "third"),  # back to A
+        Segment(None, None, "no timestamps"),
+    ]
+    engine._apply_diarization(tmp_path / "x.wav", segments)
+
+    # Labels normalized in order of appearance: A -> Speaker 1, B -> Speaker 2
+    assert segments[0].speaker == "Speaker 1"
+    assert segments[1].speaker == "Speaker 2"
+    assert segments[2].speaker == "Speaker 1"
+    assert segments[3].speaker is None
+
+
+def test_diarization_no_turns_leaves_segments_untouched(monkeypatch, tmp_path):
+    engine = LocalWhisperEngine(diarization=True)
+    monkeypatch.setattr(engine, "_load_diarizer", lambda: (lambda path: _FakeAnnotation([])))
+    segments = [Segment(0, 1, "x")]
+    engine._apply_diarization(tmp_path / "x.wav", segments)
+    assert segments[0].speaker is None
+
+
+# ── openai-compat parsing ────────────────────────────────────────────────────
+
+
+def test_openai_engine_parses_verbose_json():
+    engine = OpenAICompatEngine(base_url="http://x/v1", model="whisper-1")
+    result = engine._parse(
+        {"text": "hello world", "language": "en", "duration": 10.0,
+         "segments": [{"start": 0, "end": 5, "text": " hello "},
+                      {"start": 5, "end": 10, "text": "world"}]},
+        elapsed=2.0,
+    )
+    assert result.text == "hello world"
+    assert [s.text for s in result.segments] == ["hello", "world"]
+    assert result.language == "en"
+    assert result.stats["rtf"] == 0.2
+
+
+def test_openai_engine_parses_plain_json():
+    engine = OpenAICompatEngine(base_url="http://x/v1")
+    result = engine._parse({"text": "just text"}, elapsed=1.0)
+    assert result.text == "just text" and result.segments == []
+
+
+# ── engine factory ───────────────────────────────────────────────────────────
+
+
+def _settings(**env):
+    import os
+    old = dict(os.environ)
+    os.environ.update(env)
+    try:
+        return Settings()
+    finally:
+        os.environ.clear()
+        os.environ.update(old)
+
+
+def test_build_engine_local():
+    s = _settings(PB_STT_ENGINE="local", PB_STT_MODEL="tiny", PB_TRANSCRIBE_ENABLED="true")
+    engine = build_engine(s)
+    assert isinstance(engine, LocalWhisperEngine) and engine.model_name == "tiny"
+
+
+def test_build_engine_openai():
+    s = _settings(PB_STT_ENGINE="openai", PB_TRANSCRIBE_BASE_URL="http://stt/v1",
+                  PB_TRANSCRIBE_ENABLED="true")
+    assert isinstance(build_engine(s), OpenAICompatEngine)
+
+
+def test_build_engine_openai_without_url_disables():
+    s = _settings(PB_STT_ENGINE="openai", PB_TRANSCRIBE_BASE_URL="", PB_TRANSCRIBE_ENABLED="true")
+    assert build_engine(s) is None
+
+
+def test_build_engine_disabled():
+    s = _settings(PB_TRANSCRIBE_ENABLED="false")
+    assert build_engine(s) is None
+
+
+def test_build_engine_unknown_raises():
+    s = _settings(PB_STT_ENGINE="banana", PB_TRANSCRIBE_ENABLED="true")
+    with pytest.raises(ValueError):
+        build_engine(s)
+
+
+# ── local engine guards ──────────────────────────────────────────────────────
+
+
+def test_local_engine_missing_dependency_message(tmp_path, monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+
+    def block_fw(name, *a, **k):
+        if name == "faster_whisper":
+            raise ImportError("nope")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", block_fw)
+    engine = LocalWhisperEngine(model="tiny")
+    from app.engines.base import EngineError
+
+    with pytest.raises(EngineError, match="faster-whisper is not installed"):
+        asyncio.run(engine.transcribe(tmp_path / "a.wav"))
+
+
+# ── benchmark helpers ────────────────────────────────────────────────────────
+
+
+def test_wer_perfect_and_total():
+    assert word_error_rate("hello world", "hello world") == 0.0
+    assert word_error_rate("hello world", "") == 1.0
+    assert word_error_rate("", "") == 0.0
+
+
+def test_wer_substitution_and_normalization():
+    # 1 substitution over 4 words; punctuation/case ignored
+    assert word_error_rate("The quick brown fox.", "the quick brown dog") == 0.25
+    assert normalize_words("Hello, World!") == ["hello", "world"]
+
+
+def test_bench_model_uses_engine(monkeypatch, tmp_path):
+    from app import benchmark
+    from app.engines import local_whisper
+
+    class FakeEngine:
+        load_seconds = 1.5
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def transcribe(self, path):
+            return EngineResult(
+                text="fake", segments=[], language="en", duration=10.0,
+                model=self.kwargs["model"],
+                stats={"transcribe_seconds": 2.0},
+            )
+
+    monkeypatch.setattr(local_whisper, "LocalWhisperEngine", FakeEngine)
+    row = asyncio.run(benchmark.bench_model(
+        tmp_path / "a.wav", "tiny", "cpu", "int8", False, None))
+    assert row["status"] == "ok"
+    assert row["speed"] == 5.0  # 10 s audio / 2 s wall
+    assert row["load_s"] == 1.5
+
+
+def test_bench_model_reports_failure(monkeypatch, tmp_path):
+    from app import benchmark
+    from app.engines import local_whisper
+
+    class BoomEngine:
+        load_seconds = None
+
+        def __init__(self, **kwargs): ...
+
+        async def transcribe(self, path):
+            raise RuntimeError("model exploded")
+
+    monkeypatch.setattr(local_whisper, "LocalWhisperEngine", BoomEngine)
+    row = asyncio.run(benchmark.bench_model(tmp_path / "a.wav", "tiny", "cpu", "auto", False, None))
+    assert row["status"] == "fail" and "model exploded" in row["error"]
+
+
+def test_print_table_smoke(capsys):
+    print_table(
+        [{"model": "tiny", "device": "cpu", "status": "ok", "load_s": 1, "transcribe_s": 2,
+          "speed": 5.0, "language": "en"},
+         {"model": "big", "device": "cpu", "status": "fail", "error": "boom"}],
+        has_wer=False,
+    )
+    out = capsys.readouterr().out
+    assert "tiny" in out and "FAILED — boom" in out

@@ -1,0 +1,4 @@
+# Speaker diarization (heavy: torch stack). CUDA image installs this by default.
+torch>=2.4
+torchaudio>=2.4
+pyannote.audio>=3.3

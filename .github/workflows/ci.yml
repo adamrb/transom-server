@@ -13,8 +13,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements.txt pytest
-      - run: pytest -q
+      - run: pip install -r requirements.txt -r requirements-stt.txt pytest
+      - run: pytest -q -m "not integration"
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-tiny-${{ runner.os }}
+      - run: pip install -r requirements.txt -r requirements-stt.txt pytest
+      - run: pytest -q -m integration
   docker:
     runs-on: ubuntu-latest
     steps:

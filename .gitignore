@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 venv/
 docker-compose.override.yml
+wheels-local/*.whl

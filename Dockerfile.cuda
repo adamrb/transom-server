@@ -1,0 +1,40 @@
+# GPU image: built-in faster-whisper on CUDA + pyannote speaker diarization.
+#
+# The PyPI CTranslate2 wheels ship CUDA kernels for compute capability >= 6.1
+# (Pascal+). For older cards (e.g. Maxwell / GTX 900 series, sm_52) build your
+# own CTranslate2 wheel with CT2_CUDA_ARCH_LIST set to your card's compute
+# capability and drop it into wheels-local/ — it will be installed over the
+# PyPI wheel automatically.
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-venv python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /srv/plaud-bridge
+
+RUN python3.12 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+
+COPY requirements.txt requirements-stt.txt requirements-diarization.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-stt.txt \
+    -r requirements-diarization.txt
+
+# Optional custom wheels (e.g. CTranslate2 built for pre-Pascal GPUs)
+COPY wheels-local/ /tmp/wheels-local/
+RUN if ls /tmp/wheels-local/*.whl >/dev/null 2>&1; then \
+        pip install --no-cache-dir --force-reinstall --no-deps /tmp/wheels-local/*.whl; \
+    fi && rm -rf /tmp/wheels-local
+
+COPY app ./app
+
+RUN useradd -u 1000 -m appuser && mkdir -p /data && chown appuser /data
+USER appuser
+
+# Keep downloaded models inside the data volume so they survive rebuilds.
+ENV PB_DATA_DIR=/data \
+    HF_HOME=/data/models
+VOLUME /data
+EXPOSE 8090
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8090"]

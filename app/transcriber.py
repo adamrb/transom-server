@@ -16,6 +16,7 @@ import httpx
 
 from .config import Settings
 from .db import Store, utcnow_iso
+from .engines import EngineError, TranscriptionEngine, build_engine
 
 log = logging.getLogger("plaud-bridge.transcriber")
 
@@ -23,9 +24,15 @@ POLL_INTERVAL_S = 5
 
 
 class Transcriber:
-    def __init__(self, settings: Settings, store: Store):
+    def __init__(
+        self,
+        settings: Settings,
+        store: Store,
+        engine: "TranscriptionEngine | None" = None,
+    ):
         self.settings = settings
         self.store = store
+        self.engine = engine if engine is not None else build_engine(settings)
         self.wake = asyncio.Event()
         self._task: asyncio.Task | None = None
 
@@ -75,15 +82,15 @@ class Transcriber:
             self.store.update(rec_id, status="failed", error=str(exc)[:1000])
 
     async def _process_inner(self, rec: dict) -> None:
-        if not self.settings.transcribe_enabled or not self.settings.transcribe_base_url:
+        if self.engine is None:
             self.store.update(rec["id"], status="stored")
             return
         rec_id = rec["id"]
         self.store.update(rec_id, status="transcribing", attempts=rec["attempts"] + 1)
-        log.info("transcribing %s (%s)", rec_id, rec["filename"])
+        log.info("transcribing %s (%s) via %s", rec_id, rec["filename"], self.engine.name)
         try:
-            result = await self._call_endpoint(Path(rec["audio_path"]))
-        except Exception as exc:
+            result = await self.engine.transcribe(Path(rec["audio_path"]))
+        except (EngineError, Exception) as exc:
             log.warning("transcription failed for %s: %s", rec_id, exc)
             self.store.update(rec_id, status="failed", error=str(exc)[:1000])
             return
@@ -95,15 +102,14 @@ class Transcriber:
             "session_id": rec["session_id"],
             "filename": rec["filename"],
             "started_at": rec["started_at"],
-            "duration_s": result.get("duration") or rec["duration_s"],
-            "language": result.get("language"),
-            "model": self.settings.transcribe_model,
+            "duration_s": result.duration or rec["duration_s"],
+            "language": result.language,
+            "model": result.model,
+            "engine": self.engine.name,
+            "stats": result.stats,
             "transcribed_at": utcnow_iso(),
-            "text": result.get("text", ""),
-            "segments": [
-                {"start": s.get("start"), "end": s.get("end"), "text": s.get("text", "").strip()}
-                for s in result.get("segments") or []
-            ],
+            "text": result.text,
+            "segments": [s.as_dict() for s in result.segments],
         }
         summary = await self._summarize(transcript["text"])
         if summary:
@@ -121,6 +127,7 @@ class Transcriber:
             transcript_path=str(transcript_path),
             transcript_text=transcript["text"],
             summary=summary,
+            duration_s=transcript["duration_s"],
             error=None,
         )
         log.info("transcribed %s (%d chars%s)", rec_id, len(transcript["text"]),
@@ -158,31 +165,6 @@ class Transcriber:
         except Exception as exc:
             log.warning("summarization failed: %s", exc)
             return None
-
-    async def _call_endpoint(self, audio_path: Path) -> dict:
-        base = self.settings.transcribe_base_url.rstrip("/")
-        url = f"{base}/audio/transcriptions"
-        headers = {}
-        if self.settings.transcribe_api_key:
-            headers["Authorization"] = f"Bearer {self.settings.transcribe_api_key}"
-
-        async with httpx.AsyncClient(timeout=self.settings.transcribe_timeout_s) as client:
-            for response_format in ("verbose_json", "json"):
-                data = {"model": self.settings.transcribe_model, "response_format": response_format}
-                if self.settings.transcribe_language:
-                    data["language"] = self.settings.transcribe_language
-                with audio_path.open("rb") as fh:
-                    resp = await client.post(
-                        url, headers=headers, data=data,
-                        files={"file": (audio_path.name, fh, "audio/mpeg")},
-                    )
-                if resp.status_code == 200:
-                    return resp.json()
-                # Some servers reject verbose_json; retry once with plain json.
-                if response_format == "verbose_json" and resp.status_code in (400, 422):
-                    continue
-                raise RuntimeError(f"endpoint returned {resp.status_code}: {resp.text[:300]}")
-        raise RuntimeError("unreachable")
 
     def _export_markdown(self, rec: dict, transcript: dict) -> None:
         out_dir = self.settings.markdown_export_dir

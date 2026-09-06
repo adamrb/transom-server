@@ -36,9 +36,26 @@ class Settings:
     data_dir: Path = field(default_factory=lambda: Path(_env("PB_DATA_DIR", "/data")))
     max_upload_mb: int = field(default_factory=lambda: int(_env("PB_MAX_UPLOAD_MB", "500")))
 
-    # OpenAI-compatible transcription endpoint (e.g. speaches, faster-whisper-server,
-    # or api.openai.com). Base URL should include the /v1 suffix.
+    # Transcription. PB_STT_ENGINE selects the backend:
+    #   local  — built-in faster-whisper (GPU/CPU), optional diarization (default)
+    #   openai — external OpenAI-compatible /v1/audio/transcriptions endpoint
     transcribe_enabled: bool = field(default_factory=lambda: _env_bool("PB_TRANSCRIBE_ENABLED", True))
+    stt_engine: str = field(default_factory=lambda: _env("PB_STT_ENGINE", "local"))
+
+    # -- built-in (local) engine --
+    stt_model: str = field(default_factory=lambda: _env("PB_STT_MODEL", "base"))
+    stt_device: str = field(default_factory=lambda: _env("PB_STT_DEVICE", "auto"))
+    stt_compute: str = field(default_factory=lambda: _env("PB_STT_COMPUTE", "auto"))
+    stt_vad: bool = field(default_factory=lambda: _env_bool("PB_STT_VAD", True))
+    stt_beam_size: int = field(default_factory=lambda: int(_env("PB_STT_BEAM_SIZE", "5")))
+    # Plaud hardware records up to ~5 h per file; reject anything longer.
+    stt_max_duration_s: int = field(default_factory=lambda: int(_env("PB_STT_MAX_DURATION_S", "18000")))
+    # Speaker diarization (multi-speaker labeling); needs requirements-diarization.txt
+    # and a Hugging Face token that accepted pyannote/speaker-diarization-3.1 terms.
+    stt_diarize: bool = field(default_factory=lambda: _env_bool("PB_STT_DIARIZE", False))
+    stt_hf_token: str | None = field(default_factory=lambda: _env("PB_STT_HF_TOKEN"))
+
+    # -- external (openai) engine --
     transcribe_base_url: str | None = field(default_factory=lambda: _env("PB_TRANSCRIBE_BASE_URL"))
     transcribe_api_key: str | None = field(default_factory=lambda: _env("PB_TRANSCRIBE_API_KEY"))
     transcribe_model: str = field(default_factory=lambda: _env("PB_TRANSCRIBE_MODEL", "whisper-1"))
@@ -89,8 +106,10 @@ class Settings:
             warnings.append(
                 "PB_PLAUD_CLIENT_ID / PB_PLAUD_SECRET_KEY not set — /plaud/user-token will be unavailable."
             )
-        if self.transcribe_enabled and not self.transcribe_base_url:
-            warnings.append("PB_TRANSCRIBE_BASE_URL not set — uploads will be stored but not transcribed.")
+        if self.transcribe_enabled and self.stt_engine == "openai" and not self.transcribe_base_url:
+            warnings.append("PB_STT_ENGINE=openai but PB_TRANSCRIBE_BASE_URL is not set — uploads stored, not transcribed.")
+        if self.stt_diarize and not self.stt_hf_token:
+            warnings.append("PB_STT_DIARIZE is on but PB_STT_HF_TOKEN is not set — diarization will likely fail to load.")
         if self.summary_enabled and not (self.summary_base_url and self.summary_model):
             warnings.append(
                 "PB_SUMMARY_ENABLED is on but PB_SUMMARY_BASE_URL/PB_SUMMARY_MODEL are missing — summaries disabled."
