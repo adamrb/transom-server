@@ -56,6 +56,7 @@ DEFAULT_CHAT_TEMPLATE = (
 TEMPLATE_VARS = (
     "text",
     "summary",
+    "title",
     "route_name",
     "route_description",
     "recording_id",
@@ -188,6 +189,8 @@ def payload_vars(payload: dict) -> dict[str, str]:
     return {
         "text": s(transcript.get("text")),
         "summary": s(transcript.get("summary")),
+        # AI-generated title (server >= 2026-09-07); empty for older payloads.
+        "title": s(transcript.get("title")).replace("\n", " ").strip(),
         "route_name": s(route.get("name")),
         "route_description": s(route.get("description")),
         "recording_id": s(recording.get("id")),

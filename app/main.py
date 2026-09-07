@@ -454,8 +454,19 @@ async def router_status():
 @app.get("/api/v1/routing/log", dependencies=[Depends(require_auth)])
 async def routing_log(limit: int = Query(50, ge=1, le=200)):
     runs = []
+    recs: dict[str, dict | None] = {}
     for run in store.list_router_runs(limit=limit):
         run["deliveries"] = store.deliveries_for_run(run["id"])
+        rid = run.get("recording_id")
+        if rid not in recs:
+            recs[rid] = store.get(rid) if rid else None
+        rec = recs[rid]
+        # Enough for the activity log to name the recording (the id alone is
+        # unreadable, especially on a phone). None when the recording was deleted.
+        run["recording"] = {
+            "id": rec["id"], "title": rec.get("title"), "filename": rec["filename"],
+            "started_at": rec["started_at"],
+        } if rec else None
         runs.append(_run_public(run))
     return {"runs": runs}
 

@@ -172,6 +172,11 @@ body.tab-automations main{display:none}
   #auto-pane{padding:14px}
   #detail{padding:20px 16px}
   .item .meta{font-size:12px}
+  /* Activity log: title on its own line, model chip and time below it */
+  .log-entry .l-head{flex-wrap:wrap}
+  .log-entry .l-title{flex-basis:100%;min-width:0}
+  .log-entry .l-time{margin-left:auto}
+  .sect-head h2{font-size:15px}
 }
 @media (max-width:700px){header .stats{display:none}}
 @media (max-width:480px){
@@ -1339,7 +1344,8 @@ async function loadLog() {
     new Date(b?.created_at || 0) - new Date(a?.created_at || 0));
   el.innerHTML = runs.map(run => {
     const rec = run?.recording || {};
-    const title = rec.filename || (run?.recording_id ? 'Recording ' + run.recording_id : 'Recording');
+    const title = rec.title || rec.filename ||
+      (run?.recording_id ? 'Recording ' + run.recording_id.slice(0, 8) : 'Recording (deleted)');
     return `<div class="log-entry">
       <div class="l-head">
         <span class="l-title">${esc(title)}</span>

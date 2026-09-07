@@ -598,6 +598,11 @@ class TestConfigValidation(unittest.TestCase):
                          'allow_unsafe_interpolation=true\n')
         self.assertTrue(cfg["actions"]["default"]["allow_unsafe_interpolation"])
 
+    def test_title_var_from_transcript_single_line(self):
+        vars_ = agent_runner.payload_vars({"transcript": {"title": "Line one\nline two ", "text": "t"}})
+        self.assertEqual(vars_["title"], "Line one line two")
+        self.assertEqual(agent_runner.payload_vars({"transcript": {}})["title"], "")
+
     def test_safe_vars_in_command_argv_allowed(self):
         cfg = self._load('[server]\ntoken="t"\n[actions.default]\n'
                          'command=["/usr/bin/tool", "{file}", "id={recording_id}"]\n'
