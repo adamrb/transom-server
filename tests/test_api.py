@@ -257,5 +257,9 @@ def test_vocabulary_endpoints(client):
     assert r.status_code == 200 and r.json()["added"] == 1
     by = {e["term"]: e for e in r.json()["entries"]}
     assert by["Plaud"]["aliases"] == ["plod", "plot"] and by["Plaud"]["source"] == "manual"
+    # Editors PUT without weights: the imported weight must survive the round trip.
+    client.post("/api/v1/vocabulary/import", headers=AUTH, json={"entries": [{"term": "Sphere", "source": "obsidian", "weight": 94}]})
+    r = client.put("/api/v1/vocabulary", headers=AUTH, json={"entries": [{"term": "Sphere", "source": "obsidian"}]})
+    assert r.json()["entries"][0]["weight"] == 94
     assert client.put("/api/v1/vocabulary", headers=AUTH, json={"entries": []}).status_code == 200
     assert client.get("/api/v1/vocabulary", headers=AUTH).json()["entries"] == []

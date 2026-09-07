@@ -318,6 +318,7 @@ class VocabEntryBody(BaseModel):
     term: str = Field(min_length=1, max_length=64)
     aliases: list[str] = Field(default_factory=list, max_length=20)
     source: Literal["manual", "obsidian"] = "manual"
+    weight: int | None = Field(default=None, ge=0, le=10**6)
 
 
 class VocabularyBody(BaseModel):
@@ -335,10 +336,19 @@ async def get_vocabulary():
 
 @app.put("/api/v1/vocabulary", dependencies=[Depends(require_auth)])
 async def put_vocabulary(body: VocabularyBody):
-    """Replace the whole list (what the editors save)."""
+    """Replace the whole list (what the editors save). The editors work in
+    plain text and do not carry weights, so an entry without a weight keeps
+    the weight it already had."""
     from .vocabulary import normalize
 
-    entries = normalize([e.model_dump() for e in body.entries])
+    have = {e["term"].lower(): e.get("weight") or 0 for e in store.list_vocabulary()}
+    items = []
+    for e in body.entries:
+        d = e.model_dump()
+        if d.get("weight") is None:
+            d["weight"] = have.get(d["term"].strip().lower(), 0)
+        items.append(d)
+    entries = normalize(items)
     store.replace_vocabulary([e.as_dict() for e in entries])
     return {"entries": [e.as_dict() for e in entries]}
 

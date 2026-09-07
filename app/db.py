@@ -91,6 +91,9 @@ MIGRATION_COLUMNS = {
         "title": "TEXT",
         "marks": "TEXT",   # JSON list of button-press offsets in seconds
     },
+    "vocabulary": {
+        "weight": "INTEGER NOT NULL DEFAULT 0",
+    },
     "deliveries": {
         "router_run_id": "TEXT",
         "action_type": "TEXT",
@@ -214,14 +217,14 @@ class Store:
 
     def list_vocabulary(self) -> "list[dict]":
         with self._lock:
-            rows = self._conn.execute("SELECT term, aliases, source FROM vocabulary ORDER BY term COLLATE NOCASE").fetchall()
+            rows = self._conn.execute("SELECT term, aliases, source, weight FROM vocabulary ORDER BY term COLLATE NOCASE").fetchall()
         out = []
         for r in rows:
             try:
                 aliases = json.loads(r["aliases"] or "[]")
             except ValueError:
                 aliases = []
-            out.append({"term": r["term"], "aliases": aliases, "source": r["source"]})
+            out.append({"term": r["term"], "aliases": aliases, "source": r["source"], "weight": r["weight"] or 0})
         return out
 
     def replace_vocabulary(self, entries: "list[dict]") -> None:
@@ -231,9 +234,9 @@ class Store:
             self._conn.execute("DELETE FROM vocabulary")
             for e in entries:
                 self._conn.execute(
-                    "INSERT INTO vocabulary (id, term, aliases, source, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO vocabulary (id, term, aliases, source, weight, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
                     (uuid.uuid4().hex, e["term"], json.dumps(e.get("aliases") or [], ensure_ascii=False),
-                     e.get("source") or "manual", now),
+                     e.get("source") or "manual", int(e.get("weight") or 0), now),
                 )
             self._conn.commit()
 

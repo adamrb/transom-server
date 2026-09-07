@@ -19,9 +19,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-MAX_ENTRIES = 500
+MAX_ENTRIES = 600
 MAX_TERM = 64
-HOTWORDS_MAX_CHARS = 700
+# Whisper's prompt window holds roughly 220 tokens; unusual names cost 3-4
+# tokens each, so ~800 chars is the most that survives untruncated.
+HOTWORDS_MAX_CHARS = 800
 
 
 @dataclass
@@ -29,9 +31,12 @@ class VocabEntry:
     term: str
     aliases: list[str] = field(default_factory=list)
     source: str = "manual"
+    # How prominent the term is (imports use mention counts). Decides which
+    # imported terms make it into the limited hotwords prompt.
+    weight: int = 0
 
     def as_dict(self) -> dict:
-        return {"term": self.term, "aliases": list(self.aliases), "source": self.source}
+        return {"term": self.term, "aliases": list(self.aliases), "source": self.source, "weight": self.weight}
 
 
 def _clean(s: str) -> str:
@@ -44,9 +49,13 @@ def normalize(entries: list[dict | VocabEntry]) -> list[VocabEntry]:
     out: dict[str, VocabEntry] = {}
     for e in entries:
         if isinstance(e, VocabEntry):
-            term, aliases, source = e.term, e.aliases, e.source
+            term, aliases, source, weight = e.term, e.aliases, e.source, e.weight
         else:
             term, aliases, source = e.get("term", ""), e.get("aliases") or [], e.get("source") or "manual"
+            try:
+                weight = int(e.get("weight") or 0)
+            except (TypeError, ValueError):
+                weight = 0
         term = _clean(str(term))
         if not term:
             continue
@@ -59,8 +68,10 @@ def normalize(entries: list[dict | VocabEntry]) -> list[VocabEntry]:
         if key in out:
             have = {x.lower() for x in out[key].aliases}
             out[key].aliases += [a for a in clean_aliases if a.lower() not in have]
+            out[key].weight = max(out[key].weight, weight)
         else:
-            out[key] = VocabEntry(term, clean_aliases, source if source in ("manual", "obsidian") else "manual")
+            out[key] = VocabEntry(term, clean_aliases, source if source in ("manual", "obsidian") else "manual",
+                                  max(0, min(weight, 10**6)))
         if len(out) >= MAX_ENTRIES:
             break
     return list(out.values())
@@ -69,21 +80,23 @@ def normalize(entries: list[dict | VocabEntry]) -> list[VocabEntry]:
 def merge(existing: list[VocabEntry], incoming: list[VocabEntry]) -> list[VocabEntry]:
     """Import semantics: keep everything the user has, add new terms, merge
     aliases into matching terms. Nothing is ever removed by an import."""
-    by_key = {e.term.lower(): VocabEntry(e.term, list(e.aliases), e.source) for e in existing}
+    by_key = {e.term.lower(): VocabEntry(e.term, list(e.aliases), e.source, e.weight) for e in existing}
     for e in incoming:
         cur = by_key.get(e.term.lower())
         if cur is None:
-            by_key[e.term.lower()] = VocabEntry(e.term, list(e.aliases), e.source)
+            by_key[e.term.lower()] = VocabEntry(e.term, list(e.aliases), e.source, e.weight)
         else:
             have = {a.lower() for a in cur.aliases} | {cur.term.lower()}
             cur.aliases += [a for a in e.aliases if a.lower() not in have]
+            cur.weight = max(cur.weight, e.weight)
     return list(by_key.values())[:MAX_ENTRIES]
 
 
 def hotwords_string(entries: list[VocabEntry], max_chars: int = HOTWORDS_MAX_CHARS) -> str | None:
-    """Comma-separated terms for faster-whisper's `hotwords`, manual first,
-    truncated to the prompt budget. None when the list is empty."""
-    ordered = sorted(entries, key=lambda e: (e.source != "manual", e.term.lower()))
+    """Comma-separated terms for faster-whisper's `hotwords`: manual entries
+    first, then imported ones by descending weight, truncated to the prompt
+    budget. None when the list is empty."""
+    ordered = sorted(entries, key=lambda e: (e.source != "manual", -e.weight, e.term.lower()))
     parts: list[str] = []
     used = 0
     for e in ordered:

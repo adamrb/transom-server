@@ -91,7 +91,7 @@ def parse_gazetteer(path: Path) -> list[dict]:
         canonical = parts[0]
         aliases = [a.strip() for a in parts[2].split(",")] if len(parts) > 2 else []
         aliases = [a for a in aliases if looks_like_name(a) and is_misspelling(a, canonical)]
-        out.append({"term": canonical, "aliases": aliases, "source": "obsidian"})
+        out.append({"term": canonical, "aliases": aliases, "source": "obsidian", "weight": 10000})
     return out
 
 
@@ -126,7 +126,7 @@ def parse_people(vault: Path) -> list[dict]:
         if not looks_like_name(title):
             continue
         aliases = [a for a in (fm.get("aliases") or []) if isinstance(a, str) and looks_like_name(a) and is_misspelling(a, title)]
-        out.append({"term": title, "aliases": aliases, "source": "obsidian"})
+        out.append({"term": title, "aliases": aliases, "source": "obsidian", "weight": 10000})
     return out
 
 
@@ -139,11 +139,11 @@ def parse_titles(vault: Path) -> list[dict]:
         for p in sorted(base.rglob("*.md")):
             if any(part.startswith(("Attachments", "Operational")) for part in p.relative_to(base).parts):
                 continue
-            title = re.sub(r"\s+\d{4}-\d{2}-\d{2}$", "", p.stem).strip()   # "Reunion 2026-05-02" -> "Reunion"
+            title = re.sub(r"\s+\d{4}(-\d{2}){1,2}$", "", p.stem).strip()   # "Reunion 2026-05-02" -> "Reunion"
             title = re.sub(r"\s*\([^)]*\)", "", title).strip()                 # "Openpilot (Truck)" -> "Openpilot"
             if SKIP_TITLE_RE.match(title) or not looks_like_name(title) or len(title.split()) > MAX_TITLE_WORDS:
                 continue
-            out.append({"term": title, "aliases": [], "source": "obsidian"})
+            out.append({"term": title, "aliases": [], "source": "obsidian", "weight": 200})
     return out
 
 
@@ -160,7 +160,8 @@ def _split_single_token_aliases(entries: list[dict]) -> list[dict]:
         for a in e["aliases"]:
             if len(a.split()) == 1 and len(ctoks) > 1:
                 target = min(ctoks, key=lambda t: _edit_distance(a, t))
-                x = extra.setdefault(target.lower(), {"term": target, "aliases": [], "source": e["source"]})
+                # corrections only: the full name already carries the hotword budget
+                x = extra.setdefault(target.lower(), {"term": target, "aliases": [], "source": e["source"], "weight": 0})
                 if a.lower() not in {z.lower() for z in x["aliases"]} and a.lower() != target.lower():
                     x["aliases"].append(a)
             else:
@@ -182,6 +183,109 @@ def collect(vault: Path) -> list[dict]:
     return list(seen.values())
 
 
+# --- deep mining (--deep): people pages under any */People, wikilink targets,
+# products/acronyms/surnames by frequency, weighted by mention count so the
+# hotwords budget goes to what actually comes up. -------------------------
+
+DEEP_INCLUDE = ("Life", "Work", "Career", "Personal", "0_Quick Add")
+DEEP_SKIP = {"Attachments", "Clippings", "Excalidraw", ".trash", "Archive", "Staging", "Plaud", "Library", "Extras", "Spaces"}
+STOP = set("""january february march april may june july august september october november december jan feb mar apr jun jul aug sep sept oct nov dec
+monday tuesday wednesday thursday friday saturday sunday fridays mondays today yesterday tomorrow i im ive id ill am pm ok okay yes no the a an and or but if
+claude chatgpt gpt ai todo done note notes meeting meetings summary action items next week month year day time team standup sync resources untitled
+vendors open ideas mgr sr acc svcs prin dir mr mrs ms dr""".split())
+GENERIC_ACRONYMS = {"AI", "ML", "GPU", "CPU", "UI", "UX", "VP", "FAQ", "TBD", "OS", "IT", "PDT", "PST", "GB", "MB", "TB", "II", "III", "IV", "TO", "WA",
+                    "SA", "DM", "WW", "BD", "CR", "GA", "CD", "LP", "SUP", "VS", "PTO", "YTD", "ET", "DE", "OK", "PR", "QA", "US", "UK", "TV", "PC", "USB",
+                    "API", "URL", "ID", "CEO", "CTO", "HR", "IP", "TL", "LT", "SLA", "KPI", "ROI", "POC", "MVP", "ASAP", "FYI", "EOD", "OOO", "WIP"}
+MIN_LINK, MIN_TOKEN, MIN_ACRONYM = 8, 25, 20
+
+
+def _fm_title(fm: dict, path: Path) -> str:
+    t = fm.get("title")
+    return t if isinstance(t, str) and t else path.stem
+
+
+def deep_collect(vault: Path) -> list[dict]:
+    import collections
+    files = [p for d in DEEP_INCLUDE for p in (vault / d).rglob("*.md") if not (set(p.parts) & DEEP_SKIP)]
+    people: dict[str, dict] = {}
+    links = collections.Counter(); caps = collections.Counter(); acro = collections.Counter(); phrases = collections.Counter()
+    lower_seen: set[str] = set()
+    for p in files:
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            continue
+        fm = frontmatter(p)
+        if "People" in p.parts:
+            title = _fm_title(fm, p)
+            if looks_like_name(title):
+                aliases = [a for a in (fm.get("aliases") or []) if isinstance(a, str) and looks_like_name(a) and is_misspelling(a, title)]
+                people[title.lower()] = {"term": title, "aliases": aliases, "source": "obsidian", "weight": 1}
+        body = text[text.find("\n---", 3) + 4:] if text.startswith("---") else text
+        body = re.sub(r"```.*?```", " ", body, flags=re.S)
+        body = re.sub(r"https?://\S+", " ", body)
+        for m in re.finditer(r"\[\[([^\]|#]+)", body):
+            tgt = m.group(1).strip().split("/")[-1].strip()
+            if tgt and not tgt.startswith(("_", "+")) and not re.match(r"^\d", tgt):
+                links[tgt] += 1
+        plain = re.sub(r"\[\[[^\]]+\]\]", " ", body)
+        for w in re.findall(r"[a-z][a-z'-]{2,}", plain):
+            lower_seen.add(w.lower())
+        for sent in re.split(r"(?<=[.!?])\s+|\n+", plain):
+            toks = re.findall(r"[A-Za-z][A-Za-z0-9'&.-]*", sent)
+            for i, tok in enumerate(toks):
+                if re.fullmatch(r"[A-Z][A-Z0-9]{2,7}", tok):
+                    acro[tok] += 1
+                elif re.fullmatch(r"[A-Z][a-z]+[A-Z][A-Za-z0-9]+", tok):
+                    caps[tok] += 1
+                elif i > 0 and re.fullmatch(r"[A-Z][a-z]{2,}", tok):
+                    caps[tok] += 1
+            for m in re.finditer(r"(?<!^)\b([A-Z][a-z]+(?:\s+(?:[A-Z][a-z0-9]+|[A-Z]{2,})){1,2})\b", sent):
+                phrases[m.group(1)] += 1
+
+    out: dict[str, dict] = {}
+
+    def add(term: str, weight: int, aliases=None):
+        key = term.lower()
+        if key in out:
+            out[key]["weight"] = max(out[key]["weight"], weight)
+        else:
+            out[key] = {"term": term, "aliases": list(aliases or []), "source": "obsidian", "weight": weight}
+
+    # People pages, weighted by how often they are linked or written out.
+    for key, e in people.items():
+        w = links.get(e["term"], 0) + phrases.get(e["term"], 0)
+        add(e["term"], max(w, 1) * 10, e["aliases"])
+    name_tokens = {t.lower() for e in people.values() for t in e["term"].split()}
+
+    def generic(title: str) -> bool:
+        words = title.split()
+        return (not looks_like_name(title) or len(words) > 5 or any(w.lower() in STOP for w in words)
+                or re.search(r"\d{4}-\d{2}|\bQ[1-4]\b|1on1|1-1|\bweekly\b", title, re.I) is not None)
+
+    # Linked pages (projects, mechanisms, products) by link count.
+    for tgt, c in links.items():
+        if c >= MIN_LINK and tgt.lower() not in out and not generic(tgt):
+            add(tgt, c * 5)
+    # Domain acronyms.
+    for tok, c in acro.items():
+        if c >= MIN_ACRONYM and tok not in GENERIC_ACRONYMS and tok.lower() not in lower_seen and len(tok) >= 3:
+            add(tok, c)
+    # Products, places, surnames that only ever appear capitalized.
+    for tok, c in caps.items():
+        if (c >= MIN_TOKEN and tok.lower() not in lower_seen and tok.lower() not in STOP
+                and tok.lower() not in name_tokens and not re.fullmatch(r"[A-Z][a-z]{2}", tok)):
+            add(tok, c)
+    # Multi-word proper phrases (places, venues, products) not already a person.
+    for ph, c in phrases.items():
+        words = ph.split()
+        if (c >= 10 and ph.lower() not in out and all(w.lower() not in STOP for w in words)
+                and not all(w.lower() in name_tokens for w in words)
+                and all((w.lower() not in lower_seen) or w.isupper() for w in words)):
+            add(ph, c * 2)
+    return list(out.values())
+
+
 def push(url: str, token: str, entries: list[dict]) -> dict:
     req = urllib.request.Request(
         url.rstrip("/") + "/api/v1/vocabulary/import",
@@ -199,11 +303,30 @@ def main() -> int:
     ap.add_argument("--url", help="plaud-bridge base URL; omit for a dry run")
     ap.add_argument("--token-env", default="PB_AUTH_TOKENS", help="env var holding the bearer token")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--deep", action="store_true",
+                    help="also mine people pages anywhere, linked pages, products, acronyms (weighted by mentions)")
+    ap.add_argument("--top", type=int, default=0, help="print only the N heaviest terms (dry run)")
     args = ap.parse_args()
     entries = collect(args.vault)
-    print(f"{len(entries)} terms from {args.vault}", file=sys.stderr)
     for e in entries:
-        print(f"  {e['term']}" + (f" = {', '.join(e['aliases'])}" if e["aliases"] else ""), file=sys.stderr)
+        e.setdefault("weight", 0)
+    if args.deep:
+        have = {e["term"].lower(): e for e in entries}
+        for e in deep_collect(args.vault):
+            cur = have.get(e["term"].lower())
+            if cur is None:
+                entries.append(e); have[e["term"].lower()] = e
+            else:
+                cur["weight"] = max(cur.get("weight", 0), e["weight"])
+                cur["aliases"] += [a for a in e["aliases"] if a.lower() not in {x.lower() for x in cur["aliases"]}]
+    entries.sort(key=lambda e: -e.get("weight", 0))
+    if args.top:
+        entries_print = entries[: args.top]
+    else:
+        entries_print = entries
+    print(f"{len(entries)} terms from {args.vault}", file=sys.stderr)
+    for e in entries_print:
+        print(f"  {e.get('weight', 0):>6}  {e['term']}" + (f" = {', '.join(e['aliases'])}" if e["aliases"] else ""), file=sys.stderr)
     if args.dry_run or not args.url:
         json.dump({"entries": entries}, sys.stdout, ensure_ascii=False, indent=1)
         print()

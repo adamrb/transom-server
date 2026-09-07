@@ -9,9 +9,10 @@ def test_normalize_dedupes_and_cleans():
     assert len(v) == 1 and v[0].term == "Plaud" and v[0].aliases == ["plot", "Plod"]
 
 
-def test_hotwords_manual_first_and_capped():
-    v = [VocabEntry("Zed", source="obsidian"), VocabEntry("Alpha"), VocabEntry("Beta")]
-    assert hotwords_string(v) == "Alpha, Beta, Zed"
+def test_hotwords_manual_first_then_weight_then_capped():
+    v = [VocabEntry("Zed", source="obsidian", weight=5), VocabEntry("Alpha"), VocabEntry("Beta"),
+         VocabEntry("Aardvark", source="obsidian", weight=1)]
+    assert hotwords_string(v) == "Alpha, Beta, Zed, Aardvark"
     assert hotwords_string(v, max_chars=13) == "Alpha, Beta"
     assert hotwords_string([]) is None
 
@@ -37,3 +38,10 @@ def test_editor_text_roundtrip():
     entries = parse_editor_text(text)
     assert [e.term for e in entries] == ["Plaud Bridge", "Obsidian"]
     assert to_editor_text(entries) == "Obsidian\nPlaud Bridge = Plogged Bridge, plod bridge"
+
+
+def test_weight_survives_normalize_and_merge():
+    v = normalize([{"term": "Sphere", "source": "obsidian", "weight": "94"}, {"term": "sphere", "weight": 3}])
+    assert v[0].weight == 94
+    merged = merge([VocabEntry("Sphere", source="obsidian", weight=10)], [VocabEntry("Sphere", weight=40)])
+    assert merged[0].weight == 40
