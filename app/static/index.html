@@ -64,6 +64,7 @@ audio{width:100%;margin:10px 0 20px}
 .err{color:var(--err)}
 .muted{color:var(--muted)}
 #gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:30}
+#gate[hidden]{display:none}
 #gate form{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:30px;width:360px;max-width:calc(100vw - 32px)}
 #gate h1{font-size:18px;margin:0 0 6px}
 #gate p{color:var(--muted);font-size:13.5px;margin:0 0 16px}
@@ -829,6 +830,15 @@ return exports.toQR; })();
 <script>
 let token = localStorage.getItem('pb_token') || '';
 let currentId = null, audioUrl = null, timer = null;
+// A login token is any nonempty run of printable, non-space ASCII (the server
+// accepts any configured bearer token), capped at 512 chars. Control chars are
+// excluded so the value is always a legal HTTP header.
+const TOKEN_RE = /^[\x21-\x7e]{1,512}$/;
+// Set once a token has been validated this session. Guards against a bogus
+// login fragment tearing down a working session (see verify()).
+let authed = false;
+// Monotonic counter so a superseded auth check cannot clobber a newer result.
+let authAttempt = 0;
 let currentTab = 'recordings';
 let routesCache = [], editingRouteId = null, routingSupported = null;
 
@@ -851,14 +861,36 @@ async function apiJson(path, opts) {
 }
 
 function showGate() { $('gate').hidden = false; }
+// Validate a candidate token against the server, adopting it (and opening the
+// dashboard) only on a 204. An attempt counter drops superseded responses so
+// overlapping checks cannot leave the gate in the wrong state, and a network
+// error falls through to showing the gate rather than a blank shell. A failed
+// check while already authenticated is a no-op, so a bogus login fragment
+// cannot lock the user out of a working session. Returns true iff adopted.
+async function verify(candidate) {
+  const attempt = ++authAttempt;
+  let ok = false;
+  try {
+    const r = await fetch('/api/v1/auth/check', { headers: { 'Authorization': 'Bearer ' + candidate } });
+    ok = r.status === 204;
+  } catch (_) { ok = false; }
+  if (attempt !== authAttempt) return false;   // a newer attempt superseded this one
+  if (ok) {
+    token = candidate;
+    localStorage.setItem('pb_token', token);
+    authed = true;
+    $('gate').hidden = true;
+    init();
+  } else if (!authed) {
+    showGate();
+  }
+  return ok;
+}
 async function gateSubmit(e) {
   e.preventDefault();
-  token = $('gate-token').value.trim();
-  const r = await fetch('/api/v1/auth/check', { headers: { 'Authorization': 'Bearer ' + token } });
-  if (r.status === 204) {
-    localStorage.setItem('pb_token', token);
-    $('gate').hidden = true; init();
-  } else { $('gate-err').textContent = 'Invalid token'; }
+  const candidate = $('gate-token').value.trim();
+  if (!TOKEN_RE.test(candidate)) { $('gate-err').textContent = 'Invalid token'; return false; }
+  if (!(await verify(candidate))) $('gate-err').textContent = 'Invalid token';
   return false;
 }
 function logout() { localStorage.removeItem('pb_token'); location.reload(); }
@@ -1253,7 +1285,7 @@ function openConnect() {
   catch { $('qr-holder').innerHTML = '<div class="err">Could not generate QR code.</div>'; }
   $('cp-url').value = location.origin;
   $('cp-token').value = token;
-  $('cp-link').value = location.origin + '/#token=' + token;
+  $('cp-link').value = location.origin + '/#token=' + encodeURIComponent(token);
   $('connect-overlay').hidden = false;
   loadApkInfo();
 }
@@ -1391,20 +1423,36 @@ async function init() {
   }, 15000);
 }
 
-(async () => {
-  // Login link: /#token=<value> unlocks without typing (fragments are never
-  // sent to the server). Consumed into localStorage, then scrubbed from the
-  // URL and history.
-  const frag = location.hash.match(/^#token=([\w-]{8,512})$/);
-  if (frag) {
-    token = frag[1];
-    localStorage.setItem('pb_token', token);
-    history.replaceState(null, '', location.pathname + location.search);
-  }
-  if (!token) return showGate();
-  const r = await fetch('/api/v1/auth/check', { headers: { 'Authorization': 'Bearer ' + token } });
-  if (r.status === 204) init(); else showGate();
-})();
+// Login link: /#token=<value> unlocks without typing (fragments are never sent
+// to the server). Any #token fragment is always scrubbed from the URL/history
+// immediately — even when malformed — so a rejected secret never lingers. The
+// candidate is decoded and validated but NOT adopted here: verify() adopts it
+// only after the server confirms it. Returns the candidate token, or '' if the
+// fragment is absent, malformed, or fails the grammar.
+function consumeLoginFragment() {
+  const m = location.hash.match(/^#token=(.*)$/);
+  if (!m) return '';
+  history.replaceState(null, '', location.pathname + location.search);
+  let candidate = '';
+  try { candidate = decodeURIComponent(m[1]); } catch (_) { candidate = ''; }
+  return TOKEN_RE.test(candidate) ? candidate : '';
+}
+
+async function boot() {
+  const candidate = consumeLoginFragment() || token;
+  if (!candidate) return showGate();
+  await verify(candidate);
+}
+
+// Handle a login link tapped while the page is already open: a fragment-only
+// navigation does not reload the document, so validate the new token on
+// hashchange rather than leaving the gate up (or clobbering a working token).
+window.addEventListener('hashchange', () => {
+  const candidate = consumeLoginFragment();
+  if (candidate) verify(candidate);
+});
+
+boot();
 </script>
 </body>
 </html>
