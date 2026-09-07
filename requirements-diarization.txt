@@ -1,4 +1,13 @@
 # Speaker diarization (heavy: torch stack). CUDA image installs this by default.
-torch>=2.4
-torchaudio>=2.4
-pyannote.audio>=3.3
+#
+# torch is PINNED to 2.8.0+cu126, NOT left open-ended. PyTorch's cu128+ wheels
+# (2.9+) dropped Maxwell (sm_50/sm_52) kernels, so on a GTX 900-series card an
+# unpinned `torch>=2.4` resolves to a build that reports CUDA unavailable and
+# silently runs diarization on the CPU (30-60x slower). The 2.8.0+cu126 wheel
+# still ships sm_50 kernels (binary-compatible with sm_52) and matches this
+# image's CUDA 12.6 base + the cuDNN it bundles (9.10.x, verified working on
+# Maxwell). If you're on Pascal+ any recent torch is fine — relax the pin.
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.8.0
+torchaudio==2.8.0
+pyannote.audio>=4.0

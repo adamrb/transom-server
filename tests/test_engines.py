@@ -61,8 +61,8 @@ class _FakeAnnotation:
 
 def test_diarization_assigns_speaker_by_overlap(monkeypatch, tmp_path):
     engine = LocalWhisperEngine(diarization=True)
-    annotation = _FakeAnnotation([(0.0, 5.0, "A"), (5.0, 10.0, "B"), (10.0, 12.0, "A")])
-    monkeypatch.setattr(engine, "_load_diarizer", lambda: (lambda path: annotation))
+    turns = [(0.0, 5.0, "A"), (5.0, 10.0, "B"), (10.0, 12.0, "A")]
+    monkeypatch.setattr(engine, "_run_diarizer", lambda path: turns)
 
     segments = [
         Segment(0.5, 4.0, "first"),
@@ -70,7 +70,7 @@ def test_diarization_assigns_speaker_by_overlap(monkeypatch, tmp_path):
         Segment(10.1, 11.0, "third"),  # back to A
         Segment(None, None, "no timestamps"),
     ]
-    engine._apply_diarization(tmp_path / "x.wav", segments)
+    engine._apply_diarization(tmp_path / "x.wav", segments, words=[])
 
     # Labels normalized in order of appearance: A -> Speaker 1, B -> Speaker 2
     assert segments[0].speaker == "Speaker 1"
@@ -79,11 +79,30 @@ def test_diarization_assigns_speaker_by_overlap(monkeypatch, tmp_path):
     assert segments[3].speaker is None
 
 
+def test_diarization_word_level_splits_segment_at_speaker_change(monkeypatch, tmp_path):
+    """One coarse whisper segment spans two speakers; B's turn is the shorter.
+    Segment-level assignment would hand the whole thing to A. With word
+    timestamps the segment is split at the boundary and B's words survive."""
+    engine = LocalWhisperEngine(diarization=True)
+    turns = [(0.0, 6.0, "A"), (6.0, 8.0, "B")]
+    monkeypatch.setattr(engine, "_run_diarizer", lambda path: turns)
+    segments = [Segment(0.0, 8.0, "Now say something. No, I won't.")]
+    words = [(0.0, 1.0, " Now"), (1.0, 2.0, " say"), (2.0, 5.9, " something."),
+             (6.1, 7.0, " No,"), (7.0, 7.5, " I"), (7.5, 8.0, " won't.")]
+    engine._apply_diarization(tmp_path / "x.wav", segments, words)
+    assert [(s.speaker, s.text) for s in segments] == [
+        ("Speaker 1", "Now say something."),
+        ("Speaker 2", "No, I won't."),
+    ]
+    assert (segments[0].start, segments[0].end) == (0.0, 5.9)
+    assert (segments[1].start, segments[1].end) == (6.1, 8.0)
+
+
 def test_diarization_no_turns_leaves_segments_untouched(monkeypatch, tmp_path):
     engine = LocalWhisperEngine(diarization=True)
-    monkeypatch.setattr(engine, "_load_diarizer", lambda: (lambda path: _FakeAnnotation([])))
+    monkeypatch.setattr(engine, "_run_diarizer", lambda path: [])
     segments = [Segment(0, 1, "x")]
-    engine._apply_diarization(tmp_path / "x.wav", segments)
+    engine._apply_diarization(tmp_path / "x.wav", segments, words=[])
     assert segments[0].speaker is None
 
 
@@ -244,12 +263,10 @@ def test_diarization_cumulative_overlap_beats_single_turn(monkeypatch, tmp_path)
     # Speaker A has two short turns inside the segment (total 2.0s); speaker B
     # one longer turn (1.5s). Cumulative overlap must pick A.
     engine = LocalWhisperEngine(diarization=True)
-    annotation = _FakeAnnotation([
-        (0.0, 1.0, "A"), (1.0, 2.5, "B"), (2.5, 3.5, "A"),
-    ])
-    monkeypatch.setattr(engine, "_load_diarizer", lambda: (lambda path: annotation))
+    turns = [(0.0, 1.0, "A"), (1.0, 2.5, "B"), (2.5, 3.5, "A")]
+    monkeypatch.setattr(engine, "_run_diarizer", lambda path: turns)
     segments = [Segment(0.0, 3.5, "who said this")]
-    engine._apply_diarization(tmp_path / "x.wav", segments)
+    engine._apply_diarization(tmp_path / "x.wav", segments, words=[])
     assert segments[0].speaker == "Speaker 1"  # A appears first -> Speaker 1
 
 

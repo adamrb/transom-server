@@ -19,7 +19,11 @@ def build_engine(settings) -> "TranscriptionEngine | None":
             vad_filter=settings.stt_vad,
             max_duration_s=settings.stt_max_duration_s,
             diarization=settings.stt_diarize,
+            diarization_model=settings.stt_diarize_model,
             hf_token=settings.stt_hf_token,
+            num_speakers=settings.stt_num_speakers,
+            min_speakers=settings.stt_min_speakers,
+            max_speakers=settings.stt_max_speakers,
             beam_size=settings.stt_beam_size,
         )
     if settings.stt_engine == "openai":
