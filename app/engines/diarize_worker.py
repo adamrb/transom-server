@@ -110,6 +110,20 @@ def _diarize(pipeline, audio_path: str) -> list:
     ]
 
 
+def _release_gpu_cache() -> None:
+    """Hand cached CUDA blocks back to the driver between requests. torch's
+    caching allocator otherwise keeps each request's peak resident for the
+    life of this long-lived worker; alongside whisper's own context that
+    nearly filled a 6 GB card after a single short clip."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def _serve(model: str | None) -> int:
     """Load once, then one audio path per stdin line -> one JSON line out."""
     pipeline = _load_pipeline(model)
@@ -124,6 +138,8 @@ def _serve(model: str | None) -> int:
             result: object = _diarize(pipeline, audio_path)
         except Exception as exc:  # keep serving; report per-request failure
             result = {"error": str(exc)}
+        finally:
+            _release_gpu_cache()
         sys.stdout.write(json.dumps(result) + "\n")
         sys.stdout.flush()
     return 0
