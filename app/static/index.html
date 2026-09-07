@@ -76,6 +76,11 @@ audio{width:100%;margin:10px 0 20px}
   border:1px solid var(--border);border-radius:8px;padding:9px 12px;margin-bottom:12px}
 #gate button{width:100%}
 #gate .err{font-size:13px;min-height:18px;margin-top:8px}
+#gate .gate-qr{text-align:center;margin:6px 0 14px}
+#gate .gate-qr svg{border-radius:10px;background:#fff;padding:6px;max-width:100%}
+#gate .gate-qr p{margin:10px 0 4px;text-align:left}
+#gate details summary{cursor:pointer;color:var(--muted);font-size:13.5px;margin-bottom:10px}
+#gate details input{margin-top:6px}
 .seg{color:var(--muted);font-size:12px;margin-right:8px;font-variant-numeric:tabular-nums}
 /* Rendered markdown (summaries): tight vertical rhythm inside a card */
 .md p{margin:0 0 8px}.md p:last-child{margin-bottom:0}.md h4{margin:10px 0 4px;font-size:15px}
@@ -131,6 +136,7 @@ body.tab-automations main{display:none}
 .route-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:10px}
 .route-card.disabled .r-name,.route-card.disabled .r-desc{opacity:.55}
 .route-card .r-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.r-head{display:flex;align-items:center;gap:10px}
 .route-card .r-name{font-weight:650;flex:1;min-width:120px;overflow-wrap:anywhere}
 .route-card .r-desc{color:var(--muted);font-size:13.5px;margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere}
 .route-card .r-action{font-size:12.5px;color:var(--muted);margin-top:8px;overflow-wrap:anywhere}
@@ -209,9 +215,16 @@ body.tab-automations main{display:none}
 <div id="gate" hidden>
   <form onsubmit="return gateSubmit(event)">
     <h1>Plaud Bridge</h1>
-    <p>Enter the server access token (<code>PB_AUTH_TOKENS</code>) to open the dashboard.</p>
-    <input id="gate-token" type="password" placeholder="access token" autocomplete="current-password">
-    <button class="primary">Unlock</button>
+    <div class="gate-qr">
+      <div id="gate-qr-holder" aria-label="Sign-in QR code"></div>
+      <p><b>Sign in with your phone.</b> In the Plaud Bridge app open Settings, tap <i>Sign in on a computer</i> and scan this code.</p>
+      <div class="muted" id="gate-qr-status" style="font-size:12.5px;min-height:18px"></div>
+    </div>
+    <details class="gate-token">
+      <summary>Or enter the access token</summary>
+      <input id="gate-token" type="password" placeholder="access token" autocomplete="current-password">
+      <button class="primary">Unlock</button>
+    </details>
     <div class="err" id="gate-err"></div>
   </form>
 </div>
@@ -264,6 +277,11 @@ body.tab-automations main{display:none}
         <textarea id="vocab-text" rows="8" spellcheck="false" placeholder="Plaud&#10;Plaud Bridge = Plogged Bridge&#10;Obsidian"></textarea>
         <div class="muted" id="vocab-status" style="font-size:12.5px;margin-top:6px"></div>
       </div>
+      <div class="sect-head">
+        <h2>Signed-in computers</h2>
+        <button class="small" onclick="loadSessions()">Refresh</button>
+      </div>
+      <div id="sessions-list"><div class="empty-note">Loading…</div></div>
       <div class="sect-head">
         <h2>Activity log</h2>
         <button class="small" onclick="loadLog()">Refresh</button>
@@ -954,7 +972,60 @@ async function apiJson(path, opts) {
   return r.status === 204 ? null : r.json();
 }
 
-function showGate() { $('gate').hidden = false; }
+let gateReq = null, gatePollTimer = null;
+function showGate() { $('gate').hidden = false; startQrLogin(); }
+function hideGateQr() { clearTimeout(gatePollTimer); gatePollTimer = null; gateReq = null; }
+// QR sign-in: ask the server for a short-lived login request, show its id as
+// a QR the phone app can scan, and poll until the phone approves. The server
+// hands over a per-computer session token exactly once; verify() adopts it.
+async function startQrLogin() {
+  hideGateQr();
+  const holder = $('gate-qr-holder'), status = $('gate-qr-status');
+  if (!holder) return;
+  try {
+    const r = await fetch('/api/v1/login-requests', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: browserLabel() }) });
+    if (r.status === 404) { holder.innerHTML = ''; status.textContent = 'This server does not support QR sign-in yet.'; return; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    gateReq = await r.json();
+  } catch (e) { holder.innerHTML = ''; status.textContent = 'Could not reach the server for QR sign-in.'; return; }
+  try { holder.innerHTML = qrSvg(JSON.stringify({ v: 1, kind: 'login', url: location.origin, id: gateReq.id }), 200); }
+  catch { holder.innerHTML = '<div class="err">Could not draw the QR code.</div>'; return; }
+  status.textContent = 'Waiting for your phone…';
+  const poll = async () => {
+    if (!gateReq) return;
+    let data = null;
+    try { data = await (await fetch('/api/v1/login-requests/' + encodeURIComponent(gateReq.id))).json(); } catch { data = null; }
+    if (!gateReq) return;
+    if (data && data.status === 'approved' && data.token) { hideGateQr(); status.textContent = 'Signed in.'; await verify(data.token); return; }
+    if (!data || data.status === 'expired') { status.textContent = 'Code expired, getting a new one…'; startQrLogin(); return; }
+    gatePollTimer = setTimeout(poll, (gateReq.poll_seconds || 2) * 1000);
+  };
+  gatePollTimer = setTimeout(poll, 2000);
+}
+function browserLabel() {
+  const ua = navigator.userAgent;
+  const os = /Windows/.test(ua) ? 'Windows' : /Mac OS X/.test(ua) ? 'Mac' : /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS' : /Linux/.test(ua) ? 'Linux' : '';
+  const br = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
+  return [br, os].filter(Boolean).join(' on ');
+}
+/* ---------- signed-in computers ---------- */
+async function loadSessions() {
+  const el = $('sessions-list'); if (!el) return;
+  try {
+    const d = await apiJson('/sessions');
+    el.innerHTML = (d.sessions || []).map(s_ => `<div class="route-card session-row">
+        <div class="r-head"><span class="r-name">${esc(s_.label || 'Web browser')}${s_.current ? ' <span class="chip ok">this computer</span>' : ''}</span>
+        <button class="small danger" onclick="revokeSession('${jsArg(s_.id)}')">Sign out</button></div>
+        <div class="r-desc">Signed in ${fmtDate(s_.created_at)}${s_.last_used_at ? ' · last used ' + fmtDate(s_.last_used_at) : ''}</div>
+      </div>`).join('') || '<div class="empty-note">No computers signed in with a QR code. Tokens entered by hand are not listed.</div>';
+  } catch (e) { el.innerHTML = `<div class="empty-note">${e.status === 404 ? 'This backend does not support sessions yet.' : 'Failed to load signed-in computers.'}</div>`; }
+}
+async function revokeSession(id) {
+  if (!confirm('Sign this computer out?')) return;
+  await api('/sessions/' + id, { method: 'DELETE' });
+  loadSessions();
+}
 // Validate a candidate token against the server, adopting it (and opening the
 // dashboard) only on a 204. An attempt counter drops superseded responses so
 // overlapping checks cannot leave the gate in the wrong state, and a network
@@ -973,6 +1044,7 @@ async function verify(candidate) {
     token = candidate;
     localStorage.setItem('pb_token', token);
     authed = true;
+    hideGateQr();
     $('gate').hidden = true;
     init();
   } else if (!authed) {
@@ -987,7 +1059,11 @@ async function gateSubmit(e) {
   if (!(await verify(candidate))) $('gate-err').textContent = 'Invalid token';
   return false;
 }
-function logout() { localStorage.removeItem('pb_token'); location.reload(); }
+async function logout() {
+  // Revoke this computer's session server-side (no-op for a hand-entered token), then forget it.
+  try { await api('/auth/logout', { method: 'POST' }); } catch (_) {}
+  localStorage.removeItem('pb_token'); location.reload();
+}
 
 function fmtDur(s) {
   if (s == null) return '';
@@ -1282,7 +1358,7 @@ async function loadAutomations() {
     return;
   }
   $('auto-body').hidden = false;
-  loadRoutes(); loadLog(); loadVocabulary();
+  loadRoutes(); loadLog(); loadVocabulary(); loadSessions();
 }
 
 /* ---------- custom vocabulary ---------- */

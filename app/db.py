@@ -59,6 +59,27 @@ CREATE TABLE IF NOT EXISTS router_runs (
     error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_router_runs_recording ON router_runs(recording_id);
+-- Browser sessions minted by approving a QR login from the phone. Only the
+-- SHA-256 of the token is stored; revoking a row logs that computer out.
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    token_hash TEXT UNIQUE NOT NULL,
+    label TEXT,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked_at TEXT
+);
+-- Short-lived QR login handshakes: the browser creates one and polls it, the
+-- phone approves it, the browser collects the minted token exactly once.
+CREATE TABLE IF NOT EXISTS login_requests (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    label TEXT,
+    token TEXT,
+    approved_at TEXT
+);
 CREATE TABLE IF NOT EXISTS deliveries (
     id TEXT PRIMARY KEY,
     recording_id TEXT,
@@ -212,6 +233,75 @@ class Store:
         return [dict(r) for r in rows]
 
     # ── AI routing ────────────────────────────────────────────────────────
+
+    # -- QR login: sessions + login requests ------------------------------------
+
+    def insert_session(self, token_hash: str, label: str | None) -> str:
+        return self._insert("sessions", {"token_hash": token_hash, "label": label,
+                                         "created_at": utcnow_iso(), "last_used_at": utcnow_iso()})
+
+    def session_by_hash(self, token_hash: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM sessions WHERE token_hash = ? AND revoked_at IS NULL", (token_hash,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def touch_session(self, session_id: str) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE sessions SET last_used_at = ? WHERE id = ?", (utcnow_iso(), session_id))
+            self._conn.commit()
+
+    def list_sessions(self) -> "list[dict]":
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, label, created_at, last_used_at FROM sessions WHERE revoked_at IS NULL ORDER BY created_at DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def revoke_session(self, session_id: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", (utcnow_iso(), session_id)
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def insert_login_request(self, req_id: str, expires_at: str, label: str | None) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO login_requests (id, created_at, expires_at, status, label) VALUES (?, ?, ?, 'pending', ?)",
+                (req_id, utcnow_iso(), expires_at, label),
+            )
+            self._conn.commit()
+
+    def get_login_request(self, req_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM login_requests WHERE id = ?", (req_id,)).fetchone()
+        return dict(row) if row else None
+
+    def approve_login_request(self, req_id: str, token: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE login_requests SET status = 'approved', token = ?, approved_at = ? "
+                "WHERE id = ? AND status = 'pending' AND expires_at > ?",
+                (token, utcnow_iso(), req_id, utcnow_iso()),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def delete_login_request(self, req_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM login_requests WHERE id = ?", (req_id,))
+            self._conn.commit()
+
+    def purge_login_requests(self) -> int:
+        """Drop expired handshakes; returns how many pending ones remain (rate cap)."""
+        with self._lock:
+            self._conn.execute("DELETE FROM login_requests WHERE expires_at <= ?", (utcnow_iso(),))
+            n = self._conn.execute("SELECT COUNT(*) FROM login_requests WHERE status = 'pending'").fetchone()[0]
+            self._conn.commit()
+        return int(n)
 
     # -- custom vocabulary ---------------------------------------------------
 

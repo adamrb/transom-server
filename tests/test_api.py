@@ -263,3 +263,48 @@ def test_vocabulary_endpoints(client):
     assert r.json()["entries"][0]["weight"] == 94
     assert client.put("/api/v1/vocabulary", headers=AUTH, json={"entries": []}).status_code == 200
     assert client.get("/api/v1/vocabulary", headers=AUTH).json()["entries"] == []
+
+
+def test_qr_login_handshake_mints_revocable_session(client):
+    # Browser (signed out) creates a request and polls: pending.
+    r = client.post("/api/v1/login-requests", json={"label": "Chrome on Linux"})
+    assert r.status_code == 201
+    req_id = r.json()["id"]
+    assert client.get(f"/api/v1/login-requests/{req_id}").json() == {"status": "pending"}
+    # Approve requires auth.
+    assert client.post(f"/api/v1/login-requests/{req_id}/approve").status_code == 401
+    # Phone approves with the master token.
+    r = client.post(f"/api/v1/login-requests/{req_id}/approve", headers=AUTH, json={"label": "Web · Pixel"})
+    assert r.status_code == 200 and r.json()["status"] == "approved"
+    # Browser collects the token exactly once.
+    r = client.get(f"/api/v1/login-requests/{req_id}")
+    assert r.json()["status"] == "approved"
+    session_token = r.json()["token"]
+    assert session_token and session_token != "test-token-1"
+    assert client.get(f"/api/v1/login-requests/{req_id}").json() == {"status": "expired"}
+    # The session token works like a real token, is listed, and marks itself current.
+    sess_auth = {"Authorization": f"Bearer {session_token}"}
+    assert client.get("/api/v1/auth/check", headers=sess_auth).status_code == 204
+    sessions = client.get("/api/v1/sessions", headers=sess_auth).json()["sessions"]
+    mine = [s for s in sessions if s["current"]]
+    assert len(mine) == 1 and mine[0]["label"] == "Web · Pixel"
+    # A second approve of the same request is refused.
+    assert client.post(f"/api/v1/login-requests/{req_id}/approve", headers=AUTH).status_code == 404
+    # Logout revokes only that session.
+    assert client.post("/api/v1/auth/logout", headers=sess_auth).status_code == 204
+    assert client.get("/api/v1/auth/check", headers=sess_auth).status_code == 401
+    assert client.get("/api/v1/auth/check", headers=AUTH).status_code == 204
+
+
+def test_qr_login_revoke_from_another_client_and_unknown_request(client):
+    req_id = client.post("/api/v1/login-requests").json()["id"]
+    client.post(f"/api/v1/login-requests/{req_id}/approve", headers=AUTH)
+    tok = client.get(f"/api/v1/login-requests/{req_id}").json()["token"]
+    sid = [s for s in client.get("/api/v1/sessions", headers=AUTH).json()["sessions"] if s["label"] == "Web browser"][0]["id"]
+    assert client.delete(f"/api/v1/sessions/{sid}", headers=AUTH).status_code == 204
+    assert client.get("/api/v1/auth/check", headers={"Authorization": f"Bearer {tok}"}).status_code == 401
+    assert client.delete(f"/api/v1/sessions/{sid}", headers=AUTH).status_code == 404
+    assert client.get("/api/v1/login-requests/nope").json() == {"status": "expired"}
+    assert client.post("/api/v1/login-requests/nope/approve", headers=AUTH).status_code == 404
+    # The public poll path must not leak into other authenticated GETs.
+    assert client.get("/api/v1/sessions").status_code == 401

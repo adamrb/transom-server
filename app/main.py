@@ -28,6 +28,7 @@ Endpoints (all under /api/v1, Bearer-token auth except /health):
 
 import hashlib
 import hmac
+import secrets
 import json
 import logging
 import os
@@ -36,7 +37,7 @@ import shutil
 import sqlite3
 import tempfile
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -84,21 +85,52 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Plaud Bridge", version=VERSION, lifespan=lifespan)
 
 PUBLIC_PATHS = {"/api/v1/health"}
+LOGIN_REQUEST_TTL_S = 180
+MAX_PENDING_LOGIN_REQUESTS = 50
+
+
+def _is_public(path: str, method: str) -> bool:
+    """Health, plus the two halves of the QR handshake a not-yet-signed-in
+    browser must reach: creating a login request and polling it. Approval,
+    session listing and revocation stay authenticated."""
+    if path in PUBLIC_PATHS:
+        return True
+    if path == "/api/v1/login-requests" and method == "POST":
+        return True
+    return path.startswith("/api/v1/login-requests/") and not path.endswith("/approve") and method == "GET"
+
+
+def _session_for(token: str) -> dict | None:
+    if store is None:
+        return None
+    return store.session_by_hash(hashlib.sha256(token.encode()).hexdigest())
 
 
 def _token_ok(request: Request) -> bool:
-    scheme, _, token = request.headers.get("authorization", "").partition(" ")
-    token = token.strip()
+    """A configured token (PB_AUTH_TOKENS) or a live browser session minted by
+    the phone's QR approval. Session ids are remembered on the request so
+    /auth/logout can revoke exactly the caller."""
+    auth = request.headers.get("Authorization", "")
+    scheme, _, token = auth.partition(" ")
     if scheme.lower() != "bearer" or not token:
         return False
-    return any(hmac.compare_digest(token, t) for t in settings.auth_tokens)
+    if any(hmac.compare_digest(token, t) for t in settings.auth_tokens):
+        return True
+    sess = _session_for(token)
+    if sess is None:
+        return False
+    request.state.session_id = sess["id"]
+    # Cheap liveness signal for the "signed-in computers" list; once a minute is plenty.
+    if (sess.get("last_used_at") or "") < utcnow_iso()[:16]:
+        store.touch_session(sess["id"])
+    return True
 
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Reject unauthenticated API requests before any body parsing happens."""
     path = request.url.path
-    if path.startswith("/api/") and path not in PUBLIC_PATHS and not _token_ok(request):
+    if path.startswith("/api/") and not _is_public(path, request.method) and not _token_ok(request):
         return JSONResponse(
             {"detail": "invalid or missing bearer token"},
             status_code=401,
@@ -125,6 +157,79 @@ def require_auth(request: Request) -> None:
 @app.get("/api/v1/health")
 async def health():
     return {"status": "ok", "service": "plaud-bridge", "version": VERSION}
+
+
+class LoginRequestBody(BaseModel):
+    model_config = {"extra": "ignore"}
+    label: str | None = Field(default=None, max_length=120)
+
+
+@app.post("/api/v1/login-requests", status_code=201)
+async def create_login_request(body: LoginRequestBody | None = None):
+    """Public: a signed-out browser asks for a QR login. The id is the only
+    secret in the QR; it is 192 random bits and lives three minutes."""
+    if store.purge_login_requests() >= MAX_PENDING_LOGIN_REQUESTS:
+        raise HTTPException(status_code=429, detail="too many pending login requests")
+    req_id = secrets.token_urlsafe(24)
+    expires = (datetime.now(timezone.utc) + timedelta(seconds=LOGIN_REQUEST_TTL_S)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    label = " ".join((body.label if body and body.label else "").split())[:120] or None
+    store.insert_login_request(req_id, expires, label)
+    return {"id": req_id, "expires_at": expires, "poll_seconds": 2}
+
+
+@app.get("/api/v1/login-requests/{req_id}")
+async def poll_login_request(req_id: str):
+    """Public: the browser polls until the phone approves. The minted token is
+    handed over exactly once; the request row is deleted in the same step."""
+    req = store.get_login_request(req_id)
+    if not req or req["expires_at"] <= utcnow_iso():
+        if req:
+            store.delete_login_request(req_id)
+        return {"status": "expired"}
+    if req["status"] == "approved" and req.get("token"):
+        store.delete_login_request(req_id)
+        return {"status": "approved", "token": req["token"]}
+    return {"status": "pending"}
+
+
+@app.post("/api/v1/login-requests/{req_id}/approve", dependencies=[Depends(require_auth)])
+async def approve_login_request(req_id: str, body: LoginRequestBody | None = None):
+    """The phone (or any signed-in client) approves a scanned QR: mint a
+    session token for that browser. The master token never leaves the phone."""
+    req = store.get_login_request(req_id)
+    if not req or req["expires_at"] <= utcnow_iso():
+        raise HTTPException(status_code=404, detail="login request expired or unknown")
+    if req["status"] != "pending":
+        raise HTTPException(status_code=409, detail="login request already used")
+    token = secrets.token_urlsafe(32)
+    label = (body.label if body and body.label else None) or req.get("label") or "Web browser"
+    session_id = store.insert_session(hashlib.sha256(token.encode()).hexdigest(), label)
+    if not store.approve_login_request(req_id, token):
+        store.revoke_session(session_id)
+        raise HTTPException(status_code=409, detail="login request already used")
+    return {"status": "approved", "label": label, "session_id": session_id}
+
+
+@app.get("/api/v1/sessions", dependencies=[Depends(require_auth)])
+async def list_sessions(request: Request):
+    current = getattr(request.state, "session_id", None)
+    return {"sessions": [{**s_, "current": s_["id"] == current} for s_ in store.list_sessions()]}
+
+
+@app.delete("/api/v1/sessions/{session_id}", dependencies=[Depends(require_auth)])
+async def revoke_session(session_id: str):
+    if not store.revoke_session(session_id):
+        raise HTTPException(status_code=404, detail="session not found")
+    return Response(status_code=204)
+
+
+@app.post("/api/v1/auth/logout", dependencies=[Depends(require_auth)])
+async def logout(request: Request):
+    """Revoke the calling browser's session (no-op for a configured token)."""
+    sid = getattr(request.state, "session_id", None)
+    if sid:
+        store.revoke_session(sid)
+    return Response(status_code=204)
 
 
 @app.get("/api/v1/auth/check", dependencies=[Depends(require_auth)])
