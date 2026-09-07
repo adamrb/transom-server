@@ -787,3 +787,205 @@ def test_route_payload_and_markdown_include_highlights(tmp_path, monkeypatch):
     router = Router(s, store)
     payload = router.build_payload({"name": "meetings", "description": "d"}, store.get(rec_id))
     assert payload["transcript"]["highlights"][0]["text"] == "the decision"
+
+
+def test_delivery_results_for_markdown_and_result_callback(tmp_path, monkeypatch):
+    """Synchronous actions record their outcome immediately; webhook consumers
+    report theirs through POST /deliveries/{id}/result, which also marks a
+    failed outcome as a failed delivery so it can be retried."""
+    from fastapi.testclient import TestClient
+    from app import main as m
+    from app.router import Router
+    with TestClient(m.app) as client:   # lifespan builds m.store; use that store
+        store = m.store
+        tok = m.settings.auth_tokens[0]
+        monkeypatch.setattr(m.settings, "markdown_export_dir", tmp_path / "notes")
+        tp = tmp_path / "t.json"; tp.write_text(json.dumps({"text": "hi", "segments": [], "language": "en"}))
+        rec_id = store.insert_recording(device_sn="881A", session_id=9, filename="r.mp3", sha256="z" * 64, size_bytes=1,
+                                        duration_s=3.0, started_at="2026-09-07T12:00:00Z", source="test", uploaded_at=utcnow_iso(),
+                                        audio_path=str(tmp_path / "r.mp3"), status="done", transcript_path=str(tp),
+                                        transcript_text="hi", title="T")
+        route_id = store.insert_route(name="meetings-t", description="d", action_type="markdown",
+                                      action_config=json.dumps({"folder": "Meetings"}), enabled=1,
+                                      created_at=utcnow_iso(), updated_at=utcnow_iso())
+        try:
+            router = Router(m.settings, store)
+            d = asyncio.run(router.deliver(store.get_route(route_id), store.get(rec_id)))
+            assert d["status"] == "ok" and d["result_status"] == "done" and d["result_summary"].startswith("Saved Meetings/")
+            payload = router.build_payload(store.get_route(route_id), store.get(rec_id), "abc123")
+            assert payload["delivery"] == {"id": "abc123", "result_url": "/api/v1/deliveries/abc123/result"}
+            store.update_delivery(d["id"], result_status="queued", result_summary="Handed to the agent")
+            # the per-delivery result token (from the payload) authorizes the result endpoint; hidden from readers
+            pub = client.get(f"/api/v1/recordings/{rec_id}/routing", headers={"Authorization": f"Bearer {tok}"}).json()
+            assert all("payload" not in x and x["payload_bytes"] > 0 for x in pub["deliveries"])  # no transcripts, no tokens
+            assert "result_token_hash" not in pub["deliveries"][0] and "action_config" not in pub["deliveries"][0]
+            rt = json.loads(store.get_delivery(d["id"])["payload"]).get("delivery", {}).get("result_token")
+            assert rt and len(rt) > 20  # every payload snapshot carries its attempt token (server-side only)
+            store.update_delivery(d["id"], status="failed", last_error="webhook timeout")  # lost 202
+            # a wrong capability is refused by the middleware before any body is parsed (401 for any id: no oracle)
+            assert client.post(f"/api/v1/deliveries/{d['id']}/result", headers={"Authorization": "Bearer wrong"},
+                               json={"status": "done"}).status_code == 401
+            r = client.post(f"/api/v1/deliveries/{d['id']}/result", headers={"Authorization": f"Bearer {tok}"},
+                            json={"status": "done", "summary": "  Saved note 0_Quick Add/T.md  ", "attempt": 1})
+            assert r.status_code == 200 and r.json()["result_summary"] == "Saved note 0_Quick Add/T.md"
+            assert r.json()["status"] == "ok" and store.get_delivery(d["id"])["last_error"] is None   # done clears the lost hand-off
+            assert client.post(f"/api/v1/deliveries/{d['id']}/retry", headers={"Authorization": f"Bearer {tok}"}).status_code == 409
+            # done is terminal for the attempt: a late 'failed' cannot reopen it; a duplicate 'done' is a no-op
+            assert client.post(f"/api/v1/deliveries/{d['id']}/result", headers={"Authorization": f"Bearer {tok}"},
+                               json={"status": "failed", "summary": "late", "attempt": 1}).status_code == 409
+            assert client.post(f"/api/v1/deliveries/{d['id']}/result", headers={"Authorization": f"Bearer {tok}"},
+                               json={"status": "done"}).status_code == 200
+            # and a reported failure is terminal too: a late heartbeat ('queued') must not hide it
+            store.update_delivery(d["id"], result_status="failed", result_summary="exit 1", status="failed", last_error="exit 1")
+            assert client.post(f"/api/v1/deliveries/{d['id']}/result", headers={"Authorization": f"Bearer {tok}"},
+                               json={"status": "queued", "summary": "Still working"}).status_code == 409
+            assert store.get_delivery(d["id"])["status"] == "failed"
+            assert client.post("/api/v1/deliveries/nope/result", headers={"Authorization": f"Bearer {tok}"}, json={"status": "done"}).status_code == 404
+            assert client.post(f"/api/v1/deliveries/{d['id']}/result", json={"status": "done"}).status_code == 401
+        finally:
+            store.delete_route(route_id)
+            client.delete(f"/api/v1/recordings/{rec_id}", headers={"Authorization": f"Bearer {tok}"})
+
+
+def test_finish_delivery_never_overwrites_an_agent_result(tmp_path, monkeypatch):
+    import os
+    os.environ["PB_DATA_DIR"] = str(tmp_path); os.environ["PB_AUTH_TOKENS"] = "t"
+    from app.config import Settings
+    s = Settings(); store = Store(s.db_path)
+    did = store.insert_delivery(recording_id="r", router_run_id=None, route_id="x", route_name="inbox", status="pending",
+                                attempts=1, last_error=None, action_type="webhook", action_config="{}", payload="{}",
+                                created_at=utcnow_iso())
+    # The runner reports 'done' before the webhook coroutine records its 202.
+    store.update_delivery(did, result_status="done", result_summary="Saved note X", result_at=utcnow_iso())
+    store.finish_delivery(did, "ok", None, ("queued", "Handed to the agent"))
+    d = store.get_delivery(did)
+    assert d["status"] == "ok" and d["result_status"] == "done" and d["result_summary"] == "Saved note X"
+    # A reported failure keeps the delivery failed even if the hand-off itself was ok.
+    store.update_delivery(did, result_status="failed", result_summary="exit 1", status="failed", last_error="exit 1")
+    store.finish_delivery(did, "ok", None, ("queued", "Handed to the agent"))
+    d = store.get_delivery(did)
+    assert d["status"] == "failed" and d["last_error"] == "exit 1" and d["result_status"] == "failed"
+    # And a reported 'done' outranks a late hand-off failure (lost 202): stays ok, error cleared.
+    store.update_delivery(did, result_status="done", result_summary="Saved", status="ok", last_error=None)
+    store.finish_delivery(did, "failed", "webhook timeout", ("failed", "webhook timeout"))
+    d = store.get_delivery(did)
+    assert d["status"] == "ok" and d["last_error"] is None and d["result_status"] == "done" and d["result_summary"] == "Saved"
+
+
+def test_stale_queued_delivery_becomes_unknown_and_retry_rotates_token(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main as m
+    from app.router import Router
+    with TestClient(m.app) as client:
+        store = m.store; tok = m.settings.auth_tokens[0]
+        rec_id = store.insert_recording(device_sn="881A", session_id=11, filename="r.mp3", sha256="w" * 64, size_bytes=1,
+                                        duration_s=3.0, started_at="2026-09-07T12:00:00Z", source="test", uploaded_at=utcnow_iso(),
+                                        audio_path=str(tmp_path / "r.mp3"), status="done", transcript_text="hi", title="T")
+        route_id = store.insert_route(name="hook-t", description="d", action_type="webhook",
+                                      action_config=json.dumps({"url": "http://hook.test/x"}), enabled=1,
+                                      created_at=utcnow_iso(), updated_at=utcnow_iso())
+        try:
+            router = Router(m.settings, store)
+            class R202:
+                status_code = 202
+            class C:
+                def __init__(self, *a, **k): pass
+                async def __aenter__(self): return self
+                async def __aexit__(self, *a): return False
+                async def post(self, *a, **k): return R202()
+            monkeypatch.setattr(router, "_client", lambda **k: C())
+            d = asyncio.run(router.deliver(store.get_route(route_id), store.get(rec_id)))
+            assert d["result_status"] == "queued"
+            first_hash = store.get_delivery(d["id"])["result_token_hash"]
+            payload = json.loads(store.get_delivery(d["id"])["payload"])
+            first_token = payload["delivery"]["result_token"]
+            # fresh: not retryable
+            assert client.post(f"/api/v1/deliveries/{d['id']}/retry", headers={"Authorization": f"Bearer {tok}"}).status_code == 409
+            # age it past the TTL: shows as unknown, becomes retryable, retry rotates the token
+            store.update_delivery(d["id"], result_at="2020-01-01T00:00:00Z")
+            pub = client.get(f"/api/v1/recordings/{rec_id}/routing", headers={"Authorization": f"Bearer {tok}"}).json()["deliveries"][0]
+            assert pub["result_status"] == "unknown"
+            monkeypatch.setattr(m, "router_engine", router)
+            r = client.post(f"/api/v1/deliveries/{d['id']}/retry", headers={"Authorization": f"Bearer {tok}"})
+            assert r.status_code == 200 and r.json()["attempts"] == 2 and r.json()["result_status"] == "queued"
+            assert store.get_delivery(d["id"])["result_token_hash"] != first_hash
+            # the old attempt's token no longer reports
+            assert client.post(f"/api/v1/deliveries/{d['id']}/result", headers={"Authorization": f"Bearer {first_token}"},
+                               json={"status": "done"}).status_code == 401
+            new_token = json.loads(store.get_delivery(d["id"])["payload"])["delivery"]["result_token"]
+            r = client.post(f"/api/v1/deliveries/{d['id']}/result", headers={"Authorization": f"Bearer {new_token}"},
+                            json={"status": "done", "summary": "Saved note X"})
+            assert r.status_code == 200 and r.json()["result_status"] == "done"
+        finally:
+            store.delete_route(route_id)
+            client.delete(f"/api/v1/recordings/{rec_id}", headers={"Authorization": f"Bearer {tok}"})
+
+
+def test_lost_handoff_response_is_repaired_by_the_agents_callback(tmp_path, monkeypatch):
+    """The runner accepted the job but the 202 never reached us (timeout): the
+    delivery is 'failed' with NO agent result, so the agent's later 'queued'
+    and 'done' callbacks are accepted and flip it back to ok."""
+    from fastapi.testclient import TestClient
+    from app import main as m
+    from app.router import Router
+    with TestClient(m.app) as client:
+        store = m.store; tok = m.settings.auth_tokens[0]
+        rec_id = store.insert_recording(device_sn="881A", session_id=12, filename="r.mp3", sha256="v" * 64, size_bytes=1,
+                                        duration_s=3.0, started_at="2026-09-07T12:00:00Z", source="test", uploaded_at=utcnow_iso(),
+                                        audio_path=str(tmp_path / "r.mp3"), status="done", transcript_text="hi", title="T")
+        route_id = store.insert_route(name="hook-lost", description="d", action_type="webhook",
+                                      action_config=json.dumps({"url": "http://hook.test/x"}), enabled=1,
+                                      created_at=utcnow_iso(), updated_at=utcnow_iso())
+        try:
+            router = Router(m.settings, store)
+            class C:
+                def __init__(self, *a, **k): pass
+                async def __aenter__(self): return self
+                async def __aexit__(self, *a): return False
+                async def post(self, *a, **k): raise TimeoutError("read timeout")
+            monkeypatch.setattr(router, "_client", lambda **k: C())
+            d = asyncio.run(router.deliver(store.get_route(route_id), store.get(rec_id)))
+            assert d["status"] == "failed" and d["result_status"] is None     # hand-off failed, no agent outcome
+            token = json.loads(store.get_delivery(d["id"])["payload"])["delivery"]["result_token"]
+            h = {"Authorization": f"Bearer {token}"}
+            assert client.post(f"/api/v1/deliveries/{d['id']}/result", headers=h, json={"status": "queued", "summary": "Started"}).status_code == 200
+            assert store.get_delivery(d["id"])["status"] == "ok"
+            r = client.post(f"/api/v1/deliveries/{d['id']}/result", headers=h, json={"status": "done", "summary": "Filed: Life/Topics/Garage.md"})
+            assert r.status_code == 200 and r.json()["status"] == "ok" and r.json()["result_summary"] == "Filed: Life/Topics/Garage.md"
+            # a result-token holder sees outcome fields only, never the action snapshot (webhook auth headers)
+            assert set(r.json()) == {"id", "status", "result_status", "result_summary", "result_at"}
+            assert client.post(f"/api/v1/deliveries/{d['id']}/retry", headers={"Authorization": f"Bearer {tok}"}).status_code == 409
+        finally:
+            store.delete_route(route_id)
+            client.delete(f"/api/v1/recordings/{rec_id}", headers={"Authorization": f"Bearer {tok}"})
+
+
+def test_finish_delivery_is_bound_to_its_attempt(tmp_path):
+    import os
+    os.environ["PB_DATA_DIR"] = str(tmp_path); os.environ["PB_AUTH_TOKENS"] = "t"
+    from app.config import Settings
+    s = Settings(); store = Store(s.db_path)
+    did = store.insert_delivery(recording_id="r", router_run_id=None, route_id="x", route_name="inbox", status="failed",
+                                attempts=1, last_error="reported failed", action_type="webhook", action_config="{}", payload="{}",
+                                created_at=utcnow_iso())
+    assert store.claim_delivery_retry(did) == 2       # attempt 2 starts (status pending)
+    store.finish_delivery(did, "ok", None, ("queued", "Handed to the agent"), attempt=1)   # late attempt-1 hand-off
+    d = store.get_delivery(did)
+    assert d["status"] == "pending" and d["attempts"] == 2 and d["result_status"] is None
+    store.finish_delivery(did, "ok", None, ("queued", "Handed to the agent"), attempt=2)
+    assert store.get_delivery(did)["status"] == "ok"
+
+
+def test_queued_report_marks_a_lost_handoff_active(tmp_path):
+    import os
+    os.environ["PB_DATA_DIR"] = str(tmp_path); os.environ["PB_AUTH_TOKENS"] = "t"
+    from app.config import Settings
+    s = Settings(); store = Store(s.db_path)
+    did = store.insert_delivery(recording_id="r", router_run_id=None, route_id="x", route_name="inbox", status="pending",
+                                attempts=1, last_error=None, action_type="webhook", action_config="{}", payload="{}",
+                                created_at=utcnow_iso())
+    # consumer says "started working" before the webhook coroutine sees its (lost) response
+    store.update_delivery(did, result_status="queued", result_summary="Started", result_at=utcnow_iso(), status="ok")
+    store.finish_delivery(did, "failed", "webhook timeout", ("failed", "webhook timeout"), attempt=1)
+    d = store.get_delivery(did)
+    assert d["status"] == "ok" and d["last_error"] is None and d["result_status"] == "queued"

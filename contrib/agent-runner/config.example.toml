@@ -92,3 +92,9 @@ cwd = "/home/user"
 auto_approve = false
 # model = "haiku"
 # prompt_template default: "Answer directly. Do not use tools or modify files.\n\n{prompt}"
+
+# Optional: report each job's outcome back to plaud-bridge so the recording
+# page can show what the agent did. No credential needed: every payload carries
+# a one-shot result token valid only for its own delivery.
+# [callback]
+# base_url = "http://127.0.0.1:8090"

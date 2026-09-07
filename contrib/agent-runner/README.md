@@ -220,3 +220,14 @@ ACP jobs), and the ACP protocol itself — prompt/response, permission
 approve/reject, model selection, malformed-line tolerance, and the chat shim
 — against `fake_acp_agent.py`, a canned ndjson agent, so no real agent or
 network is needed.
+
+
+## Reporting outcomes back
+
+Every `route.matched` payload carries `delivery.result_url`. With a `[callback]`
+section configured (`base_url` = the plaud-bridge server; no credential, the payload's
+`delivery.result_token` authorizes exactly that delivery's result) the runner POSTs `{"status": "done"|"failed", "summary": "..."}`
+there when a job ends: for command actions the last non-empty stdout line is the
+summary (so scripts should print a one-line human-readable result, e.g.
+`Saved note 0_Quick Add/Title.md`), for ACP agents the agent's reply. The
+recording page in the app and dashboard shows this under Automations.

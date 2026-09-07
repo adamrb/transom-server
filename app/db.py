@@ -123,6 +123,13 @@ MIGRATION_COLUMNS = {
         "router_run_id": "TEXT",
         "action_type": "TEXT",
         "action_config": "TEXT",
+        # What the agent actually did, reported back after the hand-off.
+        "result_status": "TEXT",    # queued | done | failed
+        "result_summary": "TEXT",
+        "result_at": "TEXT",
+        # SHA-256 of the per-attempt capability the consumer must present to
+        # POST the result (rotated on every retry, so a stale job cannot report).
+        "result_token_hash": "TEXT",
     },
 }
 
@@ -402,6 +409,34 @@ class Store:
     def get_delivery(self, delivery_id: str) -> dict | None:
         return self._one("SELECT * FROM deliveries WHERE id = ?", (delivery_id,))
 
+    def finish_delivery(self, delivery_id: str, status: str, error: str | None,
+                        result: "tuple[str, str] | None", attempt: int | None = None) -> None:
+        """Record the hand-off outcome WITHOUT clobbering a result the agent
+        already reported: a fast runner can POST /result before the webhook
+        coroutine resumes. The provisional result ('queued') only fills empty
+        result columns, and a result that already says 'failed' keeps the
+        delivery failed. With `attempt`, only that attempt's row state is
+        touched: a hand-off completing late from attempt 1 must not overwrite
+        attempt 2 that a retry has already started. A consumer that already
+        reported 'queued' (accepted the job) or 'done' before the hand-off
+        response came back is active/finished: the delivery stays ok even if
+        that response was lost."""
+        with self._lock:
+            self._conn.execute(
+                """UPDATE deliveries SET
+                     status = CASE WHEN result_status = 'failed' THEN 'failed'
+                                   WHEN result_status IN ('done', 'queued') THEN 'ok' ELSE ? END,
+                     last_error = CASE WHEN result_status = 'failed' THEN last_error
+                                       WHEN result_status IN ('done', 'queued') THEN NULL ELSE ? END,
+                     result_summary = CASE WHEN result_status IS NULL THEN ? ELSE result_summary END,
+                     result_at = CASE WHEN result_status IS NULL THEN ? ELSE result_at END,
+                     result_status = COALESCE(result_status, ?)
+                   WHERE id = ? AND (? IS NULL OR attempts = ?)""",
+                (status, error, result[1] if result else None, utcnow_iso() if result else None,
+                 result[0] if result else None, delivery_id, attempt, attempt),
+            )
+            self._conn.commit()
+
     def update_delivery(self, delivery_id: str, **fields) -> None:
         sets = ", ".join(f"{k} = ?" for k in fields)
         with self._lock:
@@ -410,18 +445,55 @@ class Store:
             )
             self._conn.commit()
 
-    def claim_delivery_retry(self, delivery_id: str) -> bool:
-        """Atomically move a failed delivery to 'pending' (incrementing its
-        attempt count) so concurrent retries cannot double-execute. Returns
-        False when the delivery is not currently 'failed'."""
+    def apply_delivery_result(self, delivery_id: str, token_hash: str | None, attempt: int | None,
+                              fields: dict) -> int:
+        """Record a consumer-reported outcome only if the row is still open for
+        the attempt the caller observed: not terminal, same attempt number, and
+        (when a result token was used) the token still matches. Concurrent
+        callbacks, retries and rotated tokens are decided here, in one
+        statement, not by a read-then-write in the endpoint. Returns the number
+        of rows changed (0 = refused)."""
+        sets = ", ".join(f"{k} = ?" for k in fields)
         with self._lock:
             cur = self._conn.execute(
-                "UPDATE deliveries SET status = 'pending', attempts = attempts + 1 "
-                "WHERE id = ? AND status = 'failed'",
-                (delivery_id,),
+                f"UPDATE deliveries SET {sets} WHERE id = ? "
+                "AND (result_status IS NULL OR result_status = 'queued') "
+                "AND (? IS NULL OR attempts = ?) "
+                "AND (? IS NULL OR result_token_hash = ?)",
+                [*fields.values(), delivery_id, attempt, attempt, token_hash, token_hash],
             )
             self._conn.commit()
-        return cur.rowcount == 1
+        return cur.rowcount
+
+    def claim_delivery_retry(self, delivery_id: str, new_token_hash: str | None = None,
+                             stale_before: str | None = None) -> int | None:
+        """Atomically move a failed delivery to 'pending' (incrementing its
+        attempt count) so concurrent retries cannot double-execute. Returns the
+        new attempt number, or None when the delivery is not currently 'failed'. With allow_stale a
+        hand-off whose consumer never reported (result still 'queued') may be
+        claimed too; the caller has already checked the age."""
+        # The staleness cutoff is part of the same atomic UPDATE: a heartbeat that
+        # lands between the caller's check and this claim refreshes result_at and
+        # makes the claim miss, instead of starting a duplicate of a live job.
+        cond = "status = 'failed'"
+        params: list = [new_token_hash, delivery_id]
+        if stale_before:
+            cond += " OR (status = 'ok' AND result_status = 'queued' AND result_at <= ?)"
+            params.append(stale_before)
+        # Rotating the result token and clearing the previous outcome happen in
+        # the same statement as the claim, so there is no instant in which the
+        # old attempt's token can still report into the new attempt.
+        with self._lock:
+            row = self._conn.execute(
+                f"UPDATE deliveries SET status = 'pending', attempts = attempts + 1, "
+                "result_token_hash = ?, result_status = NULL, result_summary = NULL, result_at = NULL "
+                f"WHERE id = ? AND ({cond}) RETURNING attempts",
+                params,
+            ).fetchone()
+            self._conn.commit()
+        # The claimed attempt number travels with the retry so a slow attempt
+        # can never finish on top of a newer one (see finish_delivery).
+        return int(row[0]) if row else None
 
     def deliveries_for_run(self, run_id: str) -> "list[dict]":
         with self._lock:

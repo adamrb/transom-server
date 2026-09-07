@@ -9,6 +9,9 @@ and individual deliveries can be retried.
 """
 
 import json
+import secrets
+import hashlib
+import uuid
 import logging
 import re
 from pathlib import Path
@@ -205,9 +208,12 @@ class Router:
 
     # ── actions ────────────────────────────────────────────────────────────
 
-    def build_payload(self, route: dict, rec: dict) -> dict:
-        """The webhook payload contract (LOCKED — external consumers rely on it)."""
-        return {
+    def build_payload(self, route: dict, rec: dict, delivery_id: str | None = None,
+                      result_token: str | None = None) -> dict:
+        """The webhook payload contract (LOCKED — external consumers rely on it;
+        new keys are only ever added). `delivery.result_url` is where the
+        consumer may report what it did (POST {status, summary}, same token)."""
+        payload = {
             "event": "route.matched",
             "route": {"name": route["name"], "description": route["description"]},
             "recording": {
@@ -227,6 +233,11 @@ class Router:
                 "highlights": self._highlights_of(rec),
             },
         }
+        if delivery_id:
+            payload["delivery"] = {"id": delivery_id, "result_url": f"/api/v1/deliveries/{delivery_id}/result"}
+            if result_token:
+                payload["delivery"]["result_token"] = result_token  # bearer for result_url only
+        return payload
 
     @staticmethod
     def _highlights_of(rec: dict) -> list:
@@ -252,8 +263,14 @@ class Router:
         """Execute a route's action for a recording. The delivery row (with the
         payload and action-config snapshots) is inserted as 'pending' BEFORE
         the action runs, so a crash mid-action still leaves an audit trail."""
-        payload = {} if route["action_type"] == "none" else self.build_payload(route, rec)
-        delivery_id = self.store.insert_delivery(
+        # The id is minted first so the webhook payload can carry the callback
+        # address the agent runner reports its outcome to.
+        delivery_id = uuid.uuid4().hex
+        result_token = secrets.token_urlsafe(32)
+        payload = {} if route["action_type"] == "none" else self.build_payload(route, rec, delivery_id, result_token)
+        self.store.insert_delivery(
+            id=delivery_id,
+            result_token_hash=hashlib.sha256(result_token.encode()).hexdigest(),
             recording_id=rec["id"],
             router_run_id=run_id,
             route_id=route["id"],
@@ -266,21 +283,29 @@ class Router:
             payload=json.dumps(payload, ensure_ascii=False),
             created_at=utcnow_iso(),
         )
-        status, error = await self._execute(
+        status, error, result = await self._execute(
             route["action_type"], route["action_config"], route["name"], payload
         )
-        self.store.update_delivery(delivery_id, status=status, last_error=error)
+        self.store.finish_delivery(delivery_id, status, error, result, attempt=1)
         if error:
             log.warning("delivery to route %r failed for %s: %s", route["name"], rec["id"], error)
         return self.store.get_delivery(delivery_id)
 
-    async def retry_delivery(self, delivery: dict) -> dict | None:
+    async def retry_delivery(self, delivery: dict, stale_before: str | None = None) -> dict | None:
         """Re-execute a failed delivery from its STORED action/payload snapshot
         (never the route's current configuration — a retry repeats exactly what
         was originally attempted). Returns None when the delivery is not in the
         'failed' state (already ok, mid-flight, or claimed by a concurrent
         retry); the claim + attempt increment is a single atomic UPDATE."""
-        if not self.store.claim_delivery_retry(delivery["id"]):
+        # Every attempt gets a fresh result capability, rotated inside the claim
+        # itself: a job from the previous attempt that reports late presents a
+        # token that no longer matches, with no gap in between.
+        result_token = secrets.token_urlsafe(32)
+        attempt = self.store.claim_delivery_retry(
+            delivery["id"], new_token_hash=hashlib.sha256(result_token.encode()).hexdigest(),
+            stale_before=stale_before,
+        )
+        if attempt is None:
             return None
         action_type = delivery.get("action_type")
         action_config = delivery.get("action_config")
@@ -295,25 +320,43 @@ class Router:
                 return self.store.get_delivery(delivery["id"])
             action_type, action_config = route["action_type"], route["action_config"]
         payload = json.loads(delivery["payload"] or "{}")
-        status, error = await self._execute(
+        # Deliveries created before result reporting existed carry no callback
+        # address; add it (additive, same contract) so a retried runner job can
+        # report instead of sitting on 'working' forever.
+        # The payload snapshot the new attempt is sent carries the rotated token
+        # (its hash is already in the row since the claim).
+        if payload:
+            payload["delivery"] = {"id": delivery["id"], "result_url": f"/api/v1/deliveries/{delivery['id']}/result",
+                                   "result_token": result_token}
+        self.store.update_delivery(delivery["id"], payload=json.dumps(payload, ensure_ascii=False))
+        status, error, result = await self._execute(
             action_type, action_config, delivery["route_name"], payload
         )
-        self.store.update_delivery(delivery["id"], status=status, last_error=error)
+        self.store.finish_delivery(delivery["id"], status, error, result, attempt=attempt)
         return self.store.get_delivery(delivery["id"])
 
     async def _execute(
         self, action_type: str, action_config: str | None, route_name: str, payload: dict
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, tuple[str, str] | None]:
+        """Returns (status, error, result). `result` is (result_status, summary)
+        when the outcome is already known here: markdown and decision-only
+        actions finish synchronously; a webhook that answered 202 has merely
+        queued the work and the runner reports the outcome later via
+        POST /deliveries/{id}/result, so its result stays 'queued'."""
         config = json.loads(action_config or "{}")
         try:
             if action_type == "webhook":
-                await self._action_webhook(config, payload)
+                code = await self._action_webhook(config, payload)
+                return "ok", None, ("queued", "Handed to the agent") if code == 202 else ("done", "Delivered")
             elif action_type == "markdown":
-                self._action_markdown(route_name, config, payload)
-            # "none": decision-only, nothing to do
-            return "ok", None
+                rel = self._action_markdown(route_name, config, payload)
+                return "ok", None, ("done", f"Saved {rel}")
+            return "ok", None, ("done", "Logged")  # "none": decision-only
         except Exception as exc:
-            return "failed", str(exc)[:1000]
+            # A failed hand-off is not an agent outcome: leave result_* empty so
+            # a consumer that did receive the job (lost 202) can still report,
+            # and the terminal-result rules stay about what the agent said.
+            return "failed", str(exc)[:1000], None
 
     async def _action_webhook(self, config: dict, payload: dict) -> None:
         url = config.get("url")
@@ -327,8 +370,9 @@ class Router:
             resp = await client.post(url, json=payload, headers=headers)
             if not (200 <= resp.status_code < 300):
                 raise RuntimeError(f"webhook returned {resp.status_code}")
+            return resp.status_code
 
-    def _action_markdown(self, route_name: str, config: dict, payload: dict) -> None:
+    def _action_markdown(self, route_name: str, config: dict, payload: dict) -> str:
         root = self.settings.markdown_export_dir
         if not root:
             raise RuntimeError(
@@ -379,3 +423,7 @@ class Router:
         from .export import transcript_body_markdown
         lines += [transcript_body_markdown(transcript.get("text") or ""), ""]
         md_path.write_text("\n".join(lines))
+        try:
+            return str(md_path.relative_to(root.resolve()))
+        except ValueError:
+            return md_path.name

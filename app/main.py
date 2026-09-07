@@ -117,6 +117,28 @@ def _is_public(path: str, method: str) -> bool:
     return path.startswith("/api/v1/login-requests/") and not path.endswith("/approve") and method == "GET"
 
 
+_RESULT_PATH_RE = re.compile(r"^/api/v1/deliveries/([A-Za-z0-9_-]{8,64})/result$")
+
+
+def _result_callback_ok(request: Request) -> bool:
+    """Delivery-result callbacks authenticate with the per-attempt capability
+    from their payload. Checked in the middleware, before FastAPI reads or
+    validates the body, so an unauthenticated caller cannot make the server
+    parse anything."""
+    if request.method != "POST":
+        return False
+    m = _RESULT_PATH_RE.match(request.url.path)
+    if not m or store is None:
+        return False
+    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return False
+    delivery = store.get_delivery(m.group(1))
+    if not delivery or not delivery.get("result_token_hash"):
+        return False
+    return hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), delivery["result_token_hash"])
+
+
 def _session_for(token: str) -> dict | None:
     if store is None:
         return None
@@ -147,7 +169,8 @@ def _token_ok(request: Request) -> bool:
 async def auth_middleware(request: Request, call_next):
     """Reject unauthenticated API requests before any body parsing happens."""
     path = request.url.path
-    if path.startswith("/api/") and not _is_public(path, request.method) and not _token_ok(request):
+    if (path.startswith("/api/") and not _is_public(path, request.method)
+            and not _token_ok(request) and not _result_callback_ok(request)):
         return JSONResponse(
             {"detail": "invalid or missing bearer token"},
             status_code=401,
@@ -641,9 +664,34 @@ def _route_public(route: dict) -> dict:
     return route
 
 
+# The runner reports 'queued' again when a job actually starts, so silence is
+# measured from the last report. The worst honest silence is a job waiting
+# behind a full runner queue: bundled defaults are 16 slots x 600 s = 160 min,
+# so six hours of silence means the consumer is gone, not busy.
+QUEUED_RESULT_TTL_S = 6 * 60 * 60
+
+
 def _delivery_public(delivery: dict) -> dict:
     delivery = dict(delivery)
-    delivery["payload"] = json.loads(delivery["payload"] or "{}")
+    delivery.pop("result_token_hash", None)
+    # The action snapshot can hold a webhook auth header; readers only need the type.
+    delivery.pop("action_config", None)
+    # The stored payload holds the whole transcript and the result capability;
+    # readers only need to know it exists. Both the app and the dashboard
+    # poll this while a delivery is working, so keep the response small.
+    raw = delivery.pop("payload", None) or ""
+    delivery["payload_bytes"] = len(raw)
+    # A consumer that never reports (no callback support) must not look like
+    # it is working forever: after the TTL the outcome is simply unknown, and
+    # the retry endpoint accepts it (see retry_delivery).
+    if delivery.get("result_status") == "queued" and delivery.get("result_at"):
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(delivery["result_at"].replace("Z", "+00:00"))).total_seconds()
+        except ValueError:
+            age = 0
+        if age > QUEUED_RESULT_TTL_S:
+            delivery["result_status"] = "unknown"
+            delivery["result_summary"] = "No result was reported"
     return delivery
 
 
@@ -760,17 +808,99 @@ async def rerun_router(rec_id: str):
     return _run_public(run)
 
 
+class DeliveryResultBody(BaseModel):
+    model_config = {"extra": "ignore"}
+    status: Literal["queued", "done", "failed"]
+    summary: str | None = Field(default=None, max_length=2000)
+    # Callers using a general bridge token (dashboards, tools) should say which
+    # attempt they observed; a result token is already bound to its attempt.
+    attempt: int | None = Field(default=None, ge=1, le=10**6)
+
+
+@app.post("/api/v1/deliveries/{delivery_id}/result")
+async def report_delivery_result(delivery_id: str, body: DeliveryResultBody, request: Request):
+    """The agent runner (or any webhook consumer) reports what it did with a
+    delivery. Authentication is the per-attempt result token from the payload
+    (so consumers never hold a general bridge token); a bridge token works too.
+    'done' is terminal: it also clears a failed hand-off (e.g. the 202 was lost
+    in transit) so completed work cannot be retried by accident; 'failed' marks
+    the delivery failed so it can be retried."""
+    auth = request.headers.get("Authorization", "")
+    scheme, _, token = auth.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="missing bearer token", headers={"WWW-Authenticate": "Bearer"})
+    delivery = store.get_delivery(delivery_id)
+    presented = hashlib.sha256(token.encode()).hexdigest()
+    if not delivery or not (
+        (delivery.get("result_token_hash") and hmac.compare_digest(presented, delivery["result_token_hash"]))
+        or _token_ok(request)
+    ):
+        # Same answer for unknown id and wrong token: no oracle for delivery ids.
+        raise HTTPException(status_code=404, detail="delivery not found")
+    summary = " ".join((body.summary or "").split())[:2000] or None
+    if delivery.get("result_status") in ("done", "failed"):
+        # Terminal for this attempt: a duplicate of the same outcome is
+        # idempotent, anything else (including a late heartbeat) is refused so
+        # an out-of-order callback cannot reopen finished work or hide a failure.
+        # A retry mints a new token, so the next attempt reports afresh.
+        if body.status == delivery["result_status"]:
+            return _result_view(delivery)
+        raise HTTPException(status_code=409, detail=f"result already reported as {delivery['result_status']}")
+    fields = {"result_status": body.status, "result_summary": summary, "result_at": utcnow_iso()}
+    if body.status == "failed":
+        fields.update(status="failed", last_error=(summary or "agent reported failure")[:1000])
+    else:
+        # 'done' and 'queued' both prove the consumer has the job: the hand-off
+        # is fine even if its 202 was lost, so nothing here may be retried.
+        fields.update(status="ok", last_error=None)
+    # One conditional UPDATE decides concurrent callbacks: the row must still
+    # be open (not terminal) and, for a result-token caller, the token must
+    # still be the current attempt's.
+    used_result_token = bool(delivery.get("result_token_hash")) and hmac.compare_digest(presented, delivery["result_token_hash"])
+    # A result token identifies its attempt by itself; a bridge-token caller
+    # must say which attempt it observed so a retry in flight cannot inherit
+    # a stale outcome.
+    if used_result_token:
+        expected_attempt = delivery.get("attempts")
+    elif body.attempt is not None:
+        expected_attempt = body.attempt
+    else:
+        raise HTTPException(status_code=422, detail="attempt is required when reporting with a bridge token")
+    changed = store.apply_delivery_result(
+        delivery_id, delivery["result_token_hash"] if used_result_token else None, expected_attempt, fields
+    )
+    if not changed:
+        current = store.get_delivery(delivery_id) or delivery
+        if current.get("result_status") in ("done", "failed"):
+            if body.status == current["result_status"]:
+                return _result_view(current)
+            raise HTTPException(status_code=409, detail=f"result already reported as {current['result_status']}")
+        raise HTTPException(status_code=401, detail="result token no longer valid for this delivery")
+    return _result_view(store.get_delivery(delivery_id))
+
+
+def _result_view(delivery: dict) -> dict:
+    """What a result-token holder gets back: the outcome fields only. The
+    capability is scoped to reporting, so it must not read the delivery's
+    action configuration (webhook auth headers) or anything else."""
+    return {k: delivery.get(k) for k in ("id", "status", "result_status", "result_summary", "result_at")}
+
+
 @app.post("/api/v1/deliveries/{delivery_id}/retry", dependencies=[Depends(require_auth)])
 async def retry_delivery(delivery_id: str):
     delivery = store.get_delivery(delivery_id)
     if not delivery:
         raise HTTPException(status_code=404, detail="delivery not found")
-    if delivery["status"] != "failed":
+    stale = _delivery_public(delivery).get("result_status") == "unknown"
+    if delivery["status"] != "failed" and not stale:
         raise HTTPException(
             status_code=409,
-            detail=f"only failed deliveries can be retried (status: {delivery['status']})",
+            detail=f"only failed deliveries (or hand-offs that never reported a result) can be retried (status: {delivery['status']})",
         )
-    retried = await router_engine.retry_delivery(delivery)
+    # The cutoff travels into the atomic claim so a heartbeat racing this
+    # request cannot let a live job be duplicated.
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=QUEUED_RESULT_TTL_S)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    retried = await router_engine.retry_delivery(delivery, stale_before=cutoff if stale else None)
     if retried is None:  # lost a race with a concurrent retry
         raise HTTPException(status_code=409, detail="delivery is already being retried")
     return _delivery_public(retried)

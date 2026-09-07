@@ -14,7 +14,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import agent_runner  # noqa: E402
@@ -619,6 +619,241 @@ class TestConfigValidation(unittest.TestCase):
         out = agent_runner.render("{text}|{prompt}", {"text": "{prompt}{text}", "prompt": "P"})
         self.assertEqual(out, "{prompt}{text}|P")
 
+
+
+
+
+class _ResultReceiver(BaseHTTPRequestHandler):
+    received: list = []
+    redirect_to: str | None = None   # when set, answer 302 to this URL (leak test)
+    fail_terminal_once: bool = False  # when set, the next done/failed report gets a 503
+
+    def do_POST(self):  # noqa: N802
+        n = int(self.headers.get("Content-Length", "0"))
+        body = json.loads(self.rfile.read(n) or b"{}")
+        _ResultReceiver.received.append({"path": self.path, "auth": self.headers.get("Authorization"), "body": body})
+        if _ResultReceiver.fail_terminal_once and body.get("status") in ("done", "failed"):
+            _ResultReceiver.fail_terminal_once = False
+            self.send_response(503); self.end_headers(); return
+        if _ResultReceiver.redirect_to:
+            self.send_response(302); self.send_header("Location", _ResultReceiver.redirect_to); self.end_headers(); return
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, *a):  # silence
+        pass
+
+
+class TestResultCallback(RunnerTestBase):
+    actions = {
+        "obsidian-inbox": {"command": ["/bin/sh", "-c", "echo working; echo 'Saved note 0_Quick Add/T.md'"], "timeout_seconds": 10},
+        "broken": {"command": ["/bin/sh", "-c", "echo oops >&2; exit 3"], "timeout_seconds": 10},
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.receiver = ThreadingHTTPServer(("127.0.0.1", 0), _ResultReceiver)
+        threading.Thread(target=cls.receiver.serve_forever, daemon=True).start()
+        cls.runner.config["callback"] = {"base_url": f"http://127.0.0.1:{cls.receiver.server_address[1]}"}
+        cls.runner._start_reporting()   # the runner was started before the callback existed
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.receiver.shutdown()
+        super().tearDownClass()
+
+    def _payload(self, route, delivery_id):
+        return {"event": "route.matched", "route": {"name": route, "description": "d"},
+                "recording": {"id": "r1", "started_at": "2026-09-07T00:00:00Z"},
+                "transcript": {"text": "hello"},
+                "delivery": {"id": delivery_id, "result_url": f"/api/v1/deliveries/{delivery_id}/result",
+                             "result_token": f"tok-{delivery_id}"}}
+
+    def test_command_success_reports_last_stdout_line(self):
+        _ResultReceiver.received.clear()
+        code, _ = self.request(body=self._payload("obsidian-inbox", "delivery-0001"))
+        self.assertEqual(code, 202)
+        self.assertTrue(self.wait_for(lambda: any(r["path"].endswith("/delivery-0001/result") and r["body"]["status"] == "done"
+                                                  for r in _ResultReceiver.received)))
+        reports = [x for x in _ResultReceiver.received if x["path"].endswith("/delivery-0001/result")]
+        self.assertEqual([x["body"]["status"] for x in reports], ["queued", "done"])  # started, then finished
+        self.assertTrue(all(x["auth"] == "Bearer tok-delivery-0001" for x in reports))
+        self.assertEqual(reports[-1]["body"], {"status": "done", "summary": "Saved note 0_Quick Add/T.md"})
+
+    def test_command_failure_reports_exit_code_and_stderr(self):
+        _ResultReceiver.received.clear()
+        code, _ = self.request(body=self._payload("broken", "delivery-0002"))
+        self.assertEqual(code, 202)
+        self.assertTrue(self.wait_for(lambda: any(r["path"].endswith("/delivery-0002/result") and r["body"]["status"] == "failed"
+                                                  for r in _ResultReceiver.received)))
+        r = [x for x in _ResultReceiver.received if x["path"].endswith("/delivery-0002/result")][-1]
+        self.assertEqual(r["body"]["status"], "failed")
+        self.assertEqual(r["body"]["summary"], "Exit code 3: oops")
+
+    def test_smuggled_result_url_is_refused(self):
+        _ResultReceiver.received.clear()
+        payload = self._payload("obsidian-inbox", "delivery-0004")
+        payload["delivery"]["result_url"] = "/api/v1/deliveries/../../recordings/x/route"
+        code, _ = self.request(body=payload)
+        self.assertEqual(code, 202)
+        self.assertTrue(self.wait_for(lambda: any(e.get("event") == "result.skipped" for e in self.log_events())))
+        time.sleep(0.2)
+        self.assertFalse(_ResultReceiver.received)
+
+    def test_callback_redirects_are_not_followed(self):
+        _ResultReceiver.received.clear()
+        _ResultReceiver.redirect_to = f"http://127.0.0.1:{self.receiver.server_address[1]}/evil-sink"
+        try:
+            code, _ = self.request(body=self._payload("obsidian-inbox", "delivery-0005"))
+            self.assertEqual(code, 202)
+            self.assertTrue(self.wait_for(lambda: any(e.get("event") == "result.report_failed" for e in self.log_events())))
+            time.sleep(0.3)
+            self.assertFalse(any(r["path"].startswith("/evil-sink") for r in _ResultReceiver.received))
+        finally:
+            _ResultReceiver.redirect_to = None
+
+    def test_no_delivery_block_means_no_report(self):
+        _ResultReceiver.received.clear()
+        payload = self._payload("obsidian-inbox", "delivery-0003"); del payload["delivery"]
+        code, _ = self.request(body=payload)
+        self.assertEqual(code, 202)
+        self.assertTrue(self.wait_for(lambda: any(e.get("event") == "job.end" and e.get("route") == "obsidian-inbox"
+                                                  for e in self.log_events()[-5:])))
+        time.sleep(0.3)
+        self.assertFalse(any(r["path"].endswith("/delivery-0003/result") for r in _ResultReceiver.received))
+
+
+class TestSummaryFromReply(unittest.TestCase):
+    def test_outcome_line_wins_else_whole_reply(self):
+        f = agent_runner._summary_from_reply
+        self.assertEqual(f("I read the index.\nMerged into the garage page.\nFiled: Life/Topics/Garage.md\n"), "Filed: Life/Topics/Garage.md")
+        self.assertEqual(f("Created: 0_Quick Add/Test memo.md"), "Created: 0_Quick Add/Test memo.md")
+        self.assertEqual(f("Nothing durable here.\nSkipped: test recording"), "Skipped: test recording")
+        self.assertEqual(f("Just prose\nwithout an outcome line"), "Just prose without an outcome line")
+        self.assertEqual(f("   \n"), "Agent finished with no reply")
+        self.assertEqual(len(f("Filed: " + "x" * 5000)), 2000)
+
+
+class TestHeartbeat(unittest.TestCase):
+    """A slow job keeps reporting 'queued' while it waits or runs, so the bridge
+    never mistakes it for an abandoned one."""
+
+    def test_slow_job_heartbeats_until_done(self):
+        receiver = ThreadingHTTPServer(("127.0.0.1", 0), _ResultReceiver)
+        threading.Thread(target=receiver.serve_forever, daemon=True).start()
+        tmp = tempfile.TemporaryDirectory()
+        config = {
+            "server": {"token": TOKEN, "queue_size": 4, "log_responses": False, "_host": "127.0.0.1", "_port": 0},
+            "actions": {"slow": {"command": ["/bin/sh", "-c", "sleep 1.2; echo Saved note X"], "timeout_seconds": 10}},
+            "callback": {"base_url": f"http://127.0.0.1:{receiver.server_address[1]}", "heartbeat_seconds": 0.25},
+        }
+        runner = agent_runner.Runner(config, agent_runner.JobLogger(os.path.join(tmp.name, "j.jsonl")))
+        runner.start()
+        try:
+            _ResultReceiver.received.clear()
+            payload = {"route": {"name": "slow", "description": "d"}, "recording": {"id": "r"}, "transcript": {"text": "t"},
+                       "delivery": {"id": "delivery-0100", "result_url": "/api/v1/deliveries/delivery-0100/result", "result_token": "tok"}}
+            runner.enqueue("slow", config["actions"]["slow"], payload)
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and not any(r["body"]["status"] == "done" for r in _ResultReceiver.received):
+                time.sleep(0.05)
+            statuses = [r["body"]["status"] for r in _ResultReceiver.received]
+            self.assertEqual(statuses[-1], "done")
+            self.assertGreaterEqual(statuses.count("queued"), 3)   # start report + at least two heartbeats
+            time.sleep(0.6)
+            self.assertFalse(any(r["body"]["status"] == "queued" for r in _ResultReceiver.received[len(statuses):]))  # stops after done
+
+            # A terminal report the bridge rejects with a 5xx is retried by the
+            # heartbeat loop until it lands; no heartbeat is sent meanwhile.
+            _ResultReceiver.received.clear(); _ResultReceiver.fail_terminal_once = True
+            fast = {"command": ["/bin/sh", "-c", "echo Saved note Y"], "timeout_seconds": 10}
+            payload2 = dict(payload, delivery={"id": "delivery-0101", "result_url": "/api/v1/deliveries/delivery-0101/result", "result_token": "tok"})
+            runner.enqueue("slow", fast, payload2)
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and sum(1 for r in _ResultReceiver.received if r["body"]["status"] == "done") < 2:
+                time.sleep(0.05)
+            dones = [r for r in _ResultReceiver.received if r["body"]["status"] == "done"]
+            self.assertEqual(len(dones), 2)                         # first attempt (503) + the retried one
+            self.assertEqual(dones[-1]["body"]["summary"], "Saved note Y")
+            after_first_done = _ResultReceiver.received[_ResultReceiver.received.index(dones[0]) + 1:]
+            self.assertFalse(any(r["body"]["status"] == "queued" for r in after_first_done))
+            # bookkeeping is finished by the reporter thread moments after the POST returns
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                with runner._inflight_lock:
+                    if not runner._pending_terminal and not runner._inflight:
+                        break
+                time.sleep(0.05)
+            with runner._inflight_lock:
+                self.assertEqual(runner._pending_terminal, {}); self.assertEqual(runner._inflight, {})
+        finally:
+            receiver.shutdown(); tmp.cleanup()
+
+
+class TestReportRetryPolicy(unittest.TestCase):
+    """Which callback failures are worth retrying: transport errors, 5xx, 408/429
+    and redirects yes; other 4xx (rotated token, terminal already recorded) no."""
+
+    class _Coded(BaseHTTPRequestHandler):
+        code = 200
+        def do_POST(self):  # noqa: N802
+            n = int(self.headers.get("Content-Length", "0")); self.rfile.read(n)
+            self.send_response(self.code)
+            if 300 <= self.code < 400:
+                self.send_header("Location", "http://127.0.0.1:9/elsewhere")
+            self.end_headers()
+        def log_message(self, *a):
+            pass
+
+    def test_codes(self):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), self._Coded)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            cfg = {"server": {"token": "x", "queue_size": 4}, "actions": {"a": {"command": ["/bin/true"]}},
+                   "callback": {"base_url": f"http://127.0.0.1:{srv.server_address[1]}"}}
+            runner = agent_runner.Runner(cfg, agent_runner.JobLogger(os.path.join(tempfile.mkdtemp(), "j.jsonl")))
+            payload = {"delivery": {"result_url": "/api/v1/deliveries/delivery-0200/result", "result_token": "tok"}}
+            expectations = {200: True, 404: True, 409: True, 401: True, 408: False, 429: False, 500: False, 503: False, 302: False}
+            for code, delivered in expectations.items():
+                self._Coded.code = code
+                self.assertEqual(runner.report_result(payload, "done", "x"), delivered, f"HTTP {code}")
+        finally:
+            srv.shutdown()
+
+
+class TestAcpOutcome(unittest.TestCase):
+    def test_only_a_normal_end_of_turn_is_done(self):
+        f = agent_runner._acp_outcome
+        self.assertEqual(f({"timeout": False, "stop_reason": "end_turn", "truncated": False, "text": "ok\nFiled: Life/X.md"}),
+                         ("done", "Filed: Life/X.md"))
+        self.assertEqual(f({"timeout": True, "stop_reason": "end_turn", "text": ""}), ("failed", "Agent timed out"))
+        status, summary = f({"timeout": False, "stop_reason": "max_tokens", "truncated": False, "text": "partial"})
+        self.assertEqual(status, "failed"); self.assertIn("max_tokens", summary)
+        self.assertEqual(f({"timeout": False, "stop_reason": "refusal", "text": ""})[0], "failed")
+        self.assertEqual(f({"timeout": False, "stop_reason": "end_turn", "truncated": True, "text": "x"})[0], "failed")
+        # an agent that reports no stop reason at all is trusted like a normal end of turn
+        self.assertEqual(f({"timeout": False, "stop_reason": None, "truncated": False, "text": "done"})[0], "done")
+
+
+class TestTokenFile(unittest.TestCase):
+    def test_missing_result_token_means_no_report(self):
+        # covered structurally: report_result requires delivery.result_token
+        cfg = {"server": {"token": "x", "queue_size": 4}, "actions": {"a": {"command": ["/bin/true"]}}, "callback": {"base_url": "http://127.0.0.1:9"}}
+        logger = agent_runner.JobLogger(os.path.join(tempfile.mkdtemp(), "j.jsonl"))
+        r = agent_runner.Runner(cfg, logger)
+        r.report_result({"delivery": {"result_url": "/api/v1/deliveries/delivery-0009/result"}}, "done", "x")  # no token -> skipped, no exception
+
+    def test_env_style_and_bare_token_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "bridge.env")
+            with open(p, "w") as f:
+                f.write("# comment\nPB_STT_MODEL=small\nPB_AUTH_TOKENS=\"abc,def\"\n")
+            self.assertEqual(agent_runner._read_token_file(p), "abc")
+            with open(p, "w") as f:
+                f.write("raw-token\n")
+            self.assertEqual(agent_runner._read_token_file(p), "raw-token")
+            self.assertIsNone(agent_runner._read_token_file(os.path.join(d, "missing")))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

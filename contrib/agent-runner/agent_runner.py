@@ -29,6 +29,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.error
+import urllib.request
 import time
 import tomllib
 import uuid
@@ -137,6 +139,76 @@ def _validate_executor(section: str, table: dict) -> None:
         raise ConfigError(f"[{section}] model must be a string (ACP modelId)")
 
 
+_RESULT_URL_RE = re.compile(r"/api/v1/deliveries/[A-Za-z0-9_-]{8,64}/result")
+# Re-report 'queued' this often for accepted-but-unfinished jobs; the bridge
+# declares a delivery abandoned after hours of silence, so 10 minutes leaves
+# plenty of margin without chatter.
+DEFAULT_HEARTBEAT_S = 600.0
+# Final outcomes waiting for an unreachable bridge: bounded in count and age.
+MAX_PENDING_TERMINAL = 200
+PENDING_TERMINAL_TTL_S = 6 * 3600
+MAX_REPORT_QUEUE = 500
+
+
+_OUTCOME_LINE_RE = re.compile(r"^(Filed|Created|Saved|Skipped|Done|Started)\b.*", re.IGNORECASE)
+
+
+def _summary_from_reply(text: str) -> str:
+    """The outcome shown in the app: an agent's final 'Filed: Life/...' style
+    line when it ends with one (our prompts ask for it), else the whole reply
+    trimmed to the summary limit."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if lines and _OUTCOME_LINE_RE.match(lines[-1]):
+        return lines[-1][:2000]
+    return (" ".join(lines) if lines else "Agent finished with no reply")[:2000]
+
+
+_ACP_SUCCESS_STOP_REASONS = {"end_turn", "stop", "completed", "end"}
+
+
+def _acp_outcome(result: dict) -> tuple[str, str]:
+    """(status, summary) for the bridge from an ACP run. Only a normal end of
+    turn is 'done'; a timeout, a token or turn cap, a refusal, a cancellation
+    or an unknown stop reason means the job did not finish and must stay
+    retryable."""
+    if result.get("timeout"):
+        return "failed", "Agent timed out"
+    reason = str(result.get("stop_reason") or "").lower()
+    if reason and reason not in _ACP_SUCCESS_STOP_REASONS:
+        tail = _summary_from_reply(result.get("text") or "")
+        return "failed", f"Agent stopped early ({reason}): {tail}"[:2000]
+    if result.get("truncated"):
+        return "failed", "Agent output was truncated before it finished"
+    return "done", _summary_from_reply(result.get("text") or "")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        return None  # turn any 3xx into an HTTPError instead of following it
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _read_token_file(path: str) -> str | None:
+    """A bare token, or an env-style file holding PB_AUTH_TOKENS=a,b (first token wins)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, _, val = line.partition("=")
+                    if key.strip() == "PB_AUTH_TOKENS":
+                        return val.strip().strip('"').split(",")[0].strip() or None
+                    continue
+                return line
+    except OSError:
+        return None
+    return None
+
+
 def load_config(path: str) -> dict:
     with open(path, "rb") as f:
         cfg = tomllib.load(f)
@@ -169,6 +241,17 @@ def load_config(path: str) -> dict:
             raise ConfigError(f"[actions.{name}] must be a table")
         _validate_executor(f"actions.{name}", action)
     cfg["actions"] = actions
+
+    callback = cfg.get("callback")
+    if callback is not None:
+        if not isinstance(callback, dict) or not isinstance(callback.get("base_url"), str) or not callback["base_url"]:
+            raise ConfigError("[callback] must define base_url (the plaud-bridge server, e.g. http://127.0.0.1:8090)")
+        # No bridge credential here on purpose: each payload carries a one-shot
+        # result token that is only good for its own delivery's result URL.
+        hb = callback.get("heartbeat_seconds", DEFAULT_HEARTBEAT_S)
+        if isinstance(hb, bool) or not isinstance(hb, (int, float)) or not 1 <= hb <= 3600:
+            raise ConfigError("[callback] heartbeat_seconds must be a number of seconds in 1..3600")
+        cfg["callback"] = callback
 
     chat = cfg.get("chat")
     if chat is not None:
@@ -546,6 +629,15 @@ class Runner:
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._seq = 0
         self._seq_lock = threading.Lock()
+        # Jobs accepted but not finished (queued or running), for the heartbeat.
+        self._inflight: dict[int, dict] = {}
+        # Final outcomes the bridge has not acknowledged yet (job_id -> (payload, status, summary, since)).
+        self._pending_terminal: dict[int, tuple] = {}
+        self._inflight_lock = threading.Lock()
+        # Reports travel to the bridge on their own thread (see _enqueue_report);
+        # bounded so a blackholed bridge cannot grow memory without limit.
+        self._reports: queue.Queue = queue.Queue(maxsize=MAX_REPORT_QUEUE)
+        self.heartbeat_s = float((config.get("callback") or {}).get("heartbeat_seconds", DEFAULT_HEARTBEAT_S))
         # non-blocking gate: at most N concurrent chat sessions, 503 beyond
         self.chat_slots = threading.BoundedSemaphore(MAX_CHAT_CONCURRENCY)
 
@@ -555,6 +647,107 @@ class Runner:
 
     def start(self) -> None:
         self._thread.start()
+        if self.config.get("callback"):
+            self._start_reporting()
+
+    def _start_reporting(self) -> None:
+        """Reporter + heartbeat threads (idempotent). Split from start() so a
+        callback configured after construction can still be served."""
+        if getattr(self, "_reporting_started", False):
+            return
+        self._reporting_started = True
+        threading.Thread(target=self._reporter_loop, daemon=True, name="result-reporter").start()
+        threading.Thread(target=self._heartbeat_loop, daemon=True, name="result-heartbeat").start()
+
+    def report_result(self, payload: dict, status: str, summary: str) -> None:
+        """Tell plaud-bridge what this job did (POST delivery.result_url) so the
+        app and dashboard can show the outcome instead of 'handed off'. Best
+        effort: a failed report is logged, never raised; nothing is sent when
+        the payload has no delivery block or no [callback] is configured."""
+        cb = self.config.get("callback")
+        delivery = (payload or {}).get("delivery") or {}
+        url_path, token = delivery.get("result_url"), delivery.get("result_token")
+        # Strict shape and a per-delivery token: the runner never holds a bridge
+        # credential, and a path smuggled in with '..' is refused outright.
+        if not cb or not isinstance(url_path, str) or not _RESULT_URL_RE.fullmatch(url_path) \
+                or not isinstance(token, str) or not token:
+            if cb and url_path:
+                self.logger.log(event="result.skipped", reason="invalid result_url or missing result_token")
+            return True  # nothing to deliver, nothing to retry
+        body = json.dumps({"status": status, "summary": (summary or "")[:2000]}).encode()
+        try:
+            req = urllib.request.Request(
+                cb["base_url"].rstrip("/") + url_path, data=body, method="POST",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            )
+            # No redirects: urllib would follow a 3xx to another host and carry the
+            # Authorization header along with it.
+            with _NO_REDIRECT_OPENER.open(req, timeout=10) as resp:
+                self.logger.log(event="result.reported", status=status, http=resp.status, path=url_path)
+            return True
+        except urllib.error.HTTPError as e:
+            # Permanent 4xx (rotated token, terminal already recorded, bad request)
+            # means the bridge will never accept this report: retrying is
+            # pointless. Redirects (refused above), 408/429 and 5xx may recover.
+            self.logger.log(event="result.report_failed", status=status, path=url_path, error=f"HTTP {e.code}")
+            return 400 <= e.code < 500 and e.code not in (408, 429)
+        except Exception as e:  # noqa: BLE001 - reporting must never take the job down
+            self.logger.log(event="result.report_failed", status=status, path=url_path, error=str(e)[:300])
+            return False
+
+    def _enqueue_report(self, job_id: int, payload: dict, status: str, summary: str, terminal: bool) -> None:
+        """Hand a report to the reporter thread. The worker never waits on the
+        bridge: a slow or blackholed callback endpoint must not stall actions or
+        back up the job queue. Terminal reports are bookkept by the reporter."""
+        if not self.config.get("callback") or not ((payload or {}).get("delivery") or {}).get("result_url"):
+            if terminal:
+                with self._inflight_lock:
+                    self._inflight.pop(job_id, None)
+            return
+        # Only the delivery block travels: the reporter never needs the transcript.
+        slim = {"delivery": (payload or {}).get("delivery")}
+        try:
+            self._reports.put_nowait((job_id, slim, status, summary, terminal))
+        except queue.Full:
+            # A blackholed bridge backs the reporter up. Heartbeats are
+            # disposable; a final outcome goes straight to the bounded retry
+            # backlog so it is not lost.
+            if terminal:
+                with self._inflight_lock:
+                    self._inflight.pop(job_id, None)
+                    self._pending_terminal[job_id] = (slim, status, summary, time.monotonic())
+                    while len(self._pending_terminal) > MAX_PENDING_TERMINAL:
+                        oldest = min(self._pending_terminal, key=lambda j: self._pending_terminal[j][3])
+                        self._pending_terminal.pop(oldest, None)
+                        self.logger.log(event="result.dropped", job=oldest, reason="pending backlog full")
+            else:
+                self.logger.log(event="result.dropped", job=job_id, reason="report queue full")
+
+    def _terminal(self, job_id: int, payload: dict, status: str, summary: str) -> None:
+        """Deliver a job's final outcome (asynchronously; see _enqueue_report)."""
+        self._enqueue_report(job_id, payload, status, summary, terminal=True)
+
+    def _reporter_loop(self) -> None:
+        while True:
+            job_id, payload, status, summary, terminal = self._reports.get()
+            try:
+                delivered = self.report_result(payload, status, summary)
+            except Exception:  # noqa: BLE001 - the reporter must outlive any single report
+                delivered = False
+            if not terminal:
+                continue
+            with self._inflight_lock:
+                self._inflight.pop(job_id, None)
+                if delivered:
+                    self._pending_terminal.pop(job_id, None)
+                    continue
+                # Keep the outcome for the heartbeat loop to retry, bounded in
+                # count: an unreachable bridge must not grow memory without limit.
+                self._pending_terminal[job_id] = (payload, status, summary, time.monotonic())
+                while len(self._pending_terminal) > MAX_PENDING_TERMINAL:
+                    oldest = min(self._pending_terminal, key=lambda j: self._pending_terminal[j][3])
+                    self._pending_terminal.pop(oldest, None)
+                    self.logger.log(event="result.dropped", job=oldest, reason="pending backlog full")
 
     def resolve_action(self, route_name: str) -> tuple[str, dict] | None:
         actions = self.config["actions"]
@@ -569,11 +762,59 @@ class Runner:
         with self._seq_lock:
             self._seq += 1
             job_id = self._seq
-        try:
-            self.jobs.put_nowait((job_id, action_name, action, payload))
-        except queue.Full:
-            return None
+        # Registration and publication under one lock: the worker's pop and the
+        # heartbeat's snapshot both take this lock, so neither can see a job
+        # that was rejected by a full queue, and a fast job cannot finish before
+        # its registration exists.
+        with self._inflight_lock:
+            try:
+                self.jobs.put_nowait((job_id, action_name, action, payload))
+            except queue.Full:
+                return None
+            self._inflight[job_id] = payload
         return job_id
+
+    def _heartbeat_loop(self) -> None:
+        """Every HEARTBEAT_S, re-report 'queued' for every job still waiting or
+        running. The bridge treats a long silence as 'the consumer is gone'
+        and lets the user retry; the heartbeat is what keeps a legitimately
+        slow or deeply queued job from being mistaken for a dead one."""
+        while True:
+            time.sleep(self.heartbeat_s)
+            # First: final outcomes the bridge did not acknowledge (it was down or
+            # slow). Delivering them wins over any heartbeat.
+            with self._inflight_lock:
+                pending = list(self._pending_terminal.items())
+            now = time.monotonic()
+            for job_id, (payload, status, summary, since) in pending:
+                if now - since > PENDING_TERMINAL_TTL_S:
+                    with self._inflight_lock:
+                        self._pending_terminal.pop(job_id, None)
+                        self._inflight.pop(job_id, None)
+                    self.logger.log(event="result.dropped", job=job_id, reason="bridge unreachable past TTL")
+                    continue
+                try:
+                    delivered = self.report_result(payload, status, summary)
+                except Exception:  # noqa: BLE001
+                    delivered = False
+                if delivered:
+                    with self._inflight_lock:
+                        self._pending_terminal.pop(job_id, None)
+                        self._inflight.pop(job_id, None)
+            with self._inflight_lock:
+                snapshot = [(j, p) for j, p in self._inflight.items() if j not in self._pending_terminal]
+            for job_id, payload in snapshot:
+                # Re-check right before sending: a job that finished (and reported
+                # its terminal outcome) since the snapshot must not get a stale
+                # 'queued'. The bridge also refuses to reopen a terminal result.
+                with self._inflight_lock:
+                    still = job_id in self._inflight and job_id not in self._pending_terminal
+                if not still:
+                    continue
+                try:
+                    self.report_result(payload, "queued", "Still working")
+                except Exception:  # noqa: BLE001 - never let the heartbeat die
+                    pass
 
     def _worker(self) -> None:
         while True:
@@ -584,10 +825,24 @@ class Runner:
                 self.logger.log(event="job.error", job=job_id, action=action_name,
                                 error=f"{type(e).__name__}: {e}")
             finally:
+                with self._inflight_lock:
+                    # A job whose final outcome the bridge has not taken yet stays
+                    # registered; the heartbeat loop retries that report.
+                    if job_id not in self._pending_terminal:
+                        self._inflight.pop(job_id, None)
                 self.jobs.task_done()
 
     def _run_job(self, job_id: int, action_name: str, action: dict, payload: dict) -> None:
+        try:
+            self._run_job_inner(job_id, action_name, action, payload)
+        except Exception as e:  # noqa: BLE001 - setup failures (temp dir, template) must reach the bridge too
+            self.logger.log(event="job.end", job=job_id, action=action_name, error=str(e)[:2000])
+            self._terminal(job_id, payload, "failed", f"Runner error: {str(e)[:400]}")
+            raise
+
+    def _run_job_inner(self, job_id: int, action_name: str, action: dict, payload: dict) -> None:
         variables = payload_vars(payload)
+        variables["_payload"] = payload  # not a template token (see TEMPLATE_VARS); used for result reporting
         temp_path = None
         try:
             if action.get("write_transcript_to_file"):
@@ -617,18 +872,28 @@ class Runner:
                         route=variables["route_name"], recording=variables["recording_id"],
                         agent=action["agent"][0], timeout_s=timeout)
         started = time.monotonic()
+        self._enqueue_report(job_id, variables.get("_payload") or {}, "queued", "Agent started working", terminal=False)
         session = ACPSession(action["agent"], cwd, action.get("auto_approve", False),
                              self.logger, label=f"job-{job_id}",
                              extra_env=action.get("env"), model=action.get("model"),
                              log_content=self.log_responses)
         try:
             result = session.run_prompt(variables["prompt"], timeout)
+        except (OSError, ValueError) as e:  # executable/cwd missing, bad argv: never reached ACPError
+            self.logger.log(event="job.end", job=job_id, action=action_name, mode="acp",
+                            route=variables["route_name"], stop_reason="error", timeout=False,
+                            duration_s=round(time.monotonic() - started, 3), error=str(e)[:2000])
+            self._terminal(job_id, variables.get("_payload") or {}, "failed", f"Could not start the agent: {str(e)[:400]}")
+            return
         except ACPError as e:
             self.logger.log(event="job.end", job=job_id, action=action_name, mode="acp",
                             route=variables["route_name"], stop_reason="error",
                             timeout=False, duration_s=round(time.monotonic() - started, 3),
                             error=str(e)[:2000])
+            self._terminal(job_id, variables.get("_payload") or {}, "failed", f"Agent error: {str(e)[:500]}")
             return
+        status, summary = _acp_outcome(result)
+        self._terminal(job_id, variables.get("_payload") or {}, status, summary)
         extra = {}
         if self.log_responses:
             extra = {"response": result["text"][:4000],
@@ -667,6 +932,7 @@ class Runner:
                         command=argv[0], stdin_bytes=len(stdin_data or b""),
                         timeout_s=timeout)
         started = time.monotonic()
+        self._enqueue_report(job_id, variables.get("_payload") or {}, "queued", "Started", terminal=False)
         timed_out = False
         try:
             proc = subprocess.Popen(
@@ -677,6 +943,7 @@ class Runner:
         except FileNotFoundError as e:
             self.logger.log(event="job.end", job=job_id, action=action_name, mode="command",
                             exit_code=None, error=f"command not found: {e.filename}")
+            self._terminal(job_id, variables.get("_payload") or {}, "failed", f"command not found: {e.filename}")
             return
         _track_pid(proc.pid)
         try:
@@ -710,6 +977,18 @@ class Runner:
                         timeout=timed_out, duration_s=round(time.monotonic() - started, 3),
                         stdout_bytes=out_state["bytes"], stderr_bytes=err_state["bytes"],
                         **extra)
+        # Outcome for the bridge: a script's last stdout line is its own summary
+        # ("Saved note 0_Quick Add/....md"); failures carry the exit code and stderr tail.
+        payload = variables.get("_payload") or {}
+        if timed_out:
+            self._terminal(job_id, payload, "failed", f"Timed out after {int(timeout)}s")
+        elif proc.returncode == 0:
+            lines = [ln.strip() for ln in out_state["tail"].decode("utf-8", "replace").splitlines() if ln.strip()]
+            self._terminal(job_id, payload, "done", (lines[-1] if lines else "Done")[:2000])
+        else:
+            err = err_state["tail"].decode("utf-8", "replace").strip().splitlines()
+            self._terminal(job_id, payload, "failed",
+                           f"Exit code {proc.returncode}" + (f": {err[-1][:300]}" if err else ""))
 
 
 # --------------------------------------------------------------------------

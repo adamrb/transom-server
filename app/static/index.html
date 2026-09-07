@@ -87,6 +87,7 @@ audio{width:100%;margin:10px 0 20px}
 .md ul{margin:0 0 8px;padding-left:20px}.md li{margin:2px 0}.md code{font-size:.92em;background:var(--panel2);padding:1px 5px;border-radius:5px}
 /* Transcript grouped by speaker turn */
 .turn{margin:0 0 12px}.turn .spk{font-weight:650;font-size:12.5px;color:var(--accent);margin-bottom:2px}
+.dlv .d-out{flex-basis:100%;font-size:13px;color:var(--text);margin-top:4px;white-space:pre-wrap;overflow-wrap:anywhere}
 /* Vocabulary editor */
 .vocab-card textarea{width:100%;margin-top:10px;font:13.5px/1.5 ui-monospace,monospace;background:var(--panel2);color:var(--text);
   border:1px solid var(--border);border-radius:8px;padding:10px;resize:vertical;min-height:120px}
@@ -1322,17 +1323,30 @@ function renderDecision(run) {
   return html;
 }
 function renderDelivery(d, ctx) {
-  const st = d?.status === 'ok' ? 'ok' : 'failed';
+  // Two layers: the hand-off (status) and what the agent actually did
+  // (result_*), reported back afterwards. Show the outcome when we have it.
+  const rs = d?.result_status;
+  const failed = d?.status === 'failed' || rs === 'failed';
+  const unknown = rs === 'unknown';
+  // Rows from before result reporting have no result_status: a markdown or
+  // decision-only action that reported ok did complete; only webhooks were "handed off".
+  const legacyOk = d?.status === 'ok' && !rs;
+  const label = failed ? 'failed' : rs === 'done' ? 'done' : rs === 'queued' ? 'working' : unknown ? 'no result'
+    : legacyOk ? (d?.action_type === 'webhook' ? 'handed off' : 'done') : (d?.status || 'pending');
+  const cls = failed ? 'failed' : (rs === 'done' || (legacyOk && d?.action_type !== 'webhook')) ? 'ok' : 'neutral';
+  const outcome = failed ? (d?.result_summary || d?.last_error) : d?.result_summary;
+  const retryable = failed || unknown;
   return `<div class="dlv">
     <span class="d-name">${esc(d?.route_name ?? 'route')}</span>
-    <span class="chip ${st}">${st}</span>
+    <span class="chip ${cls}">${esc(label)}</span>
     ${d?.attempts > 1 ? `<span class="muted" style="font-size:12px">${esc(d.attempts)} attempts</span>` : ''}
     <span class="sp"></span>
-    <button class="small" onclick="retryDelivery('${jsArg(d?.id)}', '${jsArg(ctx)}')">Retry</button>
-    ${st === 'failed' && d?.last_error ? `<div class="d-err">${esc(d.last_error)}</div>` : ''}
+    ${retryable ? `<button class="small" onclick="retryDelivery('${jsArg(d?.id)}', '${jsArg(ctx)}')">Retry</button>` : ''}
+    ${outcome ? `<div class="${failed ? 'd-err' : 'd-out'}">${esc(outcome)}${d?.result_at ? ` <span class="muted">· ${fmtDate(d.result_at)}</span>` : ''}</div>` : ''}
   </div>`;
 }
 
+let routingWorking = false;
 async function loadRoutingSection(id) {
   if (id !== currentId) return;   // user moved on to another recording
   const box = $('routing-box');
@@ -1349,6 +1363,7 @@ async function loadRoutingSection(id) {
   const last = runs.length ? runs.reduce((a, b) =>
     new Date(b?.created_at || 0) > new Date(a?.created_at || 0) ? b : a) : null;
   const deliveries = (last?.deliveries?.length ? last.deliveries : data?.deliveries) || [];
+  routingWorking = deliveries.some(d => d?.result_status === 'queued' || d?.status === 'pending');
   box.innerHTML = `
     <div class="section"><h3>Routing</h3>
       <div class="body" style="white-space:normal">
@@ -1754,8 +1769,11 @@ async function init() {
   timer = setInterval(() => {
     loadStats();
     if (document.hidden) return;
-    if (currentTab === 'recordings') loadList();
-    else if (routingSupported !== false) loadLog();
+    if (currentTab === 'recordings') {
+      loadList();
+      // A recording left open while the agent works: pick up its reported outcome.
+      if (currentId && routingWorking) loadRoutingSection(currentId);
+    } else if (routingSupported !== false) loadLog();
   }, 15000);
 }
 
