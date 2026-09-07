@@ -207,3 +207,23 @@ def test_export_markdown_endpoint(client, tmp_path):
         assert "## Summary\n\nGreeting.\n\n## Transcript\n\nSpeaker 1: hello there\n" in body
     finally:
         client.delete(f"/api/v1/recordings/{rec_id}", headers=AUTH)
+
+
+def test_upload_marks_and_patch_marks(client):
+    """Marks travel with the upload (normalized) and can be replaced later."""
+    r = client.post(
+        "/api/v1/recordings", headers=AUTH,
+        files={"file": ("m.mp3", b"marks-bytes")},
+        data={"metadata": '{"marks": [30.5, 12, 12, -4]}'},
+    )
+    assert r.status_code == 201
+    rec_id = r.json()["id"]
+    try:
+        detail = client.get(f"/api/v1/recordings/{rec_id}", headers=AUTH).json()
+        assert detail["marks"] == [12.0, 30.5]
+        r = client.patch(f"/api/v1/recordings/{rec_id}/marks", headers=AUTH, json={"marks": [5, 99.25]})
+        assert r.status_code == 200 and r.json()["marks"] == [5.0, 99.25]
+        assert r.json()["highlights"] is None  # no transcript yet
+        assert client.patch(f"/api/v1/recordings/nope/marks", headers=AUTH, json={"marks": []}).status_code == 404
+    finally:
+        client.delete(f"/api/v1/recordings/{rec_id}", headers=AUTH)

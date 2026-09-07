@@ -81,6 +81,7 @@ MIGRATION_COLUMNS = {
         "transcript_text": "TEXT",
         "summary": "TEXT",
         "title": "TEXT",
+        "marks": "TEXT",   # JSON list of button-press offsets in seconds
     },
     "deliveries": {
         "router_run_id": "TEXT",

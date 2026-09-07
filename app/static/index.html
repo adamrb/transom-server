@@ -82,6 +82,15 @@ audio{width:100%;margin:10px 0 20px}
 .md ul{margin:0 0 8px;padding-left:20px}.md li{margin:2px 0}.md code{font-size:.92em;background:var(--panel2);padding:1px 5px;border-radius:5px}
 /* Transcript grouped by speaker turn */
 .turn{margin:0 0 12px}.turn .spk{font-weight:650;font-size:12.5px;color:var(--accent);margin-bottom:2px}
+/* Recorder button-press highlights */
+.chip.mark{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
+.section.highlights{border-color:color-mix(in srgb,var(--warn) 45%,var(--border))}
+.hl-row{display:flex;gap:10px;padding:6px 0;cursor:pointer;border-bottom:1px solid var(--border)}
+.hl-row:last-child{border-bottom:none}.hl-row:hover .hl-text{color:var(--accent)}
+.hl-at{color:var(--warn);font-weight:650;white-space:nowrap;font-variant-numeric:tabular-nums}
+.hl-text{flex:1;min-width:0}
+.body .hl{border-left:3px solid var(--warn);padding-left:8px;margin-left:-11px;background:color-mix(in srgb,var(--warn) 8%,transparent)}
+.seg{cursor:pointer}.seg:hover{color:var(--accent)}
 /* Transient confirmation for copy/export */
 .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--text);color:var(--bg);
   padding:8px 16px;border-radius:20px;font-size:13.5px;z-index:40;opacity:0;pointer-events:none;transition:opacity .2s}
@@ -1001,6 +1010,7 @@ async function loadList() {
     <div class="item ${rec.id === currentId ? 'active' : ''}" onclick="openRec('${jsArg(rec.id)}')">
       <div class="row1">
         <span class="title">${esc(titleOf(rec))}</span>
+        ${rec.marks?.length ? `<span class="chip mark" title="${rec.marks.length} highlight${rec.marks.length > 1 ? 's' : ''} marked on the recorder">★ ${rec.marks.length}</span>` : ''}
         <span class="chip ${esc(rec.status)}">${esc(rec.status)}</span>
       </div>
       <div class="meta">${fmtDate(rec.started_at || rec.uploaded_at)}
@@ -1025,12 +1035,25 @@ function closeDetail() {
 window.addEventListener('popstate', () => {
   if (!(history.state && history.state.pbDetail)) $('detail').classList.remove('open');
 });
+function fmtClock(sec) {
+  const s = Math.round(Number(sec) || 0);
+  return s >= 3600 ? `${Math.floor(s/3600)}:${String(Math.floor(s%3600/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`
+                   : `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+}
+function seekTo(sec) {
+  const p = $('player'); if (!p) return;
+  const go = () => { p.currentTime = Math.max(0, sec); p.play().catch(() => {}); };
+  if (p.readyState >= 1) go(); else p.addEventListener('loadedmetadata', go, { once: true });
+}
 function transcriptHtml(transcript) {
   const segs = transcript.segments || [];
   if (!segs.length) return esc(transcript.text);
-  if (!segs.some(s => s.speaker)) {
-    return segs.map(s => `<div><span class="seg">${fmtDur(s.start)}</span>${esc(s.text)}</div>`).join('');
-  }
+  // Segments inside a highlight window get a marker so the flagged passages
+  // stand out in the flow of the transcript; timestamps seek the player.
+  const ranges = (transcript.highlights || []).map(h => [Number(h.start) || 0, Number(h.end) || 0]);
+  const inHl = s => ranges.some(([a, b]) => s.end >= a && s.start <= b);
+  const segHtml = s => `<div class="${inHl(s) ? 'hl' : ''}"><span class="seg" onclick="seekTo(${Number(s.start) || 0})" title="Play from here">${fmtDur(s.start)}</span>${esc(s.text)}</div>`;
+  if (!segs.some(s => s.speaker)) return segs.map(segHtml).join('');
   const turns = [];
   for (const s of segs) {
     const last = turns[turns.length - 1];
@@ -1038,7 +1061,7 @@ function transcriptHtml(transcript) {
     else turns.push({ speaker: s.speaker || '', segs: [s] });
   }
   return turns.map(t => `<div class="turn">${t.speaker ? `<div class="spk">${esc(t.speaker)}</div>` : ''}${
-      t.segs.map(s => `<div><span class="seg">${fmtDur(s.start)}</span>${esc(s.text)}</div>`).join('')}</div>`).join('');
+      t.segs.map(segHtml).join('')}</div>`).join('');
 }
 let debounce;
 function debouncedLoad() { clearTimeout(debounce); debounce = setTimeout(loadList, 250); }
@@ -1064,6 +1087,10 @@ async function openRec(id) {
     <audio id="player" controls preload="none"></audio>
     ${rec.error ? `<div class="section"><h3>Error</h3><div class="body err">${esc(rec.error)}</div></div>` : ''}
     ${rec.summary ? `<div class="section"><h3>Summary</h3><div class="body" style="white-space:normal">${mdBlock(rec.summary)}</div></div>` : ''}
+    ${transcript?.highlights?.length ? `<div class="section highlights"><h3>Highlights</h3><div class="body">${
+        transcript.highlights.map(h => `<div class="hl-row" onclick="seekTo(${Number(h.start) || 0})" title="Play from here">
+          <span class="hl-at">★ ${fmtClock(h.at)}</span><span class="hl-text">${h.text ? esc(h.text) : '<span class="muted">(no speech near this mark)</span>'}</span></div>`).join('')
+      }</div></div>` : ''}
     ${transcript ? `<div class="section"><h3>Transcript</h3><div class="body">${transcriptHtml(transcript)}</div></div>`
       : rec.status !== 'done' ? `<div class="section"><h3>Transcript</h3><div class="body" style="color:var(--muted)">Not ready (${esc(rec.status)}).</div></div>` : ''}
     <div id="routing-box"></div>

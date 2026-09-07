@@ -12,7 +12,9 @@ import re
 
 
 def transcript_markdown(title: str, recorded: str | None, duration_s: float | int | None,
-                        summary: str | None, text: str) -> str:
+                        summary: str | None, text: str, highlights: list[dict] | None = None) -> str:
+    from .highlights import highlights_markdown
+
     def yq(value) -> str:  # YAML-safe scalar via JSON quoting
         return json.dumps("" if value is None else str(value), ensure_ascii=False)
 
@@ -30,6 +32,7 @@ def transcript_markdown(title: str, recorded: str | None, duration_s: float | in
     ]
     if summary and summary.strip():
         lines += ["## Summary", "", summary.strip(), ""]
+    lines += highlights_markdown(highlights or [])
     lines += ["## Transcript", "", (text or "").strip(), ""]
     return "\n".join(lines)
 

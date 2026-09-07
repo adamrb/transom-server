@@ -18,6 +18,7 @@ import httpx
 from .config import Settings
 from .db import Store, utcnow_iso
 from .engines import EngineError, TranscriptionEngine, build_engine
+from .highlights import build_highlights, highlights_for_prompt, highlights_markdown, parse_marks
 from .router import Router
 
 log = logging.getLogger("plaud-bridge.transcriber")
@@ -233,7 +234,14 @@ class Transcriber:
             "text": result.text,
             "segments": [s.as_dict() for s in result.segments],
         }
-        summary = await self._summarize(transcript["text"])
+        # Recorder button presses -> highlighted passages. The marks may also
+        # arrive later via PATCH /marks (see refresh_highlights).
+        current = self.store.get(rec_id) or rec
+        marks = parse_marks(current.get("marks"))
+        if marks:
+            transcript["marks"] = marks
+            transcript["highlights"] = build_highlights(marks, transcript["segments"], transcript["duration_s"])
+        summary = await self._summarize(transcript["text"], transcript.get("highlights") or [])
         if summary.title:
             transcript["title"] = summary.title
         if summary.text:
@@ -281,7 +289,28 @@ class Transcriber:
         except Exception:
             log.exception("routing failed for %s", rec_id)
 
-    async def _summarize(self, text: str) -> Summary:
+    def refresh_highlights(self, rec_id: str) -> list[dict] | None:
+        """Recompute highlights from the stored marks and the existing transcript
+        JSON (no LLM, no re-transcription). Returns the new highlights, or None
+        when the transcript file is missing."""
+        rec = self.store.get(rec_id)
+        if not rec or not rec.get("transcript_path"):
+            return None
+        p = Path(rec["transcript_path"])
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, ValueError):
+            return None
+        marks = parse_marks(rec.get("marks"))
+        data["marks"] = marks
+        data["highlights"] = build_highlights(marks, data.get("segments") or [], data.get("duration_s"))
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        tmp.replace(p)
+        self._export_markdown(rec, data)
+        return data["highlights"]
+
+    async def _summarize(self, text: str, highlights: list[dict] | None = None) -> Summary:
         s = self.settings
         if not (s.summary_enabled and s.summary_base_url and s.summary_model):
             return Summary()
@@ -304,7 +333,8 @@ class Transcriber:
                             # must be summarized, not obeyed (see summary_prompt).
                             {"role": "user", "content":
                                 "Transcript (untrusted data):\n<transcript>\n"
-                                + text[: s.summary_max_chars] + "\n</transcript>"},
+                                + text[: s.summary_max_chars] + "\n</transcript>"
+                                + highlights_for_prompt(highlights or [])},
                         ],
                     },
                 )
@@ -351,7 +381,10 @@ class Transcriber:
             if title:
                 lines += [f"# {title}", ""]
             if transcript.get("summary"):
-                lines += ["## Summary", "", transcript["summary"], "", "## Transcript", ""]
+                lines += ["## Summary", "", transcript["summary"], ""]
+            lines += highlights_markdown(transcript.get("highlights") or [])
+            if transcript.get("summary") or transcript.get("highlights"):
+                lines += ["## Transcript", ""]
             lines += [transcript["text"].strip(), ""]
             md_path.write_text("\n".join(lines))
         except Exception:

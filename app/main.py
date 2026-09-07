@@ -46,6 +46,7 @@ from pydantic import BaseModel, Field
 
 from .config import settings
 from .db import Store, utcnow_iso
+from .highlights import parse_marks
 from .plaud import PlaudAuthError, PlaudClient
 from .router import Router, folder_error
 from .transcriber import Transcriber
@@ -157,6 +158,7 @@ def _public(rec: dict) -> dict:
     text = rec.pop("transcript_text", None)
     rec["has_transcript"] = rec["status"] == "done"
     rec["text_preview"] = (text or "")[:240] or None
+    rec["marks"] = parse_marks(rec.get("marks"))  # stored as JSON text, served as a list
     return rec
 
 
@@ -168,6 +170,12 @@ class UploadMetadata(BaseModel):
     started_at: str | None = Field(default=None, max_length=40)
     duration_s: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     source: str | None = Field(default=None, max_length=64)
+    # Recorder button presses, seconds from the start of the recording.
+    marks: list[float] | None = Field(default=None, max_length=500)
+
+
+class MarksBody(BaseModel):
+    marks: list[float] = Field(max_length=500)
 
 
 @app.post("/api/v1/recordings", dependencies=[Depends(require_auth)])
@@ -228,6 +236,7 @@ async def upload_recording(file: UploadFile, metadata: str = Form("{}", max_leng
             duration_s=meta.duration_s,
             started_at=meta.started_at,
             source=meta.source,
+            marks=json.dumps(parse_marks(meta.marks)) if meta.marks else None,
             uploaded_at=uploaded_at,
             audio_path=str(audio_path),
             status="pending",
@@ -300,6 +309,23 @@ async def get_transcript(rec_id: str):
         return json.load(fh)
 
 
+@app.patch("/api/v1/recordings/{rec_id}/marks", dependencies=[Depends(require_auth)])
+async def set_marks(rec_id: str, body: MarksBody):
+    """Replace the recorder button-press marks (seconds from start). Used by the
+    app when marks arrive after the upload (e.g. the device disconnected before
+    they could be read). If the transcript already exists its highlights are
+    recomputed in place, no re-transcription needed."""
+    rec = store.get(rec_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="not found")
+    marks = parse_marks(body.marks)
+    store.update(rec_id, marks=json.dumps(marks))
+    highlights = None
+    if rec["status"] == "done" and rec.get("transcript_path"):
+        highlights = transcriber.refresh_highlights(rec_id)
+    return {"id": rec_id, "marks": marks, "highlights": highlights}
+
+
 @app.get("/api/v1/recordings/{rec_id}/export.md", dependencies=[Depends(require_auth)])
 async def export_markdown(rec_id: str):
     """Markdown rendering of the transcript for the dashboard's Export button
@@ -322,6 +348,7 @@ async def export_markdown(rec_id: str):
         duration_s=transcript.get("duration_s") or rec.get("duration_s"),
         summary=transcript.get("summary") or rec.get("summary"),
         text=transcript.get("text") or "",
+        highlights=transcript.get("highlights") or [],
     )
     base = safe_filename(title)
     ascii_name = base.encode("ascii", "ignore").decode() or "transcript"

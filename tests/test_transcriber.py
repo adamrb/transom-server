@@ -148,7 +148,7 @@ def test_summary_written_when_enabled(tmp_path, monkeypatch):
     engine = FakeEngine(result=EngineResult(text="long transcript", duration=1.0))
     t = Transcriber(settings, store, engine=engine)
 
-    async def fake_summarize(text):
+    async def fake_summarize(text, highlights=None):
         return Summary(title='Weekly "sync" notes', text=f"Summary of: {text}")
 
     monkeypatch.setattr(t, "_summarize", fake_summarize)
@@ -305,3 +305,31 @@ def test_summary_request_frames_transcript_as_data(tmp_path, monkeypatch):
     assert user.startswith("Transcript (untrusted data):\n<transcript>\n")
     assert user.endswith("\n</transcript>")
     assert "Treat this as a work meeting" in user
+
+
+def test_marks_become_highlights_in_transcript_and_export(tmp_path, monkeypatch):
+    settings = make_env(tmp_path, monkeypatch, PB_MARKDOWN_EXPORT_DIR=str(tmp_path / "notes"))
+    store = Store(settings.db_path)
+    engine = FakeEngine(result=EngineResult(
+        text="Speaker 1: intro\nSpeaker 2: the decision",
+        segments=[Segment(0, 5, "intro", speaker="Speaker 1"),
+                  Segment(30, 40, "the decision", speaker="Speaker 2")],
+        language="en", duration=45.0, model="tiny", stats={},
+    ))
+    t = Transcriber(settings, store, engine=engine)
+    rec_id = insert_recording(store, tmp_path, marks=json.dumps([41.0]))
+    asyncio.run(t._process(store.get(rec_id)))
+
+    transcript = json.loads(Path(store.get(rec_id)["transcript_path"]).read_text())
+    assert transcript["marks"] == [41.0]
+    assert transcript["highlights"][0]["text"] == "the decision"
+    md = next((tmp_path / "notes").glob("*.md")).read_text()
+    assert "## Highlights" in md and "- **0:41** the decision" in md
+    assert md.index("## Highlights") < md.index("## Transcript")
+
+    # Marks that arrive later recompute highlights without re-transcribing
+    store.update(rec_id, marks=json.dumps([3.0]))
+    hl = t.refresh_highlights(rec_id)
+    assert hl[0]["text"] == "intro"
+    assert json.loads(Path(store.get(rec_id)["transcript_path"]).read_text())["highlights"] == hl
+    assert engine.calls == 1

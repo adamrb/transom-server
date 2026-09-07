@@ -360,6 +360,10 @@ class Router:
         if title:
             lines += [f"# {title}", ""]
         if transcript.get("summary"):
-            lines += ["## Summary", "", transcript["summary"], "", "## Transcript", ""]
+            lines += ["## Summary", "", transcript["summary"], ""]
+        from .highlights import highlights_markdown
+        lines += highlights_markdown(transcript.get("highlights") or [])
+        if transcript.get("summary") or transcript.get("highlights"):
+            lines += ["## Transcript", ""]
         lines += [(transcript.get("text") or "").strip(), ""]
         md_path.write_text("\n".join(lines))
