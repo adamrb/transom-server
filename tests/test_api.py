@@ -204,7 +204,7 @@ def test_export_markdown_endpoint(client, tmp_path):
         assert body.startswith('---\ntitle: "Quick hello: a \\"test\\""\n')
         assert "duration_s: \"3\"" in body
         assert "\n# Quick hello: a \"test\"\n" in body
-        assert "## Summary\n\nGreeting.\n\n## Transcript\n\nSpeaker 1: hello there\n" in body
+        assert "## Summary\n\nGreeting.\n\n## Transcript\n\n**Speaker 1:** hello there\n" in body
     finally:
         client.delete(f"/api/v1/recordings/{rec_id}", headers=AUTH)
 
@@ -244,3 +244,18 @@ def test_patch_title_renames_recording(client):
         assert client.patch("/api/v1/recordings/nope", headers=AUTH, json={"title": "x"}).status_code == 404
     finally:
         client.delete(f"/api/v1/recordings/{rec_id}", headers=AUTH)
+
+
+def test_vocabulary_endpoints(client):
+    r = client.put("/api/v1/vocabulary", headers=AUTH, json={"entries": [
+        {"term": "Plaud", "aliases": ["plod"]}, {"term": "Obsidian", "source": "obsidian"}]})
+    assert r.status_code == 200 and len(r.json()["entries"]) == 2
+    v = client.get("/api/v1/vocabulary", headers=AUTH).json()
+    assert v["hotwords"] == "Plaud, Obsidian" and "Plaud = plod" in v["editor_text"]
+    r = client.post("/api/v1/vocabulary/import", headers=AUTH, json={"entries": [
+        {"term": "plaud", "aliases": ["plot"], "source": "obsidian"}, {"term": "Nora", "source": "obsidian"}]})
+    assert r.status_code == 200 and r.json()["added"] == 1
+    by = {e["term"]: e for e in r.json()["entries"]}
+    assert by["Plaud"]["aliases"] == ["plod", "plot"] and by["Plaud"]["source"] == "manual"
+    assert client.put("/api/v1/vocabulary", headers=AUTH, json={"entries": []}).status_code == 200
+    assert client.get("/api/v1/vocabulary", headers=AUTH).json()["entries"] == []

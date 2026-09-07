@@ -186,9 +186,9 @@ class LocalWhisperEngine:
 
     # -- transcription ------------------------------------------------------
 
-    async def transcribe(self, audio_path: Path) -> EngineResult:
+    async def transcribe(self, audio_path: Path, hotwords: str | None = None) -> EngineResult:
         async with self._lock:
-            return await asyncio.to_thread(self._transcribe_sync, audio_path)
+            return await asyncio.to_thread(self._transcribe_sync, audio_path, hotwords)
 
     def _probe_duration(self, audio_path: Path) -> float | None:
         """Container-header duration probe (cheap; no decode). Used to reject
@@ -203,7 +203,7 @@ class LocalWhisperEngine:
             pass
         return None
 
-    def _transcribe_sync(self, audio_path: Path) -> EngineResult:
+    def _transcribe_sync(self, audio_path: Path, hotwords: str | None = None) -> EngineResult:
         probed = self._probe_duration(audio_path)
         if probed and probed > self.max_duration_s:
             raise EngineError(
@@ -223,6 +223,9 @@ class LocalWhisperEngine:
                 # spans a speaker change at the actual word boundary, instead of
                 # collapsing the whole segment to the dominant speaker.
                 word_timestamps=self.diarization,
+                # Custom vocabulary (names, products) biases decoding toward
+                # these spellings; None leaves the model unprompted.
+                hotwords=hotwords or None,
             )
             # Backstop for streams whose header lied or lacked a duration.
             if info.duration and info.duration > self.max_duration_s:

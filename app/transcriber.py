@@ -17,8 +17,9 @@ import httpx
 
 from .config import Settings
 from .db import Store, utcnow_iso
-from .engines import EngineError, TranscriptionEngine, build_engine
+from .engines import EngineError, TranscriptionEngine, build_engine, render_text
 from .highlights import build_highlights, highlights_for_prompt, highlights_markdown, parse_marks
+from .vocabulary import VocabEntry, apply_corrections, correct_segments, hotwords_string, normalize
 from .router import Router
 
 log = logging.getLogger("plaud-bridge.transcriber")
@@ -211,13 +212,20 @@ class Transcriber:
         rec_id = rec["id"]
         self.store.update(rec_id, status="transcribing", attempts=rec["attempts"] + 1)
         log.info("transcribing %s (%s) via %s", rec_id, rec["filename"], self.engine.name)
+        vocab = normalize(self.store.list_vocabulary())
         try:
-            result = await self.engine.transcribe(Path(rec["audio_path"]))
+            result = await self.engine.transcribe(Path(rec["audio_path"]), hotwords=hotwords_string(vocab))
         except (EngineError, Exception) as exc:
             log.warning("transcription failed for %s: %s", rec_id, exc)
             self.store.update(rec_id, status="failed", error=str(exc)[:1000])
             return
 
+        # Known mis-hearings -> the right spelling, in the segments and the
+        # rendered text (kept consistent by re-rendering from the segments).
+        if vocab and correct_segments(result.segments, vocab):
+            result.text = render_text(result.segments, fallback=apply_corrections(result.text, vocab))
+        elif vocab:
+            result.text = apply_corrections(result.text, vocab)
         transcript_path = Path(rec["audio_path"]).with_suffix(".transcript.json")
         transcript = {
             "recording_id": rec_id,
@@ -385,7 +393,8 @@ class Transcriber:
             lines += highlights_markdown(transcript.get("highlights") or [])
             if transcript.get("summary") or transcript.get("highlights"):
                 lines += ["## Transcript", ""]
-            lines += [transcript["text"].strip(), ""]
+            from .export import transcript_body_markdown
+            lines += [transcript_body_markdown(transcript["text"]), ""]
             md_path.write_text("\n".join(lines))
         except Exception:
             log.exception("markdown export failed for %s", rec["id"])

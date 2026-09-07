@@ -314,6 +314,48 @@ async def get_transcript(rec_id: str):
         return json.load(fh)
 
 
+class VocabEntryBody(BaseModel):
+    term: str = Field(min_length=1, max_length=64)
+    aliases: list[str] = Field(default_factory=list, max_length=20)
+    source: Literal["manual", "obsidian"] = "manual"
+
+
+class VocabularyBody(BaseModel):
+    entries: list[VocabEntryBody] = Field(max_length=500)
+
+
+@app.get("/api/v1/vocabulary", dependencies=[Depends(require_auth)])
+async def get_vocabulary():
+    from .vocabulary import hotwords_string, normalize, to_editor_text
+
+    entries = normalize(store.list_vocabulary())
+    return {"entries": [e.as_dict() for e in entries], "editor_text": to_editor_text(entries),
+            "hotwords": hotwords_string(entries)}
+
+
+@app.put("/api/v1/vocabulary", dependencies=[Depends(require_auth)])
+async def put_vocabulary(body: VocabularyBody):
+    """Replace the whole list (what the editors save)."""
+    from .vocabulary import normalize
+
+    entries = normalize([e.model_dump() for e in body.entries])
+    store.replace_vocabulary([e.as_dict() for e in entries])
+    return {"entries": [e.as_dict() for e in entries]}
+
+
+@app.post("/api/v1/vocabulary/import", dependencies=[Depends(require_auth)])
+async def import_vocabulary(body: VocabularyBody):
+    """Merge entries in (used by contrib/vocab_from_obsidian.py). Existing
+    terms and aliases are kept; new terms and aliases are added."""
+    from .vocabulary import merge, normalize
+
+    existing = normalize(store.list_vocabulary())
+    incoming = normalize([e.model_dump() for e in body.entries])
+    merged = merge(existing, incoming)
+    store.replace_vocabulary([e.as_dict() for e in merged])
+    return {"entries": [e.as_dict() for e in merged], "added": len(merged) - len(existing)}
+
+
 @app.patch("/api/v1/recordings/{rec_id}", dependencies=[Depends(require_auth)])
 async def patch_recording(rec_id: str, body: RecordingPatch):
     """Rename a recording (the app's native Library and the dashboard). The

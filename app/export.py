@@ -33,8 +33,22 @@ def transcript_markdown(title: str, recorded: str | None, duration_s: float | in
     if summary and summary.strip():
         lines += ["## Summary", "", summary.strip(), ""]
     lines += highlights_markdown(highlights or [])
-    lines += ["## Transcript", "", (text or "").strip(), ""]
+    lines += ["## Transcript", "", transcript_body_markdown(text), ""]
     return "\n".join(lines)
+
+
+def transcript_body_markdown(text: str) -> str:
+    """Speaker turns as markdown paragraphs with a bold label: 'Speaker 1: hi'
+    becomes '**Speaker 1:** hi', one blank line between turns. Text without
+    speaker labels is returned as-is (already prose)."""
+    out = []
+    for line in (text or "").strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^([A-Z][\w .'-]{0,40}?):\s+(.*)$", line)
+        out.append(f"**{m.group(1)}:** {m.group(2)}" if m else line)
+    return "\n\n".join(out)
 
 
 def safe_filename(title: str, fallback: str = "transcript") -> str:

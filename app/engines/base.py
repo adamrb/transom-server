@@ -41,7 +41,7 @@ class EngineResult:
 class TranscriptionEngine(Protocol):
     name: str
 
-    async def transcribe(self, audio_path: Path) -> EngineResult: ...
+    async def transcribe(self, audio_path: Path, hotwords: str | None = None) -> EngineResult: ...
 
 
 class EngineError(Exception):

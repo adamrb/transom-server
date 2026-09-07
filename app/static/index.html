@@ -82,6 +82,10 @@ audio{width:100%;margin:10px 0 20px}
 .md ul{margin:0 0 8px;padding-left:20px}.md li{margin:2px 0}.md code{font-size:.92em;background:var(--panel2);padding:1px 5px;border-radius:5px}
 /* Transcript grouped by speaker turn */
 .turn{margin:0 0 12px}.turn .spk{font-weight:650;font-size:12.5px;color:var(--accent);margin-bottom:2px}
+/* Vocabulary editor */
+.vocab-card textarea{width:100%;margin-top:10px;font:13.5px/1.5 ui-monospace,monospace;background:var(--panel2);color:var(--text);
+  border:1px solid var(--border);border-radius:8px;padding:10px;resize:vertical;min-height:120px}
+.vocab-card code{font-size:.92em;background:var(--panel2);padding:1px 5px;border-radius:5px}
 /* Recorder button-press highlights */
 .chip.mark{background:color-mix(in srgb,var(--warn) 20%,transparent);color:var(--warn)}
 .section.highlights{border-color:color-mix(in srgb,var(--warn) 45%,var(--border))}
@@ -248,6 +252,18 @@ body.tab-automations main{display:none}
         <button class="primary small" onclick="openRouteEditor(null)">Add route</button>
       </div>
       <div id="routes-list"><div class="empty-note">Loading…</div></div>
+      <div class="sect-head">
+        <h2>Vocabulary</h2>
+        <button class="primary small" id="vocab-save" onclick="saveVocabulary()">Save</button>
+      </div>
+      <div class="route-card vocab-card">
+        <div class="r-desc" style="margin-top:0">Names and terms Whisper should get right, one per line. Add the
+          mis-hearings it usually produces after an equals sign and they are corrected in every transcript:
+          <code>Plaud Bridge = Plogged Bridge, Plod Bridge</code>. Import from your Obsidian vault with
+          <code>contrib/vocab_from_obsidian.py</code>.</div>
+        <textarea id="vocab-text" rows="8" spellcheck="false" placeholder="Plaud&#10;Plaud Bridge = Plogged Bridge&#10;Obsidian"></textarea>
+        <div class="muted" id="vocab-status" style="font-size:12.5px;margin-top:6px"></div>
+      </div>
       <div class="sect-head">
         <h2>Activity log</h2>
         <button class="small" onclick="loadLog()">Refresh</button>
@@ -1266,7 +1282,43 @@ async function loadAutomations() {
     return;
   }
   $('auto-body').hidden = false;
-  loadRoutes(); loadLog();
+  loadRoutes(); loadLog(); loadVocabulary();
+}
+
+/* ---------- custom vocabulary ---------- */
+let vocabLoaded = false;
+async function loadVocabulary() {
+  try {
+    const v = await apiJson('/vocabulary');
+    if (!vocabLoaded || document.activeElement !== $('vocab-text')) $('vocab-text').value = v.editor_text || '';
+    vocabLoaded = true;
+    $('vocab-status').textContent = v.entries.length
+      ? `${v.entries.length} term${v.entries.length === 1 ? '' : 's'} · ${v.entries.filter(e => e.aliases.length).length} with corrections`
+      : 'No custom vocabulary yet.';
+  } catch (e) {
+    $('vocab-status').textContent = e.status === 404 ? 'This backend does not support vocabulary yet.' : 'Failed to load vocabulary.';
+  }
+}
+function parseVocabEditor(text) {
+  return text.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')).map(l => {
+    const [term, rest] = l.split(/=(.*)/s);
+    return { term: term.trim(), aliases: (rest || '').split(',').map(a => a.trim()).filter(Boolean), source: 'manual' };
+  }).filter(e => e.term);
+}
+async function saveVocabulary() {
+  const btn = $('vocab-save'); btn.disabled = true;
+  try {
+    const entries = parseVocabEditor($('vocab-text').value);
+    // Preserve the 'obsidian' source on imported terms the user kept.
+    const current = await apiJson('/vocabulary');
+    const src = Object.fromEntries((current.entries || []).map(e => [e.term.toLowerCase(), e.source]));
+    entries.forEach(e => { e.source = src[e.term.toLowerCase()] || 'manual'; });
+    const r = await api('/vocabulary', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ entries }) });
+    if (!r.ok) throw new Error('save failed');
+    toast('Vocabulary saved. Applies to new transcriptions.');
+    vocabLoaded = false; await loadVocabulary();
+  } catch (e) { toast('Could not save vocabulary'); }
+  finally { btn.disabled = false; }
 }
 
 async function loadRouterStatus() {

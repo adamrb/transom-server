@@ -2,6 +2,7 @@
 and the worker share one connection guarded by a lock, which is plenty for a
 single-user/home-server workload."""
 
+import json
 import sqlite3
 import threading
 import time
@@ -32,6 +33,13 @@ CREATE INDEX IF NOT EXISTS idx_recordings_device_session
     ON recordings(device_sn, session_id);
 CREATE INDEX IF NOT EXISTS idx_recordings_status ON recordings(status);
 
+CREATE TABLE IF NOT EXISTS vocabulary (
+    id TEXT PRIMARY KEY,
+    term TEXT UNIQUE NOT NULL,
+    aliases TEXT NOT NULL DEFAULT '[]',
+    source TEXT NOT NULL DEFAULT 'manual',
+    updated_at TEXT
+);
 CREATE TABLE IF NOT EXISTS routes (
     id TEXT PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
@@ -201,6 +209,33 @@ class Store:
         return [dict(r) for r in rows]
 
     # ── AI routing ────────────────────────────────────────────────────────
+
+    # -- custom vocabulary ---------------------------------------------------
+
+    def list_vocabulary(self) -> "list[dict]":
+        with self._lock:
+            rows = self._conn.execute("SELECT term, aliases, source FROM vocabulary ORDER BY term COLLATE NOCASE").fetchall()
+        out = []
+        for r in rows:
+            try:
+                aliases = json.loads(r["aliases"] or "[]")
+            except ValueError:
+                aliases = []
+            out.append({"term": r["term"], "aliases": aliases, "source": r["source"]})
+        return out
+
+    def replace_vocabulary(self, entries: "list[dict]") -> None:
+        """Atomically replace the whole list (the editor saves the full text)."""
+        now = utcnow_iso()
+        with self._lock:
+            self._conn.execute("DELETE FROM vocabulary")
+            for e in entries:
+                self._conn.execute(
+                    "INSERT INTO vocabulary (id, term, aliases, source, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (uuid.uuid4().hex, e["term"], json.dumps(e.get("aliases") or [], ensure_ascii=False),
+                     e.get("source") or "manual", now),
+                )
+            self._conn.commit()
 
     def insert_route(self, **fields) -> str:
         return self._insert("routes", fields)

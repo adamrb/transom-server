@@ -12,3 +12,9 @@ def test_safe_filename_strips_unsafe_chars_and_caps_length():
     assert safe_filename('a/b:c*d?"e<f>g|h#i') == "a b c d e f g h i"
     assert safe_filename("   ") == "transcript"
     assert len(safe_filename("x" * 200)) == 80
+
+
+def test_transcript_body_markdown_bolds_speakers():
+    from app.export import transcript_body_markdown
+    assert transcript_body_markdown("Speaker 1: hi there\nSpeaker 2: hello\n") == "**Speaker 1:** hi there\n\n**Speaker 2:** hello"
+    assert transcript_body_markdown("just prose, no labels") == "just prose, no labels"

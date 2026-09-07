@@ -411,7 +411,7 @@ def test_delivery_row_exists_as_pending_before_action_runs(tmp_path, monkeypatch
 class FakeEngine:
     name = "fake"
 
-    async def transcribe(self, audio_path: Path) -> EngineResult:
+    async def transcribe(self, audio_path: Path, hotwords: str | None = None) -> EngineResult:
         return EngineResult(text="a work standup transcript", duration=1.0)
 
 
@@ -523,7 +523,7 @@ def test_cancel_mid_transcription_resets_to_pending(tmp_path, monkeypatch):
     class CancelledEngine:
         name = "fake"
 
-        async def transcribe(self, audio_path):
+        async def transcribe(self, audio_path, hotwords=None):
             raise asyncio.CancelledError()
 
     t = Transcriber(s, store, engine=CancelledEngine(), router=Router(s, store))

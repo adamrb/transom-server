@@ -20,8 +20,9 @@ class FakeEngine:
         self.error = error
         self.calls = 0
 
-    async def transcribe(self, audio_path: Path) -> EngineResult:
+    async def transcribe(self, audio_path: Path, hotwords: str | None = None) -> EngineResult:
         self.calls += 1
+        self.last_hotwords = hotwords
         if self.error:
             raise self.error
         return self.result
@@ -74,7 +75,7 @@ def test_successful_transcription_persists_everything(tmp_path, monkeypatch):
     md_files = list((tmp_path / "notes").glob("*.md"))
     assert len(md_files) == 1
     md = md_files[0].read_text()
-    assert "Speaker 2: hi" in md and 'device_sn: "881A"' in md
+    assert "**Speaker 2:** hi" in md and 'device_sn: "881A"' in md
 
 
 def test_engine_error_marks_failed_and_counts_attempts(tmp_path, monkeypatch):
@@ -333,3 +334,29 @@ def test_marks_become_highlights_in_transcript_and_export(tmp_path, monkeypatch)
     assert hl[0]["text"] == "intro"
     assert json.loads(Path(store.get(rec_id)["transcript_path"]).read_text())["highlights"] == hl
     assert engine.calls == 1
+
+
+def test_vocabulary_hotwords_and_corrections(tmp_path, monkeypatch):
+    settings = make_env(tmp_path, monkeypatch, PB_MARKDOWN_EXPORT_DIR=str(tmp_path / "notes"))
+    store = Store(settings.db_path)
+    store.replace_vocabulary([
+        {"term": "Plaud Bridge", "aliases": ["Plogged Bridge", "plod bridge"], "source": "manual"},
+        {"term": "Obsidian", "aliases": [], "source": "obsidian"},
+    ])
+    engine = FakeEngine(result=EngineResult(
+        text="Speaker 1: Hello this is a Plogged Bridge test.\nSpeaker 2: plod bridge works",
+        segments=[Segment(0, 2, "Hello this is a Plogged Bridge test.", speaker="Speaker 1"),
+                  Segment(2, 4, "plod bridge works", speaker="Speaker 2")],
+        language="en", duration=4.0, model="tiny", stats={},
+    ))
+    t = Transcriber(settings, store, engine=engine)
+    rec_id = insert_recording(store, tmp_path)
+    asyncio.run(t._process(store.get(rec_id)))
+
+    assert engine.last_hotwords == "Plaud Bridge, Obsidian"   # manual first, then imported
+    rec = store.get(rec_id)
+    assert rec["transcript_text"] == "Speaker 1: Hello this is a Plaud Bridge test.\nSpeaker 2: Plaud Bridge works"
+    transcript = json.loads(Path(rec["transcript_path"]).read_text())
+    assert transcript["segments"][1]["text"] == "Plaud Bridge works"
+    md = next((tmp_path / "notes").glob("*.md")).read_text()
+    assert "**Speaker 1:** Hello this is a Plaud Bridge test.\n\n**Speaker 2:** Plaud Bridge works" in md

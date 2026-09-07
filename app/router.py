@@ -365,5 +365,6 @@ class Router:
         lines += highlights_markdown(transcript.get("highlights") or [])
         if transcript.get("summary") or transcript.get("highlights"):
             lines += ["## Transcript", ""]
-        lines += [(transcript.get("text") or "").strip(), ""]
+        from .export import transcript_body_markdown
+        lines += [transcript_body_markdown(transcript.get("text") or ""), ""]
         md_path.write_text("\n".join(lines))

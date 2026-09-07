@@ -30,7 +30,7 @@ class OpenAICompatEngine:
         self.language = language
         self.timeout_s = timeout_s
 
-    async def transcribe(self, audio_path: Path) -> EngineResult:
+    async def transcribe(self, audio_path: Path, hotwords: str | None = None) -> EngineResult:
         url = f"{self.base_url}/audio/transcriptions"
         headers = {}
         if self.api_key:
@@ -42,6 +42,8 @@ class OpenAICompatEngine:
                 data = {"model": self.model, "response_format": response_format}
                 if self.language:
                     data["language"] = self.language
+                if hotwords:
+                    data["prompt"] = hotwords  # the API's vocabulary hint
                 mime = mimetypes.guess_type(audio_path.name)[0] or "application/octet-stream"
                 with audio_path.open("rb") as fh:
                     resp = await client.post(
