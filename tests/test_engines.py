@@ -321,3 +321,17 @@ def test_duration_probe_rejects_before_model_load():
 
 def test_wer_apostrophe_normalization():
     assert word_error_rate("don't stop", "don’t stop") == 0.0
+
+
+def test_fit_hotwords_trims_at_term_boundary_keeping_the_front():
+    class Enc:
+        def __init__(self, ids): self.ids = ids
+    class Tok:
+        def encode(self, s): return Enc(list(s))  # one token per character
+    class Model:
+        hf_tokenizer = Tok()
+    engine = LocalWhisperEngine()
+    hw = "Morgan Ashford, Nebulite, Bianca Ferrante, Zed"
+    assert engine._fit_hotwords(Model(), hw, max_tokens=len(" Morgan Ashford, Nebulite")) == "Morgan Ashford, Nebulite"
+    assert engine._fit_hotwords(Model(), hw, max_tokens=1000) == hw
+    assert engine._fit_hotwords(Model(), None) is None

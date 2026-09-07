@@ -59,3 +59,9 @@ def test_acronym_normalization_collapses_spelled_out_forms():
     assert acronym_pattern("Turbo") is None and acronym_pattern("ModelForge") is None
     # a pure-letter acronym must not rewrite an unrelated word that merely contains the letters
     assert apply_corrections("the cactus", [VocabEntry("CAC")]) == "the cactus"
+
+
+def test_acronym_plural_and_brand_casing():
+    v = [VocabEntry("GPU"), VocabEntry("ModelForge"), VocabEntry("Plaud Bridge"), VocabEntry("Delta"), VocabEntry("MegaNode")]
+    out = apply_corrections("eight G P Us and two GPU's on modelforge mega-node; plaud bridge; a delta moment", v)
+    assert out == "eight GPUs and two GPU's on ModelForge mega-node; Plaud Bridge; a delta moment"

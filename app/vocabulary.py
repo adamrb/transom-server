@@ -21,9 +21,12 @@ from dataclasses import dataclass, field
 
 MAX_ENTRIES = 600
 MAX_TERM = 64
-# Whisper's prompt window holds roughly 220 tokens; unusual names cost 3-4
-# tokens each, so ~800 chars is the most that survives untruncated.
-HOTWORDS_MAX_CHARS = 800
+# Whisper keeps the first 223 prompt tokens and drops the rest; the engine
+# trims the list to that budget with the real tokenizer (see
+# LocalWhisperEngine._fit_hotwords). This char cap is only a generous upper
+# bound so the API response and the app stay small.
+HOTWORDS_MAX_CHARS = 1200
+HOTWORDS_MAX_TOKENS = 220
 
 
 @dataclass
@@ -139,11 +142,26 @@ def acronym_pattern(term: str) -> re.Pattern | None:
         else:
             pieces.append(part.lower())
     body = sep.join(pieces)
-    # Do not match the term exactly as written (nothing to fix) or a plain
-    # lowercase run for pure-letter acronyms that could be an ordinary word.
-    # A dotted rendering ("G.K.S. and") leaves its last dot behind; swallow it
-    # only when a lowercase word follows, so a sentence-final period survives.
-    return re.compile(r"(?<![\w.])" + body + r"(?:\.(?=\s+(?-i:[a-z])))?(?![\w])", re.IGNORECASE)
+    # Trailing plural ("G P Us", "GPU's") is kept via the `pl` group. A dotted
+    # rendering ("G.K.S. and") leaves its last dot behind; swallow it only when
+    # a lowercase word follows, so a sentence-final period survives.
+    return re.compile(r"(?<![\w.])" + body + r"(?P<pl>'?s)?(?:\.(?=\s+(?-i:[a-z])))?(?![\w])", re.IGNORECASE)
+
+
+def casing_pattern(term: str) -> re.Pattern | None:
+    """Canonical casing for brand-like terms Whisper lowercases or splits:
+    CamelCase ('ModelForge' from 'modelforge'/'Modelforge') and multi-word names
+    ('Plaud Bridge' from 'plaud bridge'). Plain single words are left alone:
+    'drive', 'edge' or 'delta' are ordinary words as often as products."""
+    if ACRONYM_RE.match(term):
+        return None
+    words = term.split()
+    camel = len(words) == 1 and re.search(r"[a-z][A-Z]", term) is not None
+    multi = len(words) >= 2 and any(w[:1].isupper() for w in words)
+    if not (camel or multi):
+        return None
+    body = r"\s+".join(re.escape(w) for w in words)
+    return re.compile(r"(?<!\w)" + body + r"(?!\w)", re.IGNORECASE)
 
 
 def _compile(entries: list[VocabEntry]) -> list[tuple[re.Pattern, str]]:
@@ -153,7 +171,10 @@ def _compile(entries: list[VocabEntry]) -> list[tuple[re.Pattern, str]]:
             rules.append((re.compile(r"(?<!\w)" + re.escape(a) + r"(?!\w)", re.IGNORECASE), e.term))
         pat = acronym_pattern(e.term)
         if pat is not None:
-            rules.append((pat, e.term))
+            rules.append((pat, e.term + r"\g<pl>"))
+        cpat = casing_pattern(e.term)
+        if cpat is not None:
+            rules.append((cpat, e.term))
     return rules
 
 

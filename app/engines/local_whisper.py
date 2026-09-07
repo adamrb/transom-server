@@ -203,6 +203,27 @@ class LocalWhisperEngine:
             pass
         return None
 
+    def _fit_hotwords(self, model, hotwords: str | None, max_tokens: int = 220) -> str | None:
+        """Trim the comma-separated hotwords to what Whisper will actually keep.
+        faster-whisper cuts the prompt at 223 tokens, mid-term and silently;
+        cutting here at a term boundary keeps the list meaningful and lets us
+        log how many terms made it. The list arrives highest-priority first."""
+        if not hotwords:
+            return None
+        tok = getattr(model, "hf_tokenizer", None)
+        if tok is None:
+            return hotwords
+        terms = [t.strip() for t in hotwords.split(",") if t.strip()]
+        kept: list[str] = []
+        for term in terms:
+            candidate = ", ".join(kept + [term])
+            if len(tok.encode(" " + candidate).ids) > max_tokens:
+                break
+            kept.append(term)
+        if len(kept) != len(terms):
+            log.info("hotwords trimmed to %d of %d terms (%d-token budget)", len(kept), len(terms), max_tokens)
+        return ", ".join(kept) or None
+
     def _transcribe_sync(self, audio_path: Path, hotwords: str | None = None) -> EngineResult:
         probed = self._probe_duration(audio_path)
         if probed and probed > self.max_duration_s:
@@ -212,6 +233,7 @@ class LocalWhisperEngine:
             )
 
         model = self._load_model()
+        hotwords = self._fit_hotwords(model, hotwords)
         t0 = time.monotonic()
         try:
             seg_iter, info = model.transcribe(
