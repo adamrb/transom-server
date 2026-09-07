@@ -178,6 +178,11 @@ class MarksBody(BaseModel):
     marks: list[float] = Field(max_length=500)
 
 
+class RecordingPatch(BaseModel):
+    model_config = {"extra": "forbid"}
+    title: str = Field(min_length=1, max_length=120)
+
+
 @app.post("/api/v1/recordings", dependencies=[Depends(require_auth)])
 async def upload_recording(file: UploadFile, metadata: str = Form("{}", max_length=4096)):
     try:
@@ -307,6 +312,21 @@ async def get_transcript(rec_id: str):
         raise HTTPException(status_code=409, detail=f"transcript not ready (status: {rec['status']})")
     with open(rec["transcript_path"]) as fh:
         return json.load(fh)
+
+
+@app.patch("/api/v1/recordings/{rec_id}", dependencies=[Depends(require_auth)])
+async def patch_recording(rec_id: str, body: RecordingPatch):
+    """Rename a recording (the app's native Library and the dashboard). The
+    title also lands in the transcript JSON so exports and the app's cached
+    transcript agree with the row."""
+    rec = store.get(rec_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="not found")
+    title = " ".join(body.title.split())
+    store.update(rec_id, title=title)
+    if rec.get("transcript_path"):
+        Transcriber._patch_transcript_json(rec["transcript_path"], title, None)
+    return _public(store.get(rec_id))
 
 
 @app.patch("/api/v1/recordings/{rec_id}/marks", dependencies=[Depends(require_auth)])

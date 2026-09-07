@@ -227,3 +227,20 @@ def test_upload_marks_and_patch_marks(client):
         assert client.patch(f"/api/v1/recordings/nope/marks", headers=AUTH, json={"marks": []}).status_code == 404
     finally:
         client.delete(f"/api/v1/recordings/{rec_id}", headers=AUTH)
+
+
+def test_patch_title_renames_recording(client):
+    r = client.post(
+        "/api/v1/recordings", headers=AUTH,
+        files={"file": ("rn.mp3", b"rename-bytes")}, data={"metadata": "{}"},
+    )
+    rec_id = r.json()["id"]
+    try:
+        r = client.patch(f"/api/v1/recordings/{rec_id}", headers=AUTH, json={"title": "  My   renamed  memo "})
+        assert r.status_code == 200 and r.json()["title"] == "My renamed memo"
+        assert client.get(f"/api/v1/recordings/{rec_id}", headers=AUTH).json()["title"] == "My renamed memo"
+        assert client.patch(f"/api/v1/recordings/{rec_id}", headers=AUTH, json={"title": ""}).status_code == 422
+        assert client.patch(f"/api/v1/recordings/{rec_id}", headers=AUTH, json={"status": "done"}).status_code == 422
+        assert client.patch("/api/v1/recordings/nope", headers=AUTH, json={"title": "x"}).status_code == 404
+    finally:
+        client.delete(f"/api/v1/recordings/{rec_id}", headers=AUTH)
