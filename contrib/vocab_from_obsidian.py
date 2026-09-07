@@ -147,9 +147,32 @@ def parse_titles(vault: Path) -> list[dict]:
     return out
 
 
+def _split_single_token_aliases(entries: list[dict]) -> list[dict]:
+    """'Morgen' is a misspelling of 'Morgan', not of 'Morgan Ashford': correcting
+    it to the full name would expand every first-name mention. Single-word
+    aliases therefore attach to the matching canonical token as its own entry
+    (term 'Morgan', alias 'Morgen'); multi-word aliases keep the full name."""
+    out: list[dict] = []
+    extra: dict[str, dict] = {}
+    for e in entries:
+        ctoks = e["term"].split()
+        keep = []
+        for a in e["aliases"]:
+            if len(a.split()) == 1 and len(ctoks) > 1:
+                target = min(ctoks, key=lambda t: _edit_distance(a, t))
+                x = extra.setdefault(target.lower(), {"term": target, "aliases": [], "source": e["source"]})
+                if a.lower() not in {z.lower() for z in x["aliases"]} and a.lower() != target.lower():
+                    x["aliases"].append(a)
+            else:
+                keep.append(a)
+        out.append({**e, "aliases": keep})
+    return out + list(extra.values())
+
+
 def collect(vault: Path) -> list[dict]:
     seen: dict[str, dict] = {}
-    for e in parse_gazetteer(vault / "Life/_names.md") + parse_people(vault) + parse_titles(vault):
+    raw = parse_gazetteer(vault / "Life/_names.md") + parse_people(vault) + parse_titles(vault)
+    for e in _split_single_token_aliases(raw):
         key = e["term"].lower()
         if key in seen:
             have = {a.lower() for a in seen[key]["aliases"]}
