@@ -306,10 +306,21 @@ class LocalWhisperEngine:
         # segment-level assignment would drop (the dominant speaker wins the
         # whole segment otherwise).
         if words:
+            labels = [self._assign_speaker(w_start, w_end, turns) for w_start, w_end, _ in words]
+            # Words outside every diarization turn (a lead-in syllable before the
+            # first turn, a word in a gap) would otherwise become their own
+            # "unknown speaker" turn. Inherit the nearest labeled neighbour
+            # instead: the following word first (the speaker is about to start),
+            # else the previous one.
+            for i, label in enumerate(labels):
+                if label is not None:
+                    continue
+                nxt = next((l for l in labels[i + 1:] if l is not None), None)
+                prv = next((l for l in reversed(labels[:i]) if l is not None), None)
+                labels[i] = nxt if nxt is not None else prv
             new_segments: list[Segment] = []
             cur_label: str | None = object()  # sentinel != any real label
-            for w_start, w_end, text in words:
-                label = self._assign_speaker(w_start, w_end, turns)
+            for (w_start, w_end, text), label in zip(words, labels):
                 if label != cur_label or not new_segments:
                     new_segments.append(
                         Segment(start=round(w_start, 2), end=round(w_end, 2),

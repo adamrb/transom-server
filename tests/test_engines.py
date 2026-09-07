@@ -98,6 +98,23 @@ def test_diarization_word_level_splits_segment_at_speaker_change(monkeypatch, tm
     assert (segments[1].start, segments[1].end) == (6.1, 8.0)
 
 
+def test_diarization_words_outside_turns_inherit_neighbour(monkeypatch, tmp_path):
+    """A lead-in word before the first turn and a word in a gap must not become
+    an unlabeled turn of their own; they take the next (else previous) label."""
+    engine = LocalWhisperEngine(diarization=True)
+    turns = [(1.0, 3.0, "A"), (4.0, 6.0, "B")]
+    monkeypatch.setattr(engine, "_run_diarizer", lambda path: turns)
+    segments = [Segment(0.0, 7.0, "x")]
+    words = [(0.0, 0.5, " like"),            # before any turn -> next label A
+             (1.0, 2.9, " lettuce"),
+             (3.2, 3.8, " and"),             # gap between A and B -> next label B
+             (4.0, 5.9, " well"),
+             (6.2, 7.0, " done.")]           # after the last turn -> previous label B
+    engine._apply_diarization(tmp_path / "x.wav", segments, words)
+    assert [(s.speaker, s.text) for s in segments] == [
+        ("Speaker 1", "like lettuce"), ("Speaker 2", "and well done.")]
+
+
 def test_diarization_no_turns_leaves_segments_untouched(monkeypatch, tmp_path):
     engine = LocalWhisperEngine(diarization=True)
     monkeypatch.setattr(engine, "_run_diarizer", lambda path: [])

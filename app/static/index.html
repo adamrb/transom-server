@@ -15,7 +15,9 @@
   --text:#1c2230;--muted:#5d6676;--accent:#2f6fd0;--accent2:#255cb0}
 }
 *{box-sizing:border-box}
-body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text)}
+body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);
+  display:flex;flex-direction:column;height:100vh;height:100dvh}
+header{flex:none}
 header{display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel);flex-wrap:wrap}
 header h1{font-size:17px;margin:0;font-weight:650}
 header .dot{width:9px;height:9px;border-radius:50%;background:var(--ok);flex:none}
@@ -32,12 +34,14 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.primary:hover{background:var(--accent2)}
 button.danger:hover{border-color:var(--err);color:var(--err)}
 button.small{font-size:12.5px;padding:3px 9px}
-main{display:grid;grid-template-columns:minmax(320px,420px) 1fr;gap:0;height:calc(100vh - 61px)}
-#list-pane{border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
+/* minmax(0,…) tracks + min-width:0 on the pane: otherwise the search input's intrinsic
+   width forces the column wider than the viewport on phones (content clipped on the right). */
+main{display:grid;grid-template-columns:minmax(320px,420px) minmax(0,1fr);gap:0;flex:1;min-height:0}
+#list-pane{border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0;min-width:0}
 #toolbar{display:flex;gap:8px;padding:12px;border-bottom:1px solid var(--border)}
 #toolbar input,#toolbar select{font:inherit;background:var(--panel2);color:var(--text);
   border:1px solid var(--border);border-radius:8px;padding:6px 10px}
-#toolbar input{flex:1;min-width:0}
+#toolbar input{flex:1;min-width:0;width:0}
 #items{overflow-y:auto;flex:1}
 .item{padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer}
 .item:hover{background:var(--panel)}
@@ -73,9 +77,26 @@ audio{width:100%;margin:10px 0 20px}
 #gate button{width:100%}
 #gate .err{font-size:13px;min-height:18px;margin-top:8px}
 .seg{color:var(--muted);font-size:12px;margin-right:8px;font-variant-numeric:tabular-nums}
+/* Rendered markdown (summaries): tight vertical rhythm inside a card */
+.md p{margin:0 0 8px}.md p:last-child{margin-bottom:0}.md h4{margin:10px 0 4px;font-size:15px}
+.md ul{margin:0 0 8px;padding-left:20px}.md li{margin:2px 0}.md code{font-size:.92em;background:var(--panel2);padding:1px 5px;border-radius:5px}
+/* Transcript grouped by speaker turn */
+.turn{margin:0 0 12px}.turn .spk{font-weight:650;font-size:12.5px;color:var(--accent);margin-bottom:2px}
+/* Phone-only top bar inside the detail overlay (Back + title) */
+.detail-bar{display:none}
+/* Embedded in the Android app: the app supplies navigation, so drop the brand, the
+   phone-connect flow and Lock (which would log the WebView out), and leave room at the
+   bottom for the app's floating tab bar (120dp, same number the native tabs use). */
+body.embedded header h1,body.embedded header .stats,body.embedded #btn-connect,body.embedded #btn-lock{display:none}
+body.embedded header{justify-content:center;padding:10px 12px}
+body.embedded header .spacer{display:none}
+body.embedded #items,body.embedded #detail,body.embedded #auto-pane{padding-bottom:120px}
+body.embedded button{min-height:40px}
+body.embedded .item{padding:14px 16px}
+body.embedded #toolbar input,body.embedded #toolbar select{padding:9px 12px}
 
 /* --- Automations tab --- */
-#auto-pane{display:none;overflow-y:auto;height:calc(100vh - 61px);padding:22px}
+#auto-pane{display:none;overflow-y:auto;flex:1;min-height:0;padding:22px}
 #auto-pane.open{display:block}
 body.tab-automations main{display:none}
 #auto-inner{max-width:860px;margin:0 auto}
@@ -141,10 +162,16 @@ body.tab-automations main{display:none}
 .caution{color:var(--warn);font-size:13px;margin-top:10px}
 
 @media (max-width:800px){
-  main{grid-template-columns:1fr}#detail{display:none}
-  #detail.open{display:block;position:fixed;inset:61px 0 0;background:var(--bg);z-index:5}
+  main{grid-template-columns:minmax(0,1fr)}#detail{display:none}
+  /* Full-screen overlay (not offset by a hard-coded header height: the header wraps on
+     narrow screens) with its own sticky Back bar. */
+  #detail.open{display:block;position:fixed;inset:0;background:var(--bg);z-index:5;padding-top:0}
+  .detail-bar{display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:1;
+    background:var(--panel);border-bottom:1px solid var(--border);margin:0 -16px 14px;padding:10px 12px}
+  .detail-bar .bar-title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
   #auto-pane{padding:14px}
   #detail{padding:20px 16px}
+  .item .meta{font-size:12px}
 }
 @media (max-width:700px){header .stats{display:none}}
 @media (max-width:480px){
@@ -175,8 +202,8 @@ body.tab-automations main{display:none}
   </nav>
   <span class="stats" id="stats"></span>
   <div class="spacer"></div>
-  <button onclick="openConnect()">Connect a phone</button>
-  <button onclick="logout()">Lock</button>
+  <button id="btn-connect" onclick="openConnect()">Connect a phone</button>
+  <button id="btn-lock" onclick="logout()">Lock</button>
 </header>
 
 <main>
@@ -840,6 +867,38 @@ let authed = false;
 // Monotonic counter so a superseded auth check cannot clobber a newer result.
 let authAttempt = 0;
 let currentTab = 'recordings';
+// ?embedded=1: loaded inside the Android app's Library tab (see body.embedded CSS).
+const EMBEDDED = new URLSearchParams(location.search).has('embedded');
+if (EMBEDDED) document.body.classList.add('embedded');
+const isPhone = () => matchMedia('(max-width:800px)').matches;
+
+/* ---------- minimal markdown (LLM summaries use **bold**, headings, bullets) ---------- */
+function mdInline(t) {
+  return esc(t)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|[\s(])\*([^*\s][^*]*?)\*(?=[\s).,;:!?]|$)/g, '$1<i>$2</i>');
+}
+function mdBlock(text) {
+  const out = []; let list = null, para = [];
+  const flushP = () => { if (para.length) { out.push('<p>' + para.map(mdInline).join('<br>') + '</p>'); para = []; } };
+  const flushL = () => { if (list) { out.push('<ul>' + list.map(l => '<li>' + mdInline(l) + '</li>').join('') + '</ul>'); list = null; } };
+  for (const raw of (text || '').split('\n')) {
+    const line = raw.trimEnd();
+    let m;
+    if (!line.trim()) { flushP(); flushL(); continue; }
+    if ((m = line.match(/^#{1,6}\s+(.*)$/))) { flushP(); flushL(); out.push('<h4>' + mdInline(m[1]) + '</h4>'); continue; }
+    if ((m = line.match(/^\s*[-*•]\s+(.*)$/))) { flushP(); (list ||= []).push(m[1]); continue; }
+    flushL(); para.push(line);
+  }
+  flushP(); flushL();
+  return '<div class="md">' + out.join('') + '</div>';
+}
+// Plain-text title from a summary's first line: drop heading marks, bold marks and a
+// leading "Title:" label so the list doesn't show "**Title:** Foo".
+function cleanTitle(line) {
+  return line.replace(/^#+\s*/, '').replace(/\*\*/g, '').replace(/^\s*title\s*:\s*/i, '').trim();
+}
 let routesCache = [], editingRouteId = null, routingSupported = null;
 
 const $ = id => document.getElementById(id);
@@ -940,14 +999,42 @@ async function loadList() {
     </div>`).join('') || '<div class="item">No recordings yet.</div>';
 }
 function titleOf(rec) {
-  if (rec.summary) { const l = rec.summary.split('\n')[0].replace(/^#+\s*/, ''); if (l) return l; }
+  if (rec.summary) {
+    for (const raw of rec.summary.split('\n')) { const l = cleanTitle(raw); if (l) return l; }
+  }
   return rec.filename;
+}
+// On phones the detail is a full-screen overlay; give it a history entry so the
+// device/browser Back button closes it instead of leaving the page (in the app's
+// WebView, Back with no history exits the app entirely).
+function closeDetail() {
+  if (history.state && history.state.pbDetail) { history.back(); return; }
+  $('detail').classList.remove('open');
+}
+window.addEventListener('popstate', () => {
+  if (!(history.state && history.state.pbDetail)) $('detail').classList.remove('open');
+});
+function transcriptHtml(transcript) {
+  const segs = transcript.segments || [];
+  if (!segs.length) return esc(transcript.text);
+  if (!segs.some(s => s.speaker)) {
+    return segs.map(s => `<div><span class="seg">${fmtDur(s.start)}</span>${esc(s.text)}</div>`).join('');
+  }
+  const turns = [];
+  for (const s of segs) {
+    const last = turns[turns.length - 1];
+    if (last && last.speaker === (s.speaker || '')) last.segs.push(s);
+    else turns.push({ speaker: s.speaker || '', segs: [s] });
+  }
+  return turns.map(t => `<div class="turn">${t.speaker ? `<div class="spk">${esc(t.speaker)}</div>` : ''}${
+      t.segs.map(s => `<div><span class="seg">${fmtDur(s.start)}</span>${esc(s.text)}</div>`).join('')}</div>`).join('');
 }
 let debounce;
 function debouncedLoad() { clearTimeout(debounce); debounce = setTimeout(loadList, 250); }
 
 async function openRec(id) {
   currentId = id;
+  if (isPhone() && !(history.state && history.state.pbDetail)) history.pushState({ pbDetail: true }, '');
   $('detail').classList.add('open');
   const rec = await (await api('/recordings/' + id)).json();
   let transcript = null;
@@ -956,6 +1043,7 @@ async function openRec(id) {
   }
   if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; }
   $('detail').innerHTML = `
+    <div class="detail-bar"><button onclick="closeDetail()">Back</button><span class="bar-title">${esc(titleOf(rec))}</span></div>
     <h2>${esc(titleOf(rec))}</h2>
     <div class="meta">${fmtDate(rec.started_at || rec.uploaded_at)}
       ${rec.duration_s ? '· ' + fmtDur(rec.duration_s) : ''} · ${fmtSize(rec.size_bytes)}
@@ -963,18 +1051,15 @@ async function openRec(id) {
       ${rec.device_sn ? '· SN ' + esc(rec.device_sn) : ''}</div>
     <audio id="player" controls preload="none"></audio>
     ${rec.error ? `<div class="section"><h3>Error</h3><div class="body err">${esc(rec.error)}</div></div>` : ''}
-    ${rec.summary ? `<div class="section"><h3>Summary</h3><div class="body">${esc(rec.summary)}</div></div>` : ''}
-    ${transcript ? `<div class="section"><h3>Transcript</h3><div class="body">${
-        transcript.segments?.length
-          ? transcript.segments.map(s => `<div><span class="seg">${fmtDur(s.start)}</span>${esc(s.text)}</div>`).join('')
-          : esc(transcript.text)}</div></div>`
+    ${rec.summary ? `<div class="section"><h3>Summary</h3><div class="body" style="white-space:normal">${mdBlock(rec.summary)}</div></div>` : ''}
+    ${transcript ? `<div class="section"><h3>Transcript</h3><div class="body">${transcriptHtml(transcript)}</div></div>`
       : rec.status !== 'done' ? `<div class="section"><h3>Transcript</h3><div class="body" style="color:var(--muted)">Not ready (${esc(rec.status)}).</div></div>` : ''}
     <div id="routing-box"></div>
     <div class="actions">
       <button onclick="retranscribe('${jsArg(rec.id)}')">Re-transcribe</button>
       <button onclick="downloadAudio('${jsArg(rec.id)}', '${jsArg(rec.filename)}')">Download audio</button>
       <button class="danger" onclick="del('${jsArg(rec.id)}')">Delete</button>
-      <button onclick="$('detail').classList.remove('open')" style="margin-left:auto">Close</button>
+      <button onclick="closeDetail()" style="margin-left:auto">Close</button>
     </div>`;
   loadAudio(rec.id);
   loadRoutingSection(rec.id);
@@ -1000,6 +1085,7 @@ async function del(id) {
   await api('/recordings/' + id, { method: 'DELETE' });
   currentId = null;
   $('detail').innerHTML = '<div class="placeholder">Select a recording</div>';
+  closeDetail();
   loadList(); loadStats();
 }
 
@@ -1405,7 +1491,7 @@ function closeModals() {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     if (!$('route-overlay').hidden || !$('connect-overlay').hidden) closeModals();
-    else $('detail').classList.remove('open');
+    else closeDetail();
   }
 });
 document.querySelectorAll('.overlay').forEach(ov =>
