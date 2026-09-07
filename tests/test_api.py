@@ -175,3 +175,35 @@ def test_security_headers(client):
     r = client.get("/api/v1/health")
     assert r.headers.get("x-frame-options") == "DENY"
     assert r.headers.get("x-content-type-options") == "nosniff"
+
+
+def test_export_markdown_endpoint(client, tmp_path):
+    """Export renders the shared markdown layout (same as the Android app) and
+    names the download after the title; 409 until the transcript exists."""
+    import json as _json
+    from app import main as m
+
+    r = client.post(
+        "/api/v1/recordings", headers=AUTH,
+        files={"file": ("exp.mp3", b"export-bytes")}, data={"metadata": "{}"},
+    )
+    rec_id = r.json()["id"]
+    try:
+        assert client.get(f"/api/v1/recordings/{rec_id}/export.md", headers=AUTH).status_code == 409
+        tp = tmp_path / "t.json"
+        tp.write_text(_json.dumps({"text": "Speaker 1: hello there", "segments": [],
+                                   "summary": "Greeting.", "title": "Quick hello: a \"test\"",
+                                   "duration_s": 3.0}))
+        m.store.update(rec_id, status="done", transcript_path=str(tp),
+                       title='Quick hello: a "test"', summary="Greeting.")
+        r = client.get(f"/api/v1/recordings/{rec_id}/export.md", headers=AUTH)
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/markdown")
+        assert 'filename="Quick hello a test.md"' in r.headers["content-disposition"]
+        body = r.text
+        assert body.startswith('---\ntitle: "Quick hello: a \\"test\\""\n')
+        assert "duration_s: \"3\"" in body
+        assert "\n# Quick hello: a \"test\"\n" in body
+        assert "## Summary\n\nGreeting.\n\n## Transcript\n\nSpeaker 1: hello there\n" in body
+    finally:
+        client.delete(f"/api/v1/recordings/{rec_id}", headers=AUTH)

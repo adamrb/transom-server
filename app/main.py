@@ -300,6 +300,38 @@ async def get_transcript(rec_id: str):
         return json.load(fh)
 
 
+@app.get("/api/v1/recordings/{rec_id}/export.md", dependencies=[Depends(require_auth)])
+async def export_markdown(rec_id: str):
+    """Markdown rendering of the transcript for the dashboard's Export button
+    (same layout the Android app produces on-device)."""
+    from urllib.parse import quote
+
+    from .export import safe_filename, transcript_markdown
+
+    rec = store.get(rec_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="not found")
+    if rec["status"] != "done" or not rec["transcript_path"]:
+        raise HTTPException(status_code=409, detail=f"transcript not ready (status: {rec['status']})")
+    with open(rec["transcript_path"]) as fh:
+        transcript = json.load(fh)
+    title = rec.get("title") or transcript.get("title") or rec["filename"]
+    md = transcript_markdown(
+        title=title,
+        recorded=rec.get("started_at") or rec.get("uploaded_at"),
+        duration_s=transcript.get("duration_s") or rec.get("duration_s"),
+        summary=transcript.get("summary") or rec.get("summary"),
+        text=transcript.get("text") or "",
+    )
+    base = safe_filename(title)
+    ascii_name = base.encode("ascii", "ignore").decode() or "transcript"
+    return Response(
+        md, media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition":
+                 f'attachment; filename="{ascii_name}.md"; filename*=UTF-8\'\'{quote(base)}.md'},
+    )
+
+
 @app.post("/api/v1/recordings/{rec_id}/retranscribe", dependencies=[Depends(require_auth)])
 async def retranscribe(rec_id: str):
     rec = store.get(rec_id)

@@ -82,6 +82,11 @@ audio{width:100%;margin:10px 0 20px}
 .md ul{margin:0 0 8px;padding-left:20px}.md li{margin:2px 0}.md code{font-size:.92em;background:var(--panel2);padding:1px 5px;border-radius:5px}
 /* Transcript grouped by speaker turn */
 .turn{margin:0 0 12px}.turn .spk{font-weight:650;font-size:12.5px;color:var(--accent);margin-bottom:2px}
+/* Transient confirmation for copy/export */
+.toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--text);color:var(--bg);
+  padding:8px 16px;border-radius:20px;font-size:13.5px;z-index:40;opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.show{opacity:1}
+body.embedded .toast{bottom:140px}
 /* Phone-only top bar inside the detail overlay (Back + title) */
 .detail-bar{display:none}
 /* Embedded in the Android app: the app supplies navigation, so drop the brand, the
@@ -861,7 +866,7 @@ return exports.toQR; })();
 </script>
 <script>
 let token = localStorage.getItem('pb_token') || '';
-let currentId = null, audioUrl = null, timer = null;
+let currentId = null, audioUrl = null, timer = null, currentTranscript = null;
 // A login token is any nonempty run of printable, non-space ASCII (the server
 // accepts any configured bearer token), capped at 512 chars. Control chars are
 // excluded so the value is always a legal HTTP header.
@@ -1048,6 +1053,7 @@ async function openRec(id) {
     try { transcript = await (await api(`/recordings/${id}/transcript`)).json(); } catch {}
   }
   if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; }
+  currentTranscript = transcript;
   $('detail').innerHTML = `
     <div class="detail-bar"><button onclick="closeDetail()">Back</button><span class="bar-title">${esc(titleOf(rec))}</span></div>
     <h2>${esc(titleOf(rec))}</h2>
@@ -1062,6 +1068,8 @@ async function openRec(id) {
       : rec.status !== 'done' ? `<div class="section"><h3>Transcript</h3><div class="body" style="color:var(--muted)">Not ready (${esc(rec.status)}).</div></div>` : ''}
     <div id="routing-box"></div>
     <div class="actions">
+      ${transcript ? `<button onclick="copyTranscript()">Copy transcript</button>
+      <button onclick="exportMarkdown('${jsArg(rec.id)}')">Export markdown</button>` : ''}
       <button onclick="retranscribe('${jsArg(rec.id)}')">Re-transcribe</button>
       <button onclick="downloadAudio('${jsArg(rec.id)}', '${jsArg(rec.filename)}')">Download audio</button>
       <button class="danger" onclick="del('${jsArg(rec.id)}')">Delete</button>
@@ -1078,6 +1086,49 @@ async function loadAudio(id) {
     audioUrl = URL.createObjectURL(blob);
     const p = $('player'); if (p) p.src = audioUrl;
   } catch {}
+}
+/* ---------- copy / export ---------- */
+let toastTimer;
+function toast(msg) {
+  let el = $('toast');
+  if (!el) { el = document.createElement('div'); el.id = 'toast'; el.className = 'toast'; document.body.appendChild(el); }
+  el.textContent = msg; el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+// Inside the Android app's Library tab the page gets a tiny native bridge
+// (window.PlaudBridgeApp) because a WebView can neither download a blob nor,
+// on some builds, reach navigator.clipboard. Elsewhere use the web APIs.
+const appBridge = () => (typeof window.PlaudBridgeApp === 'object' && window.PlaudBridgeApp) || null;
+async function copyTranscript() {
+  const text = currentTranscript?.text || '';
+  if (!text) return toast('No transcript to copy');
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return toast('Transcript copied'); }
+    throw new Error('no clipboard api');
+  } catch (e) {
+    const b = appBridge();
+    if (b?.copyText) { b.copyText(text); return; }
+    const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand && document.execCommand('copy'); ta.remove();
+    toast(ok ? 'Transcript copied' : 'Copy failed');
+  }
+}
+async function exportMarkdown(id) {
+  let r;
+  try { r = await api(`/recordings/${id}/export.md`); } catch (e) { return toast('Export failed'); }
+  const md = await r.text();
+  const cd = r.headers.get('content-disposition') || '';
+  let name = 'transcript.md';
+  const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="([^"]+)"/i);
+  if (m) { try { name = decodeURIComponent(m[1]); } catch { name = m[1]; } }
+  const b = appBridge();
+  if (b?.shareMarkdown) { b.shareMarkdown(name, md); return; }
+  const blob = new Blob([md], { type: 'text/markdown' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; a.click();
+  URL.revokeObjectURL(a.href);
+  toast('Markdown exported');
 }
 async function downloadAudio(id, name) {
   const blob = await (await api(`/recordings/${id}/audio`)).blob();
