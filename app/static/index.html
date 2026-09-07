@@ -261,7 +261,12 @@ body.tab-automations main{display:none}
       <input type="text" id="cp-token" readonly>
       <button class="small" onclick="copyField('cp-token', this)">Copy</button>
     </div>
-    <div class="caution">Caution: the QR code and text above contain your access token. Don't screenshot or share them.</div>
+    <label for="cp-link">Login link (opens the dashboard already unlocked)</label>
+    <div class="copyrow">
+      <input type="text" id="cp-link" readonly>
+      <button class="small" onclick="copyField('cp-link', this)">Copy</button>
+    </div>
+    <div class="caution">Caution: the QR code, token, and login link all grant full access. Don't screenshot or share them.</div>
 
     <h3>Android app</h3>
     <div id="apk-info" class="muted" style="font-size:13.5px">Loading…</div>
@@ -1248,6 +1253,7 @@ function openConnect() {
   catch { $('qr-holder').innerHTML = '<div class="err">Could not generate QR code.</div>'; }
   $('cp-url').value = location.origin;
   $('cp-token').value = token;
+  $('cp-link').value = location.origin + '/#token=' + token;
   $('connect-overlay').hidden = false;
   loadApkInfo();
 }
@@ -1362,6 +1368,7 @@ function closeModals() {
   $('connect-overlay').hidden = true;
   $('qr-holder').innerHTML = '';   // don't keep token-bearing QR in the DOM
   $('cp-token').value = '';
+  $('cp-link').value = '';
 }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
@@ -1385,6 +1392,15 @@ async function init() {
 }
 
 (async () => {
+  // Login link: /#token=<value> unlocks without typing (fragments are never
+  // sent to the server). Consumed into localStorage, then scrubbed from the
+  // URL and history.
+  const frag = location.hash.match(/^#token=([\w-]{8,512})$/);
+  if (frag) {
+    token = frag[1];
+    localStorage.setItem('pb_token', token);
+    history.replaceState(null, '', location.pathname + location.search);
+  }
   if (!token) return showGate();
   const r = await fetch('/api/v1/auth/check', { headers: { 'Authorization': 'Bearer ' + token } });
   if (r.status === 204) init(); else showGate();
