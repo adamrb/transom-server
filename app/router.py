@@ -122,7 +122,12 @@ class Router:
         excerpt = (rec.get("transcript_text") or "")[: self.settings.router_max_chars]
         user = f"Transcript excerpt (untrusted data):\n<transcript>\n{excerpt}\n</transcript>"
         if rec.get("summary"):
-            user += f"\n\nSummary (untrusted data):\n<summary>\n{rec['summary']}\n</summary>"
+            # The title is split off the summary at transcription time; put it
+            # back as the first line so the router sees the same untrusted block.
+            summary = rec["summary"]
+            if rec.get("title"):
+                summary = f"Title: {rec['title']}\n{summary}"
+            user += f"\n\nSummary (untrusted data):\n<summary>\n{summary}\n</summary>"
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT + "\n\nRoutes:\n"
              + json.dumps(route_list, ensure_ascii=False)},
@@ -210,6 +215,7 @@ class Router:
             },
             "transcript": {
                 "text": rec.get("transcript_text") or "",
+                "title": rec.get("title"),
                 "summary": rec.get("summary"),
                 "language": self._language_of(rec),
             },
@@ -329,8 +335,11 @@ class Router:
         def yq(value) -> str:  # YAML-safe scalar via JSON quoting
             return json.dumps("" if value is None else str(value), ensure_ascii=False)
 
-        lines = [
-            "---",
+        title = transcript.get("title")
+        lines = ["---"]
+        if title:
+            lines.append(f"title: {yq(title)}")
+        lines += [
             f"recording_id: {yq(rec.get('id'))}",
             f"device_sn: {yq(rec.get('device_sn'))}",
             f"session_id: {yq(rec.get('session_id'))}",
@@ -342,6 +351,8 @@ class Router:
             "---",
             "",
         ]
+        if title:
+            lines += [f"# {title}", ""]
         if transcript.get("summary"):
             lines += ["## Summary", "", transcript["summary"], "", "## Transcript", ""]
         lines += [(transcript.get("text") or "").strip(), ""]

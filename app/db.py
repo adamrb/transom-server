@@ -80,6 +80,7 @@ MIGRATION_COLUMNS = {
     "recordings": {
         "transcript_text": "TEXT",
         "summary": "TEXT",
+        "title": "TEXT",
     },
     "deliveries": {
         "router_run_id": "TEXT",
@@ -187,6 +188,16 @@ class Store:
                 f"UPDATE recordings SET {sets} WHERE id = ?", [*fields.values(), rec_id]
             )
             self._conn.commit()
+
+    def list_untitled_done(self) -> "list[dict]":
+        """Finished recordings that have a summary but no title yet: the
+        startup backfill derives one from the summary (see Transcriber)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, summary, transcript_path FROM recordings "
+                "WHERE status = 'done' AND summary IS NOT NULL AND title IS NULL"
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # ── AI routing ────────────────────────────────────────────────────────
 

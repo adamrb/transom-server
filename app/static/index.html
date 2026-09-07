@@ -999,6 +999,7 @@ async function loadList() {
     </div>`).join('') || '<div class="item">No recordings yet.</div>';
 }
 function titleOf(rec) {
+  if (rec.title) return rec.title;
   if (rec.summary) {
     for (const raw of rec.summary.split('\n')) { const l = cleanTitle(raw); if (l) return l; }
   }

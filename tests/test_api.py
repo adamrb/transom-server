@@ -106,6 +106,25 @@ def test_upload_dedupe_and_lifecycle(client):
     assert client.get(f"/api/v1/recordings/{rec_id}", headers=AUTH).status_code == 404
 
 
+def test_title_exposed_on_list_and_detail(client):
+    """The Android app and dashboard read `title` from the API; it must be
+    present (null until summarization fills it) on both list and detail."""
+    r = client.post(
+        "/api/v1/recordings", headers=AUTH,
+        files={"file": ("titled.mp3", b"title-test-bytes")}, data={"metadata": "{}"},
+    )
+    assert r.status_code == 201
+    rec_id = r.json()["id"]
+    try:
+        detail = client.get(f"/api/v1/recordings/{rec_id}", headers=AUTH).json()
+        assert "title" in detail and detail["title"] is None
+        items = client.get("/api/v1/recordings", headers=AUTH).json()["recordings"]
+        mine = next(i for i in items if i["id"] == rec_id)
+        assert "title" in mine
+    finally:
+        client.delete(f"/api/v1/recordings/{rec_id}", headers=AUTH)
+
+
 def test_upload_validation(client):
     def up(metadata, content=b"zz"):
         return client.post(

@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -22,6 +23,60 @@ from .router import Router
 log = logging.getLogger("plaud-bridge.transcriber")
 
 POLL_INTERVAL_S = 5
+
+# The summary prompt asks the model to open with "Title: ..." on its own line.
+# Models are inconsistent about decoration ("**Title:** Foo", "# Title: Foo"),
+# so the match is lenient about heading marks, bold marks and case. The value
+# may be empty (a bare "Title:" label) so the caller can fall back sensibly.
+_TITLE_LINE_RE = re.compile(
+    r"^\s*(?:#+\s*)?(?:\*\*)?\s*title\s*:\s*(.*?)\s*(?:\*\*)?\s*$", re.IGNORECASE
+)
+_TITLE_EDGE_CHARS = " \t*#\"'`“”‘’"
+TITLE_MAX_CHARS = 120
+
+
+@dataclass(frozen=True)
+class Summary:
+    """Result of one summarization call: both fields None when the feature is
+    off or the call failed, so callers never have to special-case that."""
+
+    title: str | None = None
+    text: str | None = None
+
+
+def _clean_title(raw: str) -> str | None:
+    # Titles are shown in list rows, H1s and YAML frontmatter, so they must be
+    # single-line plain text: drop markdown marks and quotes, collapse all
+    # whitespace (including any newline), and never return an empty string.
+    t = raw.replace("**", "")
+    t = re.sub(r"\s+", " ", t).strip().strip(_TITLE_EDGE_CHARS).strip()
+    return t[:TITLE_MAX_CHARS].strip() or None
+
+
+def _split_title(text: str | None) -> tuple[str | None, str]:
+    """Split an LLM summary into (title, body).
+
+    A leading "Title: X" line is consumed: the body is what follows, with
+    leading blank lines removed. Without such a line the first non-empty line
+    (stripped of heading/bold marks) is used as the title and the WHOLE text
+    is kept as the body, so no content is ever lost on older-style output."""
+    if not text or not text.strip():
+        return None, ""
+    lines = text.split("\n")
+    idx = next(i for i, line in enumerate(lines) if line.strip())
+    m = _TITLE_LINE_RE.match(lines[idx])
+    if m:
+        rest = lines[idx + 1:]
+        while rest and not rest[0].strip():
+            rest.pop(0)
+        body = "\n".join(rest).rstrip()
+        title = _clean_title(m.group(1))
+        if title is None and body:
+            # "Title:" with nothing after it: fall back to the body's first line
+            # rather than leaving the recording untitled.
+            title = _clean_title(body.split("\n", 1)[0])
+        return title, body
+    return _clean_title(lines[idx]), text.strip()
 
 
 class Transcriber:
@@ -44,7 +99,52 @@ class Transcriber:
         # Recover rows left mid-flight by a previous shutdown/crash.
         for rec in self.store.list(limit=500, status="transcribing"):
             self.store.update(rec["id"], status="pending")
+        self.backfill_titles()
         self._task = asyncio.create_task(self._run())
+
+    def backfill_titles(self) -> int:
+        """Derive titles for recordings summarized before the title column
+        existed. No LLM call: reuse the summary's own first line, and when the
+        summary opens with a "Title:" line, move it out of the summary body so
+        the dashboard and exports stop showing it twice. Idempotent: rows that
+        already have a title are never touched. Returns the number updated."""
+        rows = self.store.list_untitled_done()
+        updated = 0
+        for row in rows:
+            title, body = _split_title(row["summary"])
+            if title is None:
+                continue
+            fields: dict = {"title": title}
+            # Only rewrite the summary when a Title line was actually consumed
+            # (body differs) and something remains; never blank a summary.
+            new_summary = body if (body and body != row["summary"].strip()) else None
+            if new_summary:
+                fields["summary"] = new_summary
+            self.store.update(row["id"], **fields)
+            self._patch_transcript_json(row.get("transcript_path"), title, new_summary)
+            updated += 1
+        if updated:
+            log.info("backfilled titles for %d recording(s)", updated)
+        return updated
+
+    @staticmethod
+    def _patch_transcript_json(path: str | None, title: str, summary: str | None) -> None:
+        # The Android app reads the title from the transcript JSON, so keep the
+        # file in step with the row. Best effort: a missing or corrupt file
+        # must never prevent startup.
+        if not path:
+            return
+        try:
+            p = Path(path)
+            data = json.loads(p.read_text())
+            data["title"] = title
+            if summary:
+                data["summary"] = summary
+            tmp = p.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+            tmp.replace(p)
+        except Exception as exc:
+            log.warning("could not patch title into %s: %s", path, exc)
 
     async def stop(self) -> None:
         # Tear down engine resources first (the local engine keeps a pyannote
@@ -134,8 +234,10 @@ class Transcriber:
             "segments": [s.as_dict() for s in result.segments],
         }
         summary = await self._summarize(transcript["text"])
-        if summary:
-            transcript["summary"] = summary
+        if summary.title:
+            transcript["title"] = summary.title
+        if summary.text:
+            transcript["summary"] = summary.text
         if self.store.get(rec_id) is None:
             # Deleted from the dashboard while we were transcribing; drop the result.
             log.info("recording %s deleted mid-transcription, discarding result", rec_id)
@@ -148,12 +250,13 @@ class Transcriber:
             status="done",
             transcript_path=str(transcript_path),
             transcript_text=transcript["text"],
-            summary=summary,
+            summary=summary.text,
+            title=summary.title,
             duration_s=transcript["duration_s"],
             error=None,
         )
         log.info("transcribed %s (%d chars%s)", rec_id, len(transcript["text"]),
-                 ", summarized" if summary else "")
+                 ", summarized" if summary.text else "")
 
         self._export_markdown(rec, transcript)
         await self._fire_webhook(rec, transcript)
@@ -178,12 +281,12 @@ class Transcriber:
         except Exception:
             log.exception("routing failed for %s", rec_id)
 
-    async def _summarize(self, text: str) -> str | None:
+    async def _summarize(self, text: str) -> Summary:
         s = self.settings
         if not (s.summary_enabled and s.summary_base_url and s.summary_model):
-            return None
+            return Summary()
         if not text.strip():
-            return None
+            return Summary()
         headers = {}
         if s.summary_api_key:
             headers["Authorization"] = f"Bearer {s.summary_api_key}"
@@ -207,11 +310,13 @@ class Transcriber:
                 )
                 if resp.status_code != 200:
                     log.warning("summary endpoint returned %s: %s", resp.status_code, resp.text[:200])
-                    return None
-                return resp.json()["choices"][0]["message"]["content"].strip() or None
+                    return Summary()
+                content = resp.json()["choices"][0]["message"]["content"]
+                title, body = _split_title(content)
+                return Summary(title=title, text=body or None)
         except Exception as exc:
             log.warning("summarization failed: %s", exc)
-            return None
+            return Summary()
 
     def _export_markdown(self, rec: dict, transcript: dict) -> None:
         out_dir = self.settings.markdown_export_dir
@@ -225,8 +330,13 @@ class Transcriber:
             def yq(value) -> str:  # YAML-safe scalar via JSON quoting
                 return json.dumps("" if value is None else str(value), ensure_ascii=False)
 
-            lines = [
-                "---",
+            # Filename stays keyed on timestamp + id (not the title) so a
+            # re-transcribe overwrites the same note instead of duplicating it.
+            title = transcript.get("title")
+            lines = ["---"]
+            if title:
+                lines.append(f"title: {yq(title)}")
+            lines += [
                 f"recording_id: {yq(rec['id'])}",
                 f"device_sn: {yq(rec['device_sn'])}",
                 f"session_id: {yq(rec['session_id'])}",
@@ -238,6 +348,8 @@ class Transcriber:
                 "---",
                 "",
             ]
+            if title:
+                lines += [f"# {title}", ""]
             if transcript.get("summary"):
                 lines += ["## Summary", "", transcript["summary"], "", "## Transcript", ""]
             lines += [transcript["text"].strip(), ""]
@@ -267,6 +379,7 @@ class Transcriber:
             "transcript": {
                 "language": transcript.get("language"),
                 "text": transcript["text"],
+                "title": transcript.get("title"),
                 "summary": transcript.get("summary"),
             },
         }

@@ -309,7 +309,7 @@ async def retranscribe(rec_id: str):
         Path(rec["transcript_path"]).unlink(missing_ok=True)
     store.update(
         rec_id, status="pending", attempts=0, error=None,
-        transcript_text=None, summary=None, transcript_path=None,
+        transcript_text=None, summary=None, title=None, transcript_path=None,
     )
     transcriber.wake.set()
     return {"id": rec_id, "status": "pending"}

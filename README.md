@@ -162,7 +162,7 @@ Webhook payload contract (stable — safe to build consumers against):
     "filename": "rec.mp3", "started_at": "2026-09-06T12:00:00Z",
     "duration_s": 123.4, "url": "/api/v1/recordings/abc123..."
   },
-  "transcript": {"text": "full transcript ...", "summary": "AI summary or null", "language": "en"}
+  "transcript": {"text": "full transcript ...", "title": "AI title or null", "summary": "AI summary or null", "language": "en"}
 }
 ```
 
