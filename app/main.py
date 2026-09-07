@@ -86,7 +86,24 @@ app = FastAPI(title="Plaud Bridge", version=VERSION, lifespan=lifespan)
 
 PUBLIC_PATHS = {"/api/v1/health"}
 LOGIN_REQUEST_TTL_S = 180
-MAX_PENDING_LOGIN_REQUESTS = 50
+MAX_PENDING_LOGIN_REQUESTS = 200
+MAX_PENDING_PER_CLIENT = 5
+
+
+def _client_key(request: Request) -> str:
+    """Client identity for the login-request cap. X-Forwarded-For is only
+    believed when the socket peer is a trusted reverse proxy (PB_TRUSTED_PROXIES,
+    default: loopback and private ranges, which is where NPM lives), and then
+    only its LAST entry, the one that proxy appended. Anything a caller can
+    write into the header itself is ignored, so rotating it cannot mint fresh
+    per-client budgets."""
+    peer = request.client.host if request.client else "unknown"
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff and settings.is_trusted_proxy(peer):
+        last = xff.split(",")[-1].strip()
+        if last:
+            return last[:64]
+    return peer[:64]
 
 
 def _is_public(path: str, method: str) -> bool:
@@ -165,15 +182,21 @@ class LoginRequestBody(BaseModel):
 
 
 @app.post("/api/v1/login-requests", status_code=201)
-async def create_login_request(body: LoginRequestBody | None = None):
+async def create_login_request(request: Request, body: LoginRequestBody | None = None):
     """Public: a signed-out browser asks for a QR login. The id is the only
-    secret in the QR; it is 192 random bits and lives three minutes."""
-    if store.purge_login_requests() >= MAX_PENDING_LOGIN_REQUESTS:
+    secret in the QR; it is 192 random bits and lives three minutes. Pending
+    requests are capped per client (so one caller cannot exhaust the slots
+    and lock everyone else out) and globally."""
+    client = _client_key(request)
+    pending_total = store.purge_login_requests()
+    if store.count_pending_login_requests(client) >= MAX_PENDING_PER_CLIENT:
+        raise HTTPException(status_code=429, detail="too many pending login requests from this client")
+    if pending_total >= MAX_PENDING_LOGIN_REQUESTS:
         raise HTTPException(status_code=429, detail="too many pending login requests")
     req_id = secrets.token_urlsafe(24)
     expires = (datetime.now(timezone.utc) + timedelta(seconds=LOGIN_REQUEST_TTL_S)).strftime("%Y-%m-%dT%H:%M:%SZ")
     label = " ".join((body.label if body and body.label else "").split())[:120] or None
-    store.insert_login_request(req_id, expires, label)
+    store.insert_login_request(req_id, expires, label, client)
     return {"id": req_id, "expires_at": expires, "poll_seconds": 2}
 
 
@@ -427,7 +450,7 @@ class VocabEntryBody(BaseModel):
 
 
 class VocabularyBody(BaseModel):
-    entries: list[VocabEntryBody] = Field(max_length=500)
+    entries: list[VocabEntryBody] = Field(max_length=600)  # == vocabulary.MAX_ENTRIES
 
 
 @app.get("/api/v1/vocabulary", dependencies=[Depends(require_auth)])
@@ -480,6 +503,8 @@ async def patch_recording(rec_id: str, body: RecordingPatch):
     if not rec:
         raise HTTPException(status_code=404, detail="not found")
     title = " ".join(body.title.split())
+    if not title:
+        raise HTTPException(status_code=422, detail="title must not be blank")
     store.update(rec_id, title=title)
     if rec.get("transcript_path"):
         Transcriber._patch_transcript_json(rec["transcript_path"], title, None)
@@ -497,6 +522,9 @@ async def set_marks(rec_id: str, body: MarksBody):
         raise HTTPException(status_code=404, detail="not found")
     marks = parse_marks(body.marks)
     store.update(rec_id, marks=json.dumps(marks))
+    # Re-read AFTER writing: if the transcriber finished in between, it may have
+    # committed with the old marks, and it is now our job to refresh.
+    rec = store.get(rec_id) or rec
     highlights = None
     if rec["status"] == "done" and rec.get("transcript_path"):
         highlights = transcriber.refresh_highlights(rec_id)

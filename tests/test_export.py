@@ -18,3 +18,17 @@ def test_transcript_body_markdown_bolds_speakers():
     from app.export import transcript_body_markdown
     assert transcript_body_markdown("Speaker 1: hi there\nSpeaker 2: hello\n") == "**Speaker 1:** hi there\n\n**Speaker 2:** hello"
     assert transcript_body_markdown("just prose, no labels") == "just prose, no labels"
+
+
+def test_trusted_proxy_matching():
+    from app.config import Settings
+    import os
+    os.environ["PB_AUTH_TOKENS"] = "t"
+    os.environ.pop("PB_TRUSTED_PROXIES", None)
+    s = Settings()
+    assert s.trusted_proxies == [] and not s.is_trusted_proxy("127.0.0.1")   # trust nobody by default
+    os.environ["PB_TRUSTED_PROXIES"] = "192.0.2.1, 172.18.0.0/16"
+    s = Settings()
+    assert s.is_trusted_proxy("192.0.2.1") and s.is_trusted_proxy("172.18.0.5")
+    assert not s.is_trusted_proxy("203.0.113.9") and not s.is_trusted_proxy("testclient") and not s.is_trusted_proxy(None)
+    os.environ.pop("PB_TRUSTED_PROXIES", None)

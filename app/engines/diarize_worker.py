@@ -68,7 +68,9 @@ def _load_pipeline(model: str | None):
             f"could not load {model} — set PB_STT_HF_TOKEN to a Hugging Face "
             "token that has accepted the model's terms"
         )
-    if torch.cuda.is_available():
+    # PB_STT_DEVICE=cpu means the operator wants the GPU left alone (or has
+    # none usable); only then keep pyannote on the CPU.
+    if torch.cuda.is_available() and os.environ.get("PB_STT_DEVICE", "auto").lower() != "cpu":
         pipeline.to(torch.device("cuda"))
     return pipeline
 

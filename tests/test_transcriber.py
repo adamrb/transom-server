@@ -360,3 +360,24 @@ def test_vocabulary_hotwords_and_corrections(tmp_path, monkeypatch):
     assert transcript["segments"][1]["text"] == "Plaud Bridge works"
     md = next((tmp_path / "notes").glob("*.md")).read_text()
     assert "**Speaker 1:** Hello this is a Plaud Bridge test.\n\n**Speaker 2:** Plaud Bridge works" in md
+
+
+def test_marks_patched_mid_transcription_are_used_at_commit(tmp_path, monkeypatch):
+    settings = make_env(tmp_path, monkeypatch)
+    store = Store(settings.db_path)
+
+    class RacyEngine(FakeEngine):
+        async def transcribe(self, audio_path, hotwords=None):
+            # Marks arrive (PATCH) while the model is still running.
+            store.update(self.rec_id, marks=json.dumps([31.0]))
+            return await super().transcribe(audio_path, hotwords)
+
+    engine = RacyEngine(result=EngineResult(
+        text="intro decision", segments=[Segment(0, 5, "intro"), Segment(30, 40, "decision")],
+        language="en", duration=45.0, model="tiny", stats={}))
+    t = Transcriber(settings, store, engine=engine)
+    rec_id = insert_recording(store, tmp_path)   # no marks at start
+    engine.rec_id = rec_id
+    asyncio.run(t._process(store.get(rec_id)))
+    transcript = json.loads(Path(store.get(rec_id)["transcript_path"]).read_text())
+    assert transcript["marks"] == [31.0] and transcript["highlights"][0]["text"] == "decision"

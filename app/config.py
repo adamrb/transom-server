@@ -33,6 +33,33 @@ class Settings:
         default_factory=lambda: [t.strip() for t in (_env("PB_AUTH_TOKENS") or "").split(",") if t.strip()]
     )
 
+    # Reverse proxies whose X-Forwarded-For we believe (comma-separated IPs or
+    # CIDRs). Empty by default: with no proxy configured the socket peer is the
+    # client. Set it to your proxy's address (e.g. the NPM container or docker
+    # gateway) so per-client limits see real browsers, not the proxy.
+    trusted_proxies: list[str] = field(default_factory=lambda: [
+        p.strip() for p in (_env("PB_TRUSTED_PROXIES") or "").split(",") if p.strip()
+    ])
+
+    def is_trusted_proxy(self, peer: str | None) -> bool:
+        import ipaddress
+        if not peer:
+            return False
+        try:
+            addr = ipaddress.ip_address(peer)
+        except ValueError:
+            return False
+        for entry in self.trusted_proxies:
+            try:
+                if "/" in entry:
+                    if addr in ipaddress.ip_network(entry, strict=False):
+                        return True
+                elif addr == ipaddress.ip_address(entry):
+                    return True
+            except ValueError:
+                continue
+        return False
+
     data_dir: Path = field(default_factory=lambda: Path(_env("PB_DATA_DIR", "/data")))
     max_upload_mb: int = field(default_factory=lambda: int(_env("PB_MAX_UPLOAD_MB", "500")))
 

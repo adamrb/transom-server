@@ -224,8 +224,19 @@ class Router:
                 "title": rec.get("title"),
                 "summary": rec.get("summary"),
                 "language": self._language_of(rec),
+                "highlights": self._highlights_of(rec),
             },
         }
+
+    @staticmethod
+    def _highlights_of(rec: dict) -> list:
+        path = rec.get("transcript_path")
+        if not path:
+            return []
+        try:
+            return json.loads(Path(path).read_text()).get("highlights") or []
+        except Exception:
+            return []
 
     @staticmethod
     def _language_of(rec: dict) -> str | None:

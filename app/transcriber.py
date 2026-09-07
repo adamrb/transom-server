@@ -254,10 +254,20 @@ class Transcriber:
             transcript["title"] = summary.title
         if summary.text:
             transcript["summary"] = summary.text
-        if self.store.get(rec_id) is None:
+        latest_row = self.store.get(rec_id)
+        if latest_row is None:
             # Deleted from the dashboard while we were transcribing; drop the result.
             log.info("recording %s deleted mid-transcription, discarding result", rec_id)
             return
+        # Marks PATCHed while we were transcribing would otherwise be committed
+        # over with the stale set; recompute highlights from the latest marks.
+        latest_marks = parse_marks(latest_row.get("marks"))
+        if latest_marks != marks:
+            marks = latest_marks
+            transcript["marks"] = marks
+            transcript["highlights"] = build_highlights(marks, transcript["segments"], transcript["duration_s"])
+            if not marks:
+                transcript.pop("marks", None); transcript.pop("highlights", None)
         tmp_path = transcript_path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2))
         tmp_path.replace(transcript_path)
@@ -273,6 +283,13 @@ class Transcriber:
         )
         log.info("transcribed %s (%d chars%s)", rec_id, len(transcript["text"]),
                  ", summarized" if summary.text else "")
+        # A PATCH /marks that slipped in between our last read and the commit saw
+        # status 'transcribing' and left the refresh to us: check once more now
+        # that the row is 'done', and rebuild highlights if the marks moved.
+        after = self.store.get(rec_id)
+        if after and parse_marks(after.get("marks")) != marks:
+            self.refresh_highlights(rec_id)
+            transcript = json.loads(transcript_path.read_text())
 
         self._export_markdown(rec, transcript)
         await self._fire_webhook(rec, transcript)

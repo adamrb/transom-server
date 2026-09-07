@@ -65,3 +65,11 @@ def test_acronym_plural_and_brand_casing():
     v = [VocabEntry("GPU"), VocabEntry("ModelForge"), VocabEntry("Plaud Bridge"), VocabEntry("Delta"), VocabEntry("MegaNode")]
     out = apply_corrections("eight G P Us and two GPU's on modelforge mega-node; plaud bridge; a delta moment", v)
     assert out == "eight GPUs and two GPU's on ModelForge mega-node; Plaud Bridge; a delta moment"
+
+
+def test_acronym_rule_skips_ordinary_words_and_two_letter_terms():
+    from app.vocabulary import acronym_pattern
+    v = [VocabEntry("IT"), VocabEntry("US"), VocabEntry("ARM"), VocabEntry("SAP"), VocabEntry("GKS"), VocabEntry("T3")]
+    text = "its arm hurts, the sap flows; deploy to g.k.s. today and T three tomorrow"
+    assert apply_corrections(text, v) == "its arm hurts, the sap flows; deploy to GKS today and T3 tomorrow"
+    assert acronym_pattern("IT") is None and acronym_pattern("US") is None and acronym_pattern("T3") is not None

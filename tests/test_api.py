@@ -240,6 +240,7 @@ def test_patch_title_renames_recording(client):
         assert r.status_code == 200 and r.json()["title"] == "My renamed memo"
         assert client.get(f"/api/v1/recordings/{rec_id}", headers=AUTH).json()["title"] == "My renamed memo"
         assert client.patch(f"/api/v1/recordings/{rec_id}", headers=AUTH, json={"title": ""}).status_code == 422
+        assert client.patch(f"/api/v1/recordings/{rec_id}", headers=AUTH, json={"title": "   "}).status_code == 422
         assert client.patch(f"/api/v1/recordings/{rec_id}", headers=AUTH, json={"status": "done"}).status_code == 422
         assert client.patch("/api/v1/recordings/nope", headers=AUTH, json={"title": "x"}).status_code == 404
     finally:
@@ -308,3 +309,28 @@ def test_qr_login_revoke_from_another_client_and_unknown_request(client):
     assert client.post("/api/v1/login-requests/nope/approve", headers=AUTH).status_code == 404
     # The public poll path must not leak into other authenticated GETs.
     assert client.get("/api/v1/sessions").status_code == 401
+
+
+def test_login_requests_capped_per_client(client, monkeypatch):
+    from app import main as m
+    # TestClient's peer is "testclient" (not an IP): X-Forwarded-For must be ignored,
+    # so every request counts against the same (socket) client...
+    ids = []
+    r = client.post("/api/v1/login-requests", headers={"X-Forwarded-For": "198.51.100.1"}); ids.append(r.json()["id"])
+    r = client.post("/api/v1/login-requests", headers={"X-Forwarded-For": "198.51.100.2"}); ids.append(r.json()["id"])
+    assert m.store.count_pending_login_requests("testclient") == 2
+    for i in ids: m.store.delete_login_request(i)
+    # ...unless the peer is a trusted proxy, in which case its appended (last) hop is the client.
+    from app.config import Settings
+    monkeypatch.setattr(Settings, "is_trusted_proxy", lambda self, peer: peer == "testclient")
+    ids = []
+    for i in range(m.MAX_PENDING_PER_CLIENT):
+        r = client.post("/api/v1/login-requests", headers={"X-Forwarded-For": "1.2.3.4, 203.0.113.9"})
+        assert r.status_code == 201; ids.append(r.json()["id"])
+    # a caller rotating the FIRST hop gains nothing: the proxy-appended last hop is what counts
+    assert client.post("/api/v1/login-requests", headers={"X-Forwarded-For": "9.9.9.9, 203.0.113.9"}).status_code == 429
+    # a genuinely different client (different last hop) is unaffected
+    r = client.post("/api/v1/login-requests", headers={"X-Forwarded-For": "203.0.113.10"}); assert r.status_code == 201
+    ids.append(r.json()["id"])
+    for i in ids:
+        m.store.delete_login_request(i)

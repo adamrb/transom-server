@@ -78,7 +78,8 @@ CREATE TABLE IF NOT EXISTS login_requests (
     status TEXT NOT NULL DEFAULT 'pending',
     label TEXT,
     token TEXT,
-    approved_at TEXT
+    approved_at TEXT,
+    client TEXT
 );
 CREATE TABLE IF NOT EXISTS deliveries (
     id TEXT PRIMARY KEY,
@@ -114,6 +115,9 @@ MIGRATION_COLUMNS = {
     },
     "vocabulary": {
         "weight": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "login_requests": {
+        "client": "TEXT",
     },
     "deliveries": {
         "router_run_id": "TEXT",
@@ -267,13 +271,21 @@ class Store:
             self._conn.commit()
             return cur.rowcount > 0
 
-    def insert_login_request(self, req_id: str, expires_at: str, label: str | None) -> None:
+    def insert_login_request(self, req_id: str, expires_at: str, label: str | None, client: str | None = None) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO login_requests (id, created_at, expires_at, status, label) VALUES (?, ?, ?, 'pending', ?)",
-                (req_id, utcnow_iso(), expires_at, label),
+                "INSERT INTO login_requests (id, created_at, expires_at, status, label, client) VALUES (?, ?, ?, 'pending', ?, ?)",
+                (req_id, utcnow_iso(), expires_at, label, client),
             )
             self._conn.commit()
+
+    def count_pending_login_requests(self, client: str) -> int:
+        with self._lock:
+            n = self._conn.execute(
+                "SELECT COUNT(*) FROM login_requests WHERE status = 'pending' AND client = ? AND expires_at > ?",
+                (client, utcnow_iso()),
+            ).fetchone()[0]
+        return int(n)
 
     def get_login_request(self, req_id: str) -> dict | None:
         with self._lock:

@@ -37,6 +37,10 @@ The container binds to `127.0.0.1:8090` by default. Expose it through a reverse 
 
 > **Security model:** a single bearer token grants full access — uploads, reads, deletes, and Plaud token minting. That is a deliberate simplification for a personal/self-hosted deployment. The phone-connect QR code embeds this same full-access credential, so treat a scan (or a screenshot of it) like handing over the admin password; if one leaks, rotate it via the comma-separated `PB_AUTH_TOKENS`. Don't share tokens across trust boundaries, and keep the service off the open internet unless it's behind TLS.
 
+### Signing in
+
+The dashboard needs a bearer token (`PB_AUTH_TOKENS`). Two ways in: paste the token, or scan the QR code on the login screen with the Android app (Settings → Sign in on a computer). Scanning approves a short-lived login request over the app's own connection; the server mints a separate session token for that browser, so the master token never leaves the phone and each computer can be signed out individually under Automations → Signed-in computers (or with the dashboard's Lock button). Login requests live three minutes and only the id travels in the QR.
+
 ### Transcription
 
 Two engines, selected with `PB_STT_ENGINE`:

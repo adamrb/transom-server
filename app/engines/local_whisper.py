@@ -112,6 +112,7 @@ class LocalWhisperEngine:
         # system 9.5.x the parent's CTranslate2 pulled in.
         env["LD_LIBRARY_PATH"] = ":".join([*nvidia_libs, env.get("LD_LIBRARY_PATH", "")])
         env["PB_STT_HF_TOKEN"] = self.hf_token or ""
+        env["PB_STT_DEVICE"] = self.device or "auto"  # cpu => the worker stays off the GPU too
         # Speaker-count hints for the pipeline (empty = automatic).
         env["PB_STT_NUM_SPEAKERS"] = str(self.num_speakers) if self.num_speakers else ""
         env["PB_STT_MIN_SPEAKERS"] = str(self.min_speakers) if self.min_speakers else ""

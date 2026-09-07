@@ -973,22 +973,56 @@ async function apiJson(path, opts) {
 }
 
 let gateReq = null, gatePollTimer = null;
-function showGate() { $('gate').hidden = false; startQrLogin(); }
+function showGate() {
+  const wasHidden = $('gate').hidden;
+  $('gate').hidden = false;
+  // Repeated 401s (the 15 s poll after a session is revoked) must not stack
+  // login requests: one active request per open gate, reused until it expires.
+  if (wasHidden || !gateReq) startQrLogin();
+}
 function hideGateQr() { clearTimeout(gatePollTimer); gatePollTimer = null; gateReq = null; }
 // QR sign-in: ask the server for a short-lived login request, show its id as
 // a QR the phone app can scan, and poll until the phone approves. The server
 // hands over a per-computer session token exactly once; verify() adopts it.
+let qrStarting = false;
 async function startQrLogin() {
+  if (qrStarting) return;
+  qrStarting = true;
+  try { await startQrLoginInner(); } finally { qrStarting = false; }
+}
+// A reload should not abandon a pending request and mint another (five
+// abandoned ones hit the per-client cap): remember the active one per tab.
+function savedLoginRequest() {
+  try {
+    const v = JSON.parse(sessionStorage.getItem('pb_login_req') || 'null');
+    return v && v.id && v.expires_at && new Date(v.expires_at).getTime() - Date.now() > 15000 ? v : null;
+  } catch { return null; }
+}
+function rememberLoginRequest(req) { try { sessionStorage.setItem('pb_login_req', JSON.stringify(req || null)); } catch {} }
+async function startQrLoginInner() {
   hideGateQr();
   const holder = $('gate-qr-holder'), status = $('gate-qr-status');
   if (!holder) return;
-  try {
-    const r = await fetch('/api/v1/login-requests', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label: browserLabel() }) });
-    if (r.status === 404) { holder.innerHTML = ''; status.textContent = 'This server does not support QR sign-in yet.'; return; }
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    gateReq = await r.json();
-  } catch (e) { holder.innerHTML = ''; status.textContent = 'Could not reach the server for QR sign-in.'; return; }
+  const reuse = savedLoginRequest();
+  if (reuse) gateReq = reuse;
+  else {
+    try {
+      const r = await fetch('/api/v1/login-requests', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: browserLabel() }) });
+      if (r.status === 404) { holder.innerHTML = ''; status.textContent = 'This server does not support QR sign-in yet.'; return; }
+      if (r.status === 429) {
+        // Earlier abandoned requests still occupy this client's slots; they expire within minutes.
+        holder.innerHTML = ''; status.textContent = 'Too many sign-in codes requested recently. Trying again in 30 seconds…';
+        gatePollTimer = setTimeout(startQrLogin, 30000); return;
+      }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      gateReq = await r.json();
+      rememberLoginRequest(gateReq);
+    } catch (e) {
+      holder.innerHTML = ''; status.textContent = 'Could not reach the server for QR sign-in. Retrying in 30 seconds…';
+      gatePollTimer = setTimeout(startQrLogin, 30000); return;
+    }
+  }
   try { holder.innerHTML = qrSvg(JSON.stringify({ v: 1, kind: 'login', url: location.origin, id: gateReq.id }), 200); }
   catch { holder.innerHTML = '<div class="err">Could not draw the QR code.</div>'; return; }
   status.textContent = 'Waiting for your phone…';
@@ -997,9 +1031,12 @@ async function startQrLogin() {
     let data = null;
     try { data = await (await fetch('/api/v1/login-requests/' + encodeURIComponent(gateReq.id))).json(); } catch { data = null; }
     if (!gateReq) return;
-    if (data && data.status === 'approved' && data.token) { hideGateQr(); status.textContent = 'Signed in.'; await verify(data.token); return; }
-    if (!data || data.status === 'expired') { status.textContent = 'Code expired, getting a new one…'; startQrLogin(); return; }
-    gatePollTimer = setTimeout(poll, (gateReq.poll_seconds || 2) * 1000);
+    if (data && data.status === 'approved' && data.token) { hideGateQr(); rememberLoginRequest(null); status.textContent = 'Signed in.'; await verify(data.token); return; }
+    if (data && data.status === 'expired') { rememberLoginRequest(null); status.textContent = 'Code expired, getting a new one…'; startQrLogin(); return; }
+    // Transport error or garbage: keep the same request and try again; only an
+    // explicit "expired" replaces it (each replacement costs a per-client slot).
+    if (!data) status.textContent = 'Waiting for your phone… (connection hiccup, retrying)';
+    gatePollTimer = setTimeout(poll, (gateReq.poll_seconds || 2) * 1000 * (data ? 1 : 3));
   };
   gatePollTimer = setTimeout(poll, 2000);
 }

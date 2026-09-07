@@ -766,3 +766,24 @@ def test_store_upgrades_pre_router_run_id_database(tmp_path):
     store = Store(db)  # must not raise
     cols = {r[1] for r in store._conn.execute("PRAGMA table_info(deliveries)")}
     assert {"router_run_id", "action_type", "action_config"} <= cols
+
+
+def test_route_payload_and_markdown_include_highlights(tmp_path, monkeypatch):
+    """The markdown route delivery reads highlights from the transcript JSON
+    (they are not on the recordings row)."""
+    from app.router import Router
+    settings = make_env(tmp_path, monkeypatch) if "make_env" in globals() else None
+    import os
+    os.environ["PB_DATA_DIR"] = str(tmp_path); os.environ["PB_AUTH_TOKENS"] = "t"
+    from app.config import Settings
+    s = Settings(); store = Store(s.db_path)
+    tp = tmp_path / "t.json"
+    tp.write_text(json.dumps({"text": "Speaker 1: the decision", "segments": [], "language": "en",
+                              "highlights": [{"at": 31.0, "start": 30.0, "end": 40.0, "speakers": [], "text": "the decision"}]}))
+    rec_id = store.insert_recording(device_sn="881A", session_id=7, filename="r.mp3", sha256="y" * 64, size_bytes=1,
+                                    duration_s=45.0, started_at="2026-09-07T12:00:00Z", source="test", uploaded_at=utcnow_iso(),
+                                    audio_path=str(tmp_path / "r.mp3"), status="done", transcript_path=str(tp),
+                                    transcript_text="Speaker 1: the decision", title="Decision memo")
+    router = Router(s, store)
+    payload = router.build_payload({"name": "meetings", "description": "d"}, store.get(rec_id))
+    assert payload["transcript"]["highlights"][0]["text"] == "the decision"

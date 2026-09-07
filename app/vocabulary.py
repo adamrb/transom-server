@@ -130,7 +130,14 @@ def acronym_pattern(term: str) -> re.Pattern | None:
     if not ACRONYM_RE.match(term):
         return None
     parts = re.findall(r"[A-Z]|\d+", term)
-    sep = r"[\s.\-]*"
+    has_digit = any(p.isdigit() for p in parts)
+    # Pure-letter acronyms: only the SPELLED-OUT forms ("E K S", "g.k.s.") are
+    # rewritten, so the letters must be separated. A contiguous lowercase run
+    # ("its", "arm", "sap") is an ordinary word and is left alone, and two-letter
+    # acronyms (IT, US, AM, AS) are skipped entirely: too many collisions.
+    if not has_digit and len(parts) < 3:
+        return None
+    sep = r"[\s.\-]*" if has_digit else r"[\s.\-]+"
     pieces = []
     for part in parts:
         if part.isdigit():
