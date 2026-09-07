@@ -87,8 +87,8 @@ def test_diarization_word_level_splits_segment_at_speaker_change(monkeypatch, tm
     turns = [(0.0, 6.0, "A"), (6.0, 8.0, "B")]
     monkeypatch.setattr(engine, "_run_diarizer", lambda path: turns)
     segments = [Segment(0.0, 8.0, "Now say something. No, I won't.")]
-    words = [(0.0, 1.0, " Now"), (1.0, 2.0, " say"), (2.0, 5.9, " something."),
-             (6.1, 7.0, " No,"), (7.0, 7.5, " I"), (7.5, 8.0, " won't.")]
+    words = [(0.0, 1.0, " Now", 0), (1.0, 2.0, " say", 0), (2.0, 5.9, " something.", 0),
+             (6.1, 7.0, " No,", 0), (7.0, 7.5, " I", 0), (7.5, 8.0, " won't.", 0)]
     engine._apply_diarization(tmp_path / "x.wav", segments, words)
     assert [(s.speaker, s.text) for s in segments] == [
         ("Speaker 1", "Now say something."),
@@ -105,14 +105,28 @@ def test_diarization_words_outside_turns_inherit_neighbour(monkeypatch, tmp_path
     turns = [(1.0, 3.0, "A"), (4.0, 6.0, "B")]
     monkeypatch.setattr(engine, "_run_diarizer", lambda path: turns)
     segments = [Segment(0.0, 7.0, "x")]
-    words = [(0.0, 0.5, " like"),            # before any turn -> next label A
-             (1.0, 2.9, " lettuce"),
-             (3.2, 3.8, " and"),             # gap between A and B -> next label B
-             (4.0, 5.9, " well"),
-             (6.2, 7.0, " done.")]           # after the last turn -> previous label B
+    words = [(0.0, 0.5, " like", 0),         # before any turn -> next label A
+             (1.0, 2.9, " lettuce", 0),
+             (3.2, 3.8, " and", 0),          # gap between A and B -> next label B
+             (4.0, 5.9, " well", 0),
+             (6.2, 7.0, " done.", 0)]        # after the last turn -> previous label B
     engine._apply_diarization(tmp_path / "x.wav", segments, words)
     assert [(s.speaker, s.text) for s in segments] == [
         ("Speaker 1", "like lettuce"), ("Speaker 2", "and well done.")]
+
+
+def test_diarization_keeps_whisper_segment_boundaries_within_a_turn(monkeypatch, tmp_path):
+    """One speaker across two whisper segments stays two segments (timestamps
+    remain useful); rendering merges same-speaker neighbours into a turn."""
+    engine = LocalWhisperEngine(diarization=True)
+    monkeypatch.setattr(engine, "_run_diarizer", lambda path: [(0.0, 10.0, "A")])
+    segments = [Segment(0.0, 5.0, "first part"), Segment(5.0, 10.0, "second part")]
+    words = [(0.0, 2.0, " first", 0), (2.0, 5.0, " part", 0),
+             (5.0, 7.0, " second", 1), (7.0, 10.0, " part", 1)]
+    engine._apply_diarization(tmp_path / "x.wav", segments, words)
+    assert [(s.speaker, s.text, s.start, s.end) for s in segments] == [
+        ("Speaker 1", "first part", 0.0, 5.0), ("Speaker 1", "second part", 5.0, 10.0)]
+    assert render_text(segments, fallback="") .count("Speaker 1:") == 1
 
 
 def test_diarization_no_turns_leaves_segments_untouched(monkeypatch, tmp_path):

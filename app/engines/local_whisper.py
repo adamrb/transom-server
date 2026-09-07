@@ -231,14 +231,15 @@ class LocalWhisperEngine:
                     f"{self.max_duration_s / 3600:.1f} h limit (PB_STT_MAX_DURATION_S)"
                 )
             segments = []
-            words: list[tuple[float, float, str]] = []
-            for s in seg_iter:  # generator: inference happens during this loop
+            # (start, end, word, index of the whisper segment it came from)
+            words: list[tuple[float, float, str, int]] = []
+            for idx, s in enumerate(seg_iter):  # generator: inference happens during this loop
                 segments.append(
                     Segment(start=round(s.start, 2), end=round(s.end, 2), text=s.text.strip())
                 )
                 for w in (getattr(s, "words", None) or []):
                     if w.start is not None and w.end is not None:
-                        words.append((w.start, w.end, w.word))
+                        words.append((w.start, w.end, w.word, idx))
         except EngineError:
             raise
         except Exception as exc:
@@ -294,7 +295,7 @@ class LocalWhisperEngine:
         return None
 
     def _apply_diarization(self, audio_path: Path, segments: list[Segment],
-                           words: list[tuple[float, float, str]]) -> None:
+                           words: list[tuple[float, float, str, int]]) -> None:
         raw_turns = self._run_diarizer(audio_path)
         turns = [(start, end, str(label)) for start, end, label in raw_turns]
         if not turns:
@@ -304,9 +305,13 @@ class LocalWhisperEngine:
         # change, so assign each WORD a speaker and regroup consecutive
         # same-speaker words into segments. This preserves short interjections a
         # segment-level assignment would drop (the dominant speaker wins the
-        # whole segment otherwise).
+        # whole segment otherwise). Regrouping also breaks at whisper's own
+        # segment boundaries: a speaker who talks for five minutes would
+        # otherwise become one 300 s segment with a single timestamp, which is
+        # useless for seeking. Rendering joins consecutive same-speaker segments
+        # into one turn, so the extra splits never show up as repeated labels.
         if words:
-            labels = [self._assign_speaker(w_start, w_end, turns) for w_start, w_end, _ in words]
+            labels = [self._assign_speaker(w_start, w_end, turns) for w_start, w_end, _, _ in words]
             # Words outside every diarization turn (a lead-in syllable before the
             # first turn, a word in a gap) would otherwise become their own
             # "unknown speaker" turn. Inherit the nearest labeled neighbour
@@ -320,13 +325,15 @@ class LocalWhisperEngine:
                 labels[i] = nxt if nxt is not None else prv
             new_segments: list[Segment] = []
             cur_label: str | None = object()  # sentinel != any real label
-            for (w_start, w_end, text), label in zip(words, labels):
-                if label != cur_label or not new_segments:
+            cur_idx = -1
+            for (w_start, w_end, text, idx), label in zip(words, labels):
+                if label != cur_label or idx != cur_idx or not new_segments:
                     new_segments.append(
                         Segment(start=round(w_start, 2), end=round(w_end, 2),
                                 text=text.strip(), speaker=label)
                     )
                     cur_label = label
+                    cur_idx = idx
                 else:
                     seg = new_segments[-1]
                     seg.end = round(w_end, 2)
