@@ -93,10 +93,12 @@ def merge(existing: list[VocabEntry], incoming: list[VocabEntry]) -> list[VocabE
 
 
 def hotwords_string(entries: list[VocabEntry], max_chars: int = HOTWORDS_MAX_CHARS) -> str | None:
-    """Comma-separated terms for faster-whisper's `hotwords`: manual entries
-    first, then imported ones by descending weight, truncated to the prompt
-    budget. None when the list is empty."""
-    ordered = sorted(entries, key=lambda e: (e.source != "manual", -e.weight, e.term.lower()))
+    """Comma-separated terms for faster-whisper's `hotwords`, heaviest first
+    (a manual entry with no weight counts as MANUAL_DEFAULT_WEIGHT, below the
+    Life gazetteer's 10000 but above imported coworkers), truncated to the
+    prompt budget. None when the list is empty."""
+    def w(e): return e.weight if (e.weight or e.source != "manual") else MANUAL_DEFAULT_WEIGHT
+    ordered = sorted(entries, key=lambda e: (-w(e), e.term.lower()))
     parts: list[str] = []
     used = 0
     for e in ordered:
@@ -108,11 +110,50 @@ def hotwords_string(entries: list[VocabEntry], max_chars: int = HOTWORDS_MAX_CHA
     return ", ".join(parts) if parts else None
 
 
+MANUAL_DEFAULT_WEIGHT = 5000  # user-typed terms outrank imports unless the import says otherwise
+
+_DIGIT_WORDS = {"0": "zero|oh", "1": "one", "2": "two|to|too", "3": "three", "4": "four|for", "5": "five",
+                "6": "six", "7": "seven", "8": "eight", "9": "nine"}
+_NUMBER_WORDS = {"100": "one hundred|a hundred|hundred", "200": "two hundred", "300": "three hundred",
+                 "400": "four hundred", "500": "five hundred"}
+ACRONYM_RE = re.compile(r"^(?=.*[A-Z].*[A-Z0-9])[A-Z][A-Z0-9]{1,6}$")  # VM2, T3, GKS, H100, RFC; not Turbo
+
+
+def acronym_pattern(term: str) -> re.Pattern | None:
+    """Spelled-out / dotted / spaced renderings of an acronym, e.g. for VM2:
+    'V.M.2', 'v m 2', 'VM two', 'vm-2'; for T3: 'T three'; for H100: 'H one
+    hundred'. Letters may be separated by dots, spaces or hyphens; a digit
+    group may appear as digits or as number words. Whole-word bounded."""
+    if not ACRONYM_RE.match(term):
+        return None
+    parts = re.findall(r"[A-Z]|\d+", term)
+    sep = r"[\s.\-]*"
+    pieces = []
+    for part in parts:
+        if part.isdigit():
+            words = _NUMBER_WORDS.get(part)
+            if words is None:
+                words = r"\s*".join(_DIGIT_WORDS[d] for d in part) if len(part) <= 2 else None
+            alts = [re.escape(part)] + ([words] if words else [])
+            pieces.append("(?:" + "|".join(alts) + ")")
+        else:
+            pieces.append(part.lower())
+    body = sep.join(pieces)
+    # Do not match the term exactly as written (nothing to fix) or a plain
+    # lowercase run for pure-letter acronyms that could be an ordinary word.
+    # A dotted rendering ("G.K.S. and") leaves its last dot behind; swallow it
+    # only when a lowercase word follows, so a sentence-final period survives.
+    return re.compile(r"(?<![\w.])" + body + r"(?:\.(?=\s+(?-i:[a-z])))?(?![\w])", re.IGNORECASE)
+
+
 def _compile(entries: list[VocabEntry]) -> list[tuple[re.Pattern, str]]:
     rules = []
     for e in entries:
         for a in sorted(e.aliases, key=len, reverse=True):  # longest alias first
             rules.append((re.compile(r"(?<!\w)" + re.escape(a) + r"(?!\w)", re.IGNORECASE), e.term))
+        pat = acronym_pattern(e.term)
+        if pat is not None:
+            rules.append((pat, e.term))
     return rules
 
 
