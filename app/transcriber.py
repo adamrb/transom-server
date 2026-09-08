@@ -19,6 +19,7 @@ from .config import Settings
 from .db import Store, utcnow_iso
 from .engines import EngineError, TranscriptionEngine, build_engine, render_text
 from .highlights import build_highlights, highlights_for_prompt, highlights_markdown, parse_marks
+from .formatting import build_paragraphs, paragraphs_markdown
 from .vocabulary import VocabEntry, apply_corrections, correct_segments, hotwords_string, normalize
 from .router import Router
 
@@ -284,6 +285,8 @@ class Transcriber:
             transcript["highlights"] = build_highlights(marks, transcript["segments"], transcript["duration_s"])
             if not marks:
                 transcript.pop("marks", None); transcript.pop("highlights", None)
+        # Reader-friendly layout: paragraphs by speaker turn, bookmarks attached.
+        transcript["paragraphs"] = build_paragraphs(transcript["segments"], transcript.get("highlights") or [])
         tmp_path = transcript_path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2))
         tmp_path.replace(transcript_path)
@@ -366,6 +369,7 @@ class Transcriber:
         marks = parse_marks(rec.get("marks"))
         data["marks"] = marks
         data["highlights"] = build_highlights(marks, data.get("segments") or [], data.get("duration_s"))
+        data["paragraphs"] = build_paragraphs(data.get("segments") or [], data["highlights"])
         tmp = p.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
         tmp.replace(p)
@@ -470,7 +474,9 @@ class Transcriber:
             if transcript.get("summary") or transcript.get("highlights"):
                 lines += ["## Transcript", ""]
             from .export import transcript_body_markdown
-            lines += [transcript_body_markdown(transcript["text"]), ""]
+            paragraphs = transcript.get("paragraphs")
+            body = paragraphs_markdown(paragraphs) if paragraphs else transcript_body_markdown(transcript["text"])
+            lines += [body, ""]
             md_path.write_text("\n".join(lines))
         except Exception:
             log.exception("markdown export failed for %s", rec["id"])

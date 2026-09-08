@@ -12,7 +12,12 @@ import re
 
 
 def transcript_markdown(title: str, recorded: str | None, duration_s: float | int | None,
-                        summary: str | None, text: str, highlights: list[dict] | None = None) -> str:
+                        summary: str | None, text: str, highlights: list[dict] | None = None,
+                        paragraphs: list[dict] | None = None) -> str:
+    """`paragraphs` (see formatting.build_paragraphs) gives the reader layout:
+    speaker-turn paragraphs with bookmark stars, no timestamps. Without it the
+    flat text is rendered line by line (older transcripts)."""
+    from .formatting import paragraphs_markdown
     from .highlights import highlights_markdown
 
     def yq(value) -> str:  # YAML-safe scalar via JSON quoting
@@ -33,7 +38,8 @@ def transcript_markdown(title: str, recorded: str | None, duration_s: float | in
     if summary and summary.strip():
         lines += ["## Summary", "", summary.strip(), ""]
     lines += highlights_markdown(highlights or [])
-    lines += ["## Transcript", "", transcript_body_markdown(text), ""]
+    body = paragraphs_markdown(paragraphs, highlights) if paragraphs else transcript_body_markdown(text)
+    lines += ["## Transcript", "", body, ""]
     return "\n".join(lines)
 
 

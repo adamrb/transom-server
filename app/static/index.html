@@ -87,6 +87,9 @@ audio{width:100%;margin:10px 0 20px}
 .md ul{margin:0 0 8px;padding-left:20px}.md li{margin:2px 0}.md code{font-size:.92em;background:var(--panel2);padding:1px 5px;border-radius:5px}
 /* Transcript grouped by speaker turn */
 .turn{margin:0 0 12px}.turn .spk{font-weight:650;font-size:12.5px;color:var(--accent);margin-bottom:2px}
+.turn .para{margin:0;white-space:normal;line-height:1.55;cursor:pointer}.turn .para:hover{color:var(--accent)}
+.turn.hl .para{border-left:3px solid var(--warn);padding-left:10px}
+.turn.flash{animation:bmflash 1.6s ease-out}@keyframes bmflash{0%{background:color-mix(in srgb,var(--warn) 25%,transparent)}100%{background:transparent}}
 .dlv .d-out{flex-basis:100%;font-size:13px;color:var(--text);margin-top:4px;white-space:pre-wrap;overflow-wrap:anywhere}
 /* Vocabulary editor */
 .vocab-card textarea{width:100%;margin-top:10px;font:13.5px/1.5 ui-monospace,monospace;background:var(--panel2);color:var(--text);
@@ -1175,23 +1178,37 @@ function seekTo(sec) {
   const go = () => { p.currentTime = Math.max(0, sec); p.play().catch(() => {}); };
   if (p.readyState >= 1) go(); else p.addEventListener('loadedmetadata', go, { once: true });
 }
+// Reader layout: the server's paragraphs (one per speaker turn, split at long
+// pauses), no timestamps in the flow. Paragraphs holding a recorder button press
+// carry a star and an anchor the Highlights rows jump to; a paragraph plays
+// from its start on click. Older transcripts without paragraphs fall back to a
+// grouping of the raw segments done here.
 function transcriptHtml(transcript) {
-  const segs = transcript.segments || [];
-  if (!segs.length) return esc(transcript.text);
-  // Segments inside a highlight window get a marker so the flagged passages
-  // stand out in the flow of the transcript; timestamps seek the player.
-  const ranges = (transcript.highlights || []).map(h => [Number(h.start) || 0, Number(h.end) || 0]);
-  const inHl = s => ranges.some(([a, b]) => s.end >= a && s.start <= b);
-  const segHtml = s => `<div class="${inHl(s) ? 'hl' : ''}"><span class="seg" onclick="seekTo(${Number(s.start) || 0})" title="Play from here">${fmtDur(s.start)}</span>${esc(s.text)}</div>`;
-  if (!segs.some(s => s.speaker)) return segs.map(segHtml).join('');
-  const turns = [];
-  for (const s of segs) {
-    const last = turns[turns.length - 1];
-    if (last && last.speaker === (s.speaker || '')) last.segs.push(s);
-    else turns.push({ speaker: s.speaker || '', segs: [s] });
+  let paras = transcript.paragraphs;
+  if (!paras) {
+    const segs = transcript.segments || [];
+    if (!segs.length) return esc(transcript.text);
+    paras = [];
+    for (const s of segs) {
+      if (!(s.text || '').trim()) continue;
+      const last = paras[paras.length - 1];
+      if (last && last.speaker === (s.speaker || null)) { last.text += ' ' + s.text.trim(); last.end = s.end; }
+      else paras.push({ speaker: s.speaker || null, text: s.text.trim(), start: s.start, end: s.end, bookmarks: [] });
+    }
   }
-  return turns.map(t => `<div class="turn">${t.speaker ? `<div class="spk">${esc(t.speaker)}</div>` : ''}${
-      t.segs.map(segHtml).join('')}</div>`).join('');
+  if (!paras.length) return esc(transcript.text);
+  return paras.map((p, i) => {
+    const marked = p.bookmarks && p.bookmarks.length;
+    const anchors = marked ? p.bookmarks.map(b => `<span id="bookmark-${b}"></span>`).join('') : '';
+    return `<div class="turn${marked ? ' hl' : ''}" id="para-${i}">${anchors}${p.speaker ? `<div class="spk">${esc(p.speaker)}</div>` : ''}` +
+      `<p class="para" onclick="seekTo(${Number(p.start) || 0})" title="Play from here">${marked ? '<span class="hl-at">★</span> ' : ''}${esc(p.text)}</p></div>`;
+  }).join('');
+}
+// Highlights row: scroll the transcript to the bookmarked paragraph and play from the press.
+function jumpToBookmark(index, at) {
+  const el = document.getElementById('bookmark-' + index);
+  if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); const t = el.closest('.turn'); if (t) { t.classList.add('flash'); setTimeout(() => t.classList.remove('flash'), 1600); } }
+  seekTo(at);
 }
 let debounce;
 function debouncedLoad() { clearTimeout(debounce); debounce = setTimeout(loadList, 250); }
@@ -1218,7 +1235,7 @@ async function openRec(id) {
     ${rec.error ? `<div class="section"><h3>Error</h3><div class="body err">${esc(rec.error)}</div></div>` : ''}
     ${rec.summary ? `<div class="section"><h3>Summary</h3><div class="body" style="white-space:normal">${mdBlock(rec.summary)}</div></div>` : ''}
     ${transcript?.highlights?.length ? `<div class="section highlights"><h3>Highlights</h3><div class="body">${
-        transcript.highlights.map(h => `<div class="hl-row" onclick="seekTo(${Number(h.start) || 0})" title="Play from here">
+        transcript.highlights.map((h, i) => `<div class="hl-row" onclick="jumpToBookmark(${i}, ${Number(h.start) || 0})" title="Jump to this spot in the transcript and play">
           <span class="hl-at">★ ${fmtClock(h.at)}</span><span class="hl-text">${h.text ? esc(h.text) : '<span class="muted">(no speech near this mark)</span>'}</span></div>`).join('')
       }</div></div>` : ''}
     ${transcript ? `<div class="section"><h3>Transcript</h3><div class="body">${transcriptHtml(transcript)}</div></div>`
@@ -1256,8 +1273,14 @@ function toast(msg) {
 // (window.PlaudBridgeApp) because a WebView can neither download a blob nor,
 // on some builds, reach navigator.clipboard. Elsewhere use the web APIs.
 const appBridge = () => (typeof window.PlaudBridgeApp === 'object' && window.PlaudBridgeApp) || null;
+// Clipboard gets the reader layout ("Speaker: paragraph" blocks), never timestamps.
+function transcriptPlainText(t) {
+  const paras = t?.paragraphs;
+  if (paras && paras.length) return paras.map(p => (p.speaker ? p.speaker + ': ' : '') + p.text).join('\n\n');
+  return t?.text || '';
+}
 async function copyTranscript() {
-  const text = currentTranscript?.text || '';
+  const text = transcriptPlainText(currentTranscript);
   if (!text) return toast('No transcript to copy');
   try {
     if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return toast('Transcript copied'); }

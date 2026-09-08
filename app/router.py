@@ -20,6 +20,7 @@ import httpx
 
 from .config import Settings
 from .db import Store, utcnow_iso
+from .formatting import build_paragraphs, paragraphs_markdown
 
 log = logging.getLogger("plaud-bridge.router")
 
@@ -250,6 +251,9 @@ class Router:
                 "summary": rec.get("summary"),
                 "language": self._language_of(rec),
                 "highlights": self._highlights_of(rec),
+                # Reader layout (added 2026-09-08): speaker-turn paragraphs with
+                # bookmark indexes, so consumers need not re-derive it from text.
+                "paragraphs": self._paragraphs_of(rec),
             },
         }
         if delivery_id:
@@ -259,6 +263,20 @@ class Router:
         if instructions:
             payload["instructions"] = instructions
         return payload
+
+    @staticmethod
+    def _paragraphs_of(rec: dict) -> list:
+        path = rec.get("transcript_path")
+        if not path:
+            return []
+        try:
+            doc = json.loads(Path(path).read_text())
+        except Exception:
+            return []
+        paragraphs = doc.get("paragraphs")
+        if paragraphs is None:  # transcript written before the reader layout existed
+            paragraphs = build_paragraphs(doc.get("segments") or [], doc.get("highlights") or [])
+        return paragraphs
 
     @staticmethod
     def _highlights_of(rec: dict) -> list:
@@ -447,7 +465,10 @@ class Router:
         if transcript.get("summary") or transcript.get("highlights"):
             lines += ["## Transcript", ""]
         from .export import transcript_body_markdown
-        lines += [transcript_body_markdown(transcript.get("text") or ""), ""]
+        paragraphs = transcript.get("paragraphs")
+        body = (paragraphs_markdown(paragraphs, transcript.get("highlights") or []) if paragraphs
+                else transcript_body_markdown(transcript.get("text") or ""))
+        lines += [body, ""]
         md_path.write_text("\n".join(lines))
         try:
             return str(md_path.relative_to(root.resolve()))

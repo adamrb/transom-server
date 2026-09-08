@@ -48,6 +48,7 @@ from pydantic import BaseModel, Field
 
 from .config import settings
 from .db import Store, utcnow_iso
+from .formatting import build_paragraphs
 from .highlights import parse_marks
 from .plaud import PlaudAuthError, PlaudClient
 from .router import Router, folder_error
@@ -474,6 +475,8 @@ async def get_transcript(rec_id: str):
     with open(rec["transcript_path"]) as fh:
         transcript = json.load(fh)
     transcript["no_speech"] = not (transcript.get("text") or "").strip()
+    if "paragraphs" not in transcript:  # documents written before the reader layout existed
+        transcript["paragraphs"] = build_paragraphs(transcript.get("segments") or [], transcript.get("highlights") or [])
     return transcript
 
 
@@ -589,6 +592,8 @@ async def export_markdown(rec_id: str):
         summary=transcript.get("summary") or rec.get("summary"),
         text=transcript.get("text") or "",
         highlights=transcript.get("highlights") or [],
+        paragraphs=transcript.get("paragraphs")
+        or build_paragraphs(transcript.get("segments") or [], transcript.get("highlights") or []),
     )
     base = safe_filename(title)
     ascii_name = base.encode("ascii", "ignore").decode() or "transcript"
