@@ -128,6 +128,8 @@ describe('vocabulary', () => {
       { term: 'Alex', aliases: [] },
       { term: 'Plaud Bridge', aliases: ['Plogged Bridge', 'Plod Bridge'] },
     ]);
-    expect(parsed.ignored).toBe(2);
+    // Only the line with nothing before the equals sign is "ignored"; `#` notes are kept, like the
+    // old dashboard's ignoredVocabLines().
+    expect(parsed.ignored).toBe(1);
   });
 });
