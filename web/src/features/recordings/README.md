@@ -1,66 +1,76 @@
 # Recordings feature (`src/features/recordings`)
 
-Owner: recordings team. Entry: `RecordingsPage` (routes `#/` and `#/rec/:id`). The placeholder
-in `RecordingsPage.tsx` shows the required frame: `SectionAppBar` (auto-hidden when embedded) plus
-a scroll container with `pt-(--content-top-pad) pb-(--content-bottom-pad)`.
+Entry: `RecordingsPage` (routes `#/` and `#/rec/:id`). Two panes from 840 px (list + detail, or
+list + the getting-started card); on phone the list fills the screen and a recording opens as its
+own route with a Back button (pushed from the list, so the device Back key returns; a deep link
+replaces to the list instead). Embedded (`?embedded=1`): no section bar, the detail keeps its Back
+button, content clears the app's tab bar via `--content-bottom-pad`.
 
-Reference behaviour: `app/static/index.html` on `main` (the vanilla dashboard). Everything it does
-must keep working. Visual target: `/tmp/plaud-ux/design/material/mockup.html` and `shot-recordings-*`,
-`shot-detail-*`, `shot-jumpto-*`, `shot-more-*`, `shot-empty-*`, `shot-loading-*`.
+Reference behaviour: `app/static/index.html` on `main` (the vanilla dashboard). Visual target:
+`/tmp/plaud-ux/design/material/mockup.html`; screenshots of this build: `/tmp/plaud-ux/design/react-b1-*.png`.
 
-## What to build (from SPEC.md)
-
-- **List** (`list/`): search (`SearchBar`, 250 ms debounce → `useRecordings({ q })`), filter chips
-  (`Chip variant="filter"`: All ✓, Waiting, Transcribing, Failed, No speech, Not transcribed) in a
-  horizontally scrolling row that fades at the edge, day groups (`fmtDayHeader`, sticky title-s
-  headers), snippets (`match_snippet` with the hit `<mark>`ed), load more (`offset`), keyed updates
-  (rows keyed by id so polling does not re-mount), keyboard navigation (arrow keys between rows,
-  Enter opens). Row = `ListItem` with `Avatar` (waveform / group / silent / waiting / progress /
-  failed), headline (title or filename), supporting (time · duration · preview, or a status word plus
-  a short reason while in flight: "Your server will start on it shortly", "The transcript appears as
-  soon as it is ready"), trailing bookmark count (`StatusChip tone="star"`) or time. Selected row uses
-  `selected`. Phone rows carry a ⋮ `IconButton` that opens the More sheet.
-- **Detail** (`detail/`): headline-m title (click to rename → `Dialog` with `TextField`), meta line
-  (date · time · duration, `StatusChip tone="tag"` "2 speakers"), assist chips (Copy transcript,
-  Export markdown, Download audio), then `Card`s: Summary (`Markdown`, `cleanSummary` port from the
-  old dashboard), Highlights (star rows that seek), Transcript (find field in the heading, speaker
-  label pills on speaker change using the spk1..4 tones keyed by ORIGINAL speaker id, rename on
-  click → `useRenameSpeakers`, hover time + play pill, amber left bar + star on bookmarked
-  paragraphs, `selection-tint` on the now-playing paragraph, no timestamps in the body), Automations
-  card (last run, decision line, delivery rows, instructions `TextField` persisted via
-  `routeInstructionsStore`, filled **Run again** → `useRunAutomations`, text **Preview** →
-  `usePreviewAutomations`, Retry → `useRetryDelivery`), error card (`rec.error` sentence; raw
-  `error_detail` only behind a disclosure), in-flight states (status words only). Loading:
-  `LinearProgress` under the bar + `SkeletonText`.
-- **Player** (`player/`): `fetchAudioLink` + `<audio src>` with Range streaming; on 404 fall back to
-  `fetchAudioBlob`; on 403 (link expired) fetch a new link. 15 s back / 30 s forward, speed 1×/1.5×/2×
-  persisted in `localStorage pb_speed` (`STORAGE_KEYS.speed`), `Slider` with bookmark markers,
-  docked `Card tone="high" elevation={2}` at the bottom of the detail pane (24 px radius), phone:
-  mini player (64 px above the bottom nav; `bottom: calc(var(--content-bottom-pad) + 8px)`) that
-  opens `Popover as="sheet"` with the full controls. Jump to (`Popover`): Highlights first, then
-  Speaker changes, each `MenuItem time=…`.
-- **Actions**: More menu (`Popover` + `MenuItem`s): Copy transcript (`copyText`, reader layout
-  "Speaker: paragraph" blocks, never timestamps), Export markdown (`fetchExportMarkdown` +
-  `shareMarkdown`), Download audio, Rename, separator, Transcribe again… (`ConfirmDialog`),
-  Delete… (`ConfirmDialog danger`). Copy/export text must be byte-identical to today's.
-- **Desktop empty state**: `EmptyState` in the list + the three-step "Getting started" card in the
-  detail pane. **Phone**: full-screen detail overlay with a Back button; Escape / Back closes it.
-- **Deep links**: `#/rec/<id>` opens the recording; selecting a row on desktop replaces the hash,
-  on phone pushes (Back returns to the list).
-
-## Where things go
+## Layout
 
 ```
 recordings/
-  RecordingsPage.tsx      route component: layout (two-pane ≥ 840 px, single pane below)
-  list/                   RecordingList, RecordingRow, FilterChips, DayHeader, useListState
-  detail/                 RecordingDetail, SummaryCard, HighlightsCard, TranscriptCard, AutomationsCard
-  player/                 usePlayer (audio element + link refresh), Player, MiniPlayer, JumpToMenu
-  actions/                MoreMenu, RenameDialog, useRecordingActions (copy/export/download/delete)
-  lib/                    summary.ts (cleanSummary, cleanTitle), transcriptText.ts (copy builders)
-  *.test.tsx              MSW-backed tests (see src/test/msw.ts and src/test/fixtures.ts)
+  RecordingsPage.tsx        layout, navigation (open / back), Space = play/pause, Escape closes the
+                            phone detail, row ⋮ menu, mini player + player sheet on phone
+  list/
+    ListPane.tsx            SectionAppBar + SearchBar (250 ms debounce) + FilterChips + RecordingList
+    RecordingList.tsx       day groups (DayHeader), keyed rows, Load more, loading / empty / error,
+                            arrow keys between rows (Enter/Space open via ListItem)
+    RecordingRow.tsx        Avatar (waveform / silent / waiting ring / progress ring / failed),
+                            title, status word + reason while in flight, time · duration · preview
+                            (search hits <mark>ed), bookmark count, phone ⋮
+    FilterChips.tsx         All ✓, Waiting, Transcribing, Failed, No speech, Not transcribed
+    useListState.ts         search + filter in a module store (survives the phone route switch)
+  detail/
+    RecordingDetail.tsx     small TopAppBar (Back, Jump to, More; title once scrolled), the cards,
+                            the docked Player, JumpToMenu, MoreMenu, speaker RenameDialog
+    DetailHeader.tsx        title (click → rename), when · duration · speakers · highlights (+ status
+                            word while in flight), assist chips Copy / Export / Download
+    InFlightCard.tsx        "Waiting in the queue" / "Transcribing 42%" / "Identifying speakers" /
+                            "Summarizing" with LinearProgress (the detail polls every 5 s)
+    ErrorCard.tsx           rec.error, raw error_detail behind Disclosure
+    SummaryCard.tsx         Markdown of cleanSummary(), copy button
+    HighlightsCard.tsx      ★ time + text rows; click reveals the paragraph and plays from the press
+    TranscriptCard.tsx      paragraphs, find (Enter / Shift+Enter, "2 of 5"), now-playing marker
+    TranscriptParagraph.tsx SpeakerPill on speaker change, hover time+play pill (chip on phone),
+                            amber bar + star on bookmarked paragraphs, flash after a jump
+    AutomationsCard.tsx     last run, decision, DeliveryRow (outcome alone; chips only Working /
+                            Failed; Retry), RunAutomationsRow (instructions, Run / Run again, Preview)
+  player/
+    playerStore.ts          the audio element + state (signed link, blob fallback on 404, link refresh
+                            on error / expiry, speed in pb_speed, skips, markers), usePlayer hooks
+    Player.tsx              docked card / sheet body: slider (buffered + markers), times, speed, controls
+    MiniPlayer.tsx, PlayerSheet.tsx, JumpToMenu.tsx, PlayerSlider.tsx, SkipIcon.tsx
+  actions/
+    useRecordingActions.tsx copy (same text as before), export (shareMarkdown), download, rename,
+                            transcribe again (ConfirmDialog), delete (danger ConfirmDialog)
+    MoreMenu.tsx, RenameDialog.tsx
+  lib/                      summary.ts (cleanSummary, cleanTitle, titleOf), transcript.ts
+                            (paragraphsOf, transcriptPlainText, speakerTones, …), status.ts,
+                            automations.ts (deliveryView, previewText, latestRun), jump.ts, Highlighted.tsx
+  test/                     FakeAudio, renderRecordings (routes + a PlayerStore on the fake element)
+  *.test.ts(x)              lib, list, detail (+ automations card), player store
 ```
 
-Hooks to use: `useRecordings`, `useRecording`, `useTranscript`, `useRecordingRouting`, and the
-mutations in `@/api`. Do not call fetch directly. Show errors with `errorMessage(err, fallback)`
-through `useSnackbar()`.
+## Rules kept from the old dashboard
+
+- Copy text: `transcriptPlainText` = "Speaker: paragraph" blocks joined by blank lines, else the
+  flat text. Export: the server's `export.md`, shared through the app bridge when embedded.
+- Speaker tones (`spk1..4`) are keyed by the ORIGINAL engine label in first-appearance order
+  (`speaker_names` maps original → current name), so a rename keeps the colour.
+- Run automations: `useRunAutomations` sends the `Idempotency-Key` from sessionStorage; the
+  instructions typed are saved beside it (`routeInstructionsStore`) and frozen while a key is
+  pending, so a retry after a lost reply replays the same request.
+- Status words only while in flight / failed / silent / untranscribed. No timestamps in the
+  transcript body; the gutter pill and the bookmarks are the jump points.
+- Newer-endpoint 404s degrade: no signed links → blob playback; no preview → the button goes;
+  no automations → no card; no speaker rename → a sentence.
+
+## Data hooks
+
+`useRecordingPages` (infinite, `offset` pages of 50, polls 15 s / 5 s in flight), `useRecording`,
+`useTranscript` (only once the recording is done), `useRecordingRouting`, and the mutations in
+`@/api`. The player reads `fetchAudioLink` / `fetchAudioBlob` directly (injectable for tests).

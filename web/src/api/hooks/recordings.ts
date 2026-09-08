@@ -1,4 +1,10 @@
-import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseQueryOptions,
+} from '@tanstack/react-query';
 import { apiJson, apiRequest, filenameFromDisposition } from '../client';
 import { POLL, qk } from '../keys';
 import {
@@ -43,6 +49,44 @@ export function useRecordings(
     refetchInterval: (query) => (query.state.data?.recordings.some(isInFlight) ? POLL.inFlight : POLL.idle),
     placeholderData: (prev) => prev, // keep rows on screen while a search refetches
     ...options,
+  });
+}
+
+/** Rows per page of the recordings list ("Load more" asks for the next page by `offset`). */
+export const RECORDINGS_PAGE = 50;
+
+/**
+ * The recordings list in pages: page n is `offset = n * RECORDINGS_PAGE`. `fetchNextPage` is
+ * "Load more"; `hasNextPage` when the last page was full. Polls like `useRecordings` (every page
+ * is refetched in order, so every loaded row stays current). Rows are de-duplicated by id.
+ */
+export function useRecordingPages(params: Pick<RecordingListParams, 'q' | 'status'> = {}) {
+  const key: Required<Pick<RecordingListParams, 'q' | 'status'>> = {
+    q: params.q || '',
+    status: params.status || '',
+  };
+  return useInfiniteQuery({
+    queryKey: [...qk.recordings.all, 'pages', key] as const,
+    queryFn: ({ pageParam }) => fetchRecordings({ ...key, limit: RECORDINGS_PAGE, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (last, pages) =>
+      last.recordings.length >= RECORDINGS_PAGE
+        ? pages.reduce((n, p) => n + p.recordings.length, 0)
+        : undefined,
+    refetchInterval: (query) =>
+      query.state.data?.pages.some((p) => p.recordings.some(isInFlight)) ? POLL.inFlight : POLL.idle,
+    placeholderData: (prev) => prev, // keep rows on screen while a search refetches
+    select: (data) => {
+      const seen = new Set<string>();
+      const recordings: Recording[] = [];
+      for (const page of data.pages)
+        for (const r of page.recordings)
+          if (!seen.has(r.id)) {
+            seen.add(r.id);
+            recordings.push(r);
+          }
+      return { recordings, pages: data.pages.length };
+    },
   });
 }
 
