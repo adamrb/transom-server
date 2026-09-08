@@ -1141,7 +1141,7 @@ async function loadList() {
       <div class="row1">
         <span class="title">${esc(titleOf(rec))}</span>
         ${rec.marks?.length ? `<span class="chip mark" title="${rec.marks.length} highlight${rec.marks.length > 1 ? 's' : ''} marked on the recorder">★ ${rec.marks.length}</span>` : ''}
-        <span class="chip ${esc(rec.status)}">${esc(rec.status)}</span>
+        ${statusChip(rec)}
       </div>
       <div class="meta">${fmtDate(rec.started_at || rec.uploaded_at)}
         ${rec.duration_s ? '· ' + fmtDur(rec.duration_s) : ''} · ${fmtSize(rec.size_bytes)}</div>
@@ -1212,7 +1212,7 @@ async function openRec(id) {
     <h2>${esc(titleOf(rec))}</h2>
     <div class="meta">${fmtDate(rec.started_at || rec.uploaded_at)}
       ${rec.duration_s ? '· ' + fmtDur(rec.duration_s) : ''} · ${fmtSize(rec.size_bytes)}
-      · <span class="chip ${esc(rec.status)}">${esc(rec.status)}</span>
+      · ${statusChip(rec)}
       ${rec.device_sn ? '· SN ' + esc(rec.device_sn) : ''}</div>
     <audio id="player" controls preload="none"></audio>
     ${rec.error ? `<div class="section"><h3>Error</h3><div class="body err">${esc(rec.error)}</div></div>` : ''}
@@ -1364,16 +1364,24 @@ async function loadRoutingSection(id) {
     new Date(b?.created_at || 0) > new Date(a?.created_at || 0) ? b : a) : null;
   const deliveries = (last?.deliveries?.length ? last.deliveries : data?.deliveries) || [];
   routingWorking = deliveries.some(d => d?.result_status === 'queued' || d?.status === 'pending');
+  // The poll re-renders this section while an agent works; keep what is being typed.
+  const draft = $('routing-instructions')?.value || '';
   box.innerHTML = `
     <div class="section"><h3>Routing</h3>
       <div class="body" style="white-space:normal">
         ${last ? `
           <div class="muted" style="font-size:12.5px;margin-bottom:6px">
             Last run ${fmtDate(last.created_at)}${last.model ? ' · ' + esc(last.model) : ''}</div>
+          ${last.instructions ? `<div class="muted" style="font-size:12.5px;margin-bottom:6px">Instructions: “${esc(last.instructions)}”</div>` : ''}
           ${renderDecision(last)}
           ${deliveries.map(d => renderDelivery(d, id)).join('')}`
         : '<div class="muted">Not routed yet.</div>'}
-        <div class="actions" style="margin-top:12px">
+        <div style="margin-top:12px">
+          <input id="routing-instructions" type="text" maxlength="2000" style="width:100%;box-sizing:border-box"
+                 value="${esc(draft)}"
+                 placeholder="Instructions for this run (optional), e.g. file this as a work meeting">
+        </div>
+        <div class="actions" style="margin-top:8px">
           <button id="run-routing-btn" onclick="runRouting('${jsArg(id)}')">Run routing</button>
           <span id="routing-msg" class="muted" style="font-size:13px"></span>
         </div>
@@ -1398,19 +1406,60 @@ function routeKey(id) {
   }
   return key;
 }
+// The instructions that went with a pending key. A retry (even after a reload)
+// must replay the same request: a key without its "do not file" would be worse
+// than a second run.
+const pendingRouteInstructions = {
+  get(id) { try { return sessionStorage.getItem('pb.routeInstr.' + id); } catch { return null; } },
+  set(id, v) { try { sessionStorage.setItem('pb.routeInstr.' + id, v); } catch {} },
+  clear(id) { try { sessionStorage.removeItem('pb.routeInstr.' + id); } catch {} },
+};
+function clearPendingRoute(id) { pendingRouteKeys.clear(id); pendingRouteInstructions.clear(id); }
+// Status chip; while transcribing it carries the stage and percent so a long
+// recording visibly moves ("transcribing 42%", "identifying speakers").
+function statusChip(rec) {
+  let label = rec.status;
+  if (rec.status === 'transcribing') {
+    const stage = { transcribing: 'transcribing', diarizing: 'identifying speakers', summarizing: 'summarizing' }[rec.stage] || 'transcribing';
+    const pct = typeof rec.progress === 'number' && rec.stage === 'transcribing' ? ` ${Math.min(99, Math.floor(rec.progress * 100))}%` : '';
+    label = stage + pct;
+  } else if (rec.status === 'pending') {
+    label = 'waiting';
+  } else if (rec.no_speech) {
+    label = 'no speech';
+  }
+  return `<span class="chip ${esc(rec.status)}">${esc(label)}</span>`;
+}
 async function runRouting(id) {
   const btn = $('run-routing-btn'), msg = $('routing-msg');
   if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
   try {
-    const r = await api(`/recordings/${id}/route`, { method: 'POST', headers: { 'Idempotency-Key': routeKey(id) } });
+    // Typed instructions ride along with the idempotency key. A retry of a lost
+    // response (a key already pending) replays the instructions saved with that
+    // key, not whatever the box holds now.
+    let instructions;
+    if (pendingRouteKeys.get(id)) {
+      instructions = pendingRouteInstructions.get(id) || '';
+    } else {
+      instructions = ($('routing-instructions')?.value || '').trim();
+      routeKey(id);
+      pendingRouteInstructions.set(id, instructions);
+    }
+    const init = { method: 'POST', headers: { 'Idempotency-Key': routeKey(id) } };
+    if (instructions) {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify({ instructions });
+    }
+    const r = await api(`/recordings/${id}/route`, init);
     if (r.status === 409) {
-      pendingRouteKeys.clear(id);
+      clearPendingRoute(id);
       if (msg) { msg.textContent = 'No transcript yet — routing needs a finished transcript.'; msg.className = 'err'; }
       if (btn) { btn.disabled = false; btn.textContent = 'Run routing'; }
       return;
     }
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    pendingRouteKeys.clear(id);
+    clearPendingRoute(id);
+    const box = $('routing-instructions'); if (box) box.value = '';
     await loadRoutingSection(id);
   } catch {
     // Network error or 5xx: the key stays so the next click replays, not repeats.

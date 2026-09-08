@@ -33,10 +33,17 @@ token = "CHANGE-ME"
 # stdin_template (rendered and piped to the command's stdin) instead.
 #
 # Tokens available in `prompt_template` and command args:
-#   {text} {summary} {route_name} {route_description}
+#   {text} {summary} {title} {route_name} {route_description}
 #   {recording_id} {filename} {started_at}
+#   {instructions}       -> what the user typed when re-running automations by
+#                           hand in the app/dashboard ("" when none)
+#   {instructions_block} -> a ready paragraph presenting {instructions} as the
+#                           user's own trusted request, "" when none; safe to
+#                           drop into any prompt_template unconditionally
 #   {prompt}  -> the rendered prompt_template
 #   {file}    -> temp file path, when write_transcript_to_file = true
+# {instructions} and {instructions_block} are payload free text like {text}:
+# forbidden in `command` argv unless allow_unsafe_interpolation = true.
 
 # --- Claude Code over ACP (npm i -g @zed-industries/claude-code-acp) ---
 [actions.default]

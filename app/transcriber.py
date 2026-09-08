@@ -210,14 +210,28 @@ class Transcriber:
             self.store.update(rec["id"], status="stored")
             return
         rec_id = rec["id"]
-        self.store.update(rec_id, status="transcribing", attempts=rec["attempts"] + 1)
+        self.store.update(
+            rec_id, status="transcribing", attempts=rec["attempts"] + 1, stage="transcribing", progress=0.0
+        )
         log.info("transcribing %s (%s) via %s", rec_id, rec["filename"], self.engine.name)
         vocab = normalize(self.store.list_vocabulary())
+
+        # Engines report from a worker thread; the store is used from the loop
+        # thread only, so hop over. Progress is best-effort UI state: a report
+        # that lands after the row moved on is harmless (the final update
+        # clears both columns), and a deleted row is a no-op update.
+        loop = asyncio.get_running_loop()
+
+        def report(stage: str, fraction: float | None) -> None:
+            loop.call_soon_threadsafe(self._set_progress, rec_id, stage, fraction)
+
         try:
-            result = await self.engine.transcribe(Path(rec["audio_path"]), hotwords=hotwords_string(vocab))
+            result = await self.engine.transcribe(
+                Path(rec["audio_path"]), hotwords=hotwords_string(vocab), progress=report
+            )
         except (EngineError, Exception) as exc:
             log.warning("transcription failed for %s: %s", rec_id, exc)
-            self.store.update(rec_id, status="failed", error=str(exc)[:1000])
+            self.store.update(rec_id, status="failed", error=str(exc)[:1000], stage=None, progress=None)
             return
 
         # Known mis-hearings -> the right spelling, in the segments and the
@@ -249,6 +263,8 @@ class Transcriber:
         if marks:
             transcript["marks"] = marks
             transcript["highlights"] = build_highlights(marks, transcript["segments"], transcript["duration_s"])
+        if transcript["text"].strip():
+            self._set_progress(rec_id, "summarizing", None)
         summary = await self._summarize(transcript["text"], transcript.get("highlights") or [])
         if summary.title:
             transcript["title"] = summary.title
@@ -280,6 +296,8 @@ class Transcriber:
             title=summary.title,
             duration_s=transcript["duration_s"],
             error=None,
+            stage=None,
+            progress=None,
         )
         log.info("transcribed %s (%d chars%s)", rec_id, len(transcript["text"]),
                  ", summarized" if summary.text else "")
@@ -291,6 +309,15 @@ class Transcriber:
             self.refresh_highlights(rec_id)
             transcript = json.loads(transcript_path.read_text())
 
+        if not transcript["text"].strip():
+            # No speech (silence, a pocket recording): nothing to file or route,
+            # and a note from an earlier transcription of the same audio would
+            # now be wrong, so it goes. The row stays 'done' so clients show it
+            # as "no speech".
+            self._remove_markdown_export(rec)
+            await self._fire_webhook(rec, transcript)
+            return
+
         self._export_markdown(rec, transcript)
         await self._fire_webhook(rec, transcript)
         # Routing runs as a detached task so a slow router LLM or webhook can
@@ -300,6 +327,16 @@ class Transcriber:
             task = asyncio.create_task(self._run_router(rec_id))
             self._router_tasks.add(task)
             task.add_done_callback(self._router_tasks.discard)
+
+    def _set_progress(self, rec_id: str, stage: str | None, fraction: float | None) -> None:
+        """Best-effort progress columns; only while the row is still transcribing,
+        so a late report never scribbles over a finished or failed row."""
+        try:
+            row = self.store.get(rec_id)
+            if row and row.get("status") == "transcribing":
+                self.store.update(rec_id, stage=stage, progress=fraction)
+        except Exception:
+            log.debug("progress update failed for %s", rec_id, exc_info=True)
 
     async def _run_router(self, rec_id: str) -> None:
         """AI routing: never allowed to affect the recording's 'done' status."""
@@ -332,7 +369,10 @@ class Transcriber:
         tmp = p.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
         tmp.replace(p)
-        self._export_markdown(rec, data)
+        # A no-speech recording has no note (see _process_inner); marks on silence
+        # must not conjure an empty one.
+        if (data.get("text") or "").strip():
+            self._export_markdown(rec, data)
         return data["highlights"]
 
     async def _summarize(self, text: str, highlights: list[dict] | None = None) -> Summary:
@@ -373,14 +413,33 @@ class Transcriber:
             log.warning("summarization failed: %s", exc)
             return Summary()
 
-    def _export_markdown(self, rec: dict, transcript: dict) -> None:
+    def _markdown_export_path(self, rec: dict) -> Path | None:
+        """Where this recording's note lives in the export folder. Keyed on
+        timestamp + id (not the title) so a re-transcribe overwrites the same
+        note instead of duplicating it."""
         out_dir = self.settings.markdown_export_dir
         if not out_dir:
+            return None
+        stamp = re.sub(r"[^0-9TZ-]", "-", (rec["started_at"] or rec["uploaded_at"]))[:24]
+        return out_dir / f"plaud-{stamp}-{rec['id'][:8]}.md"
+
+    def _remove_markdown_export(self, rec: dict) -> None:
+        """Drop the note an earlier transcription of this recording exported
+        (a re-transcribe that found no speech must not leave the old text)."""
+        md_path = self._markdown_export_path(rec)
+        if md_path is None:
             return
         try:
-            out_dir.mkdir(parents=True, exist_ok=True)
-            stamp = re.sub(r"[^0-9TZ-]", "-", (rec["started_at"] or rec["uploaded_at"]))[:24]
-            md_path = out_dir / f"plaud-{stamp}-{rec['id'][:8]}.md"
+            md_path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("could not remove stale markdown export %s: %s", md_path, exc)
+
+    def _export_markdown(self, rec: dict, transcript: dict) -> None:
+        md_path = self._markdown_export_path(rec)
+        if md_path is None:
+            return
+        try:
+            md_path.parent.mkdir(parents=True, exist_ok=True)
 
             def yq(value) -> str:  # YAML-safe scalar via JSON quoting
                 return json.dumps("" if value is None else str(value), ensure_ascii=False)

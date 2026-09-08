@@ -30,7 +30,9 @@ class OpenAICompatEngine:
         self.language = language
         self.timeout_s = timeout_s
 
-    async def transcribe(self, audio_path: Path, hotwords: str | None = None) -> EngineResult:
+    async def transcribe(self, audio_path: Path, hotwords: str | None = None, progress=None) -> EngineResult:
+        # `progress` is accepted for interface parity; a remote endpoint gives
+        # no partial results to report.
         url = f"{self.base_url}/audio/transcriptions"
         headers = {}
         if self.api_key:

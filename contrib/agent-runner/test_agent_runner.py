@@ -603,6 +603,18 @@ class TestConfigValidation(unittest.TestCase):
         self.assertEqual(vars_["title"], "Line one line two")
         self.assertEqual(agent_runner.payload_vars({"transcript": {}})["title"], "")
 
+    def test_instructions_vars_present_only_when_given(self):
+        none = agent_runner.payload_vars({"transcript": {"text": "t"}})
+        self.assertEqual(none["instructions"], "")
+        self.assertEqual(none["instructions_block"], "")
+        some = agent_runner.payload_vars({"transcript": {"text": "t"}, "instructions": "  file as meeting  "})
+        self.assertEqual(some["instructions"], "file as meeting")
+        self.assertIn("<instructions>\nfile as meeting\n</instructions>", some["instructions_block"])
+        self.assertTrue(some["instructions_block"].endswith("\n\n"))
+        # Free text from the payload never lands in a command argv by default.
+        with self.assertRaises(agent_runner.ConfigError):
+            self._load('[server]\ntoken="t"\n[actions.default]\ncommand=["/usr/bin/tool", "{instructions}"]\n')
+
     def test_safe_vars_in_command_argv_allowed(self):
         cfg = self._load('[server]\ntoken="t"\n[actions.default]\n'
                          'command=["/usr/bin/tool", "{file}", "id={recording_id}"]\n'

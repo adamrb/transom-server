@@ -66,6 +66,11 @@ TEMPLATE_VARS = (
     "started_at",
     "prompt",
     "file",
+    # What the user typed when re-running automations by hand (server >= 2026-09-08).
+    "instructions",
+    # Ready-made paragraph introducing {instructions}, empty when there are none,
+    # so templates can include it unconditionally.
+    "instructions_block",
 )
 _TOKEN_RE = re.compile(r"\{(" + "|".join(TEMPLATE_VARS) + r")\}")
 
@@ -74,7 +79,7 @@ _TOKEN_RE = re.compile(r"\{(" + "|".join(TEMPLATE_VARS) + r")\}")
 # but the executed program still interprets its arguments (sh -c executes
 # them; most tools parse leading-dash values as options). Use stdin_template
 # instead, or opt in explicitly with allow_unsafe_interpolation = true.
-FORBIDDEN_COMMAND_VARS = ("text", "summary", "prompt", "route_description")
+FORBIDDEN_COMMAND_VARS = ("text", "summary", "prompt", "route_description", "instructions", "instructions_block")
 _FORBIDDEN_ARG_RE = re.compile(r"\{(?:" + "|".join(FORBIDDEN_COMMAND_VARS) + r")\}")
 
 
@@ -269,7 +274,16 @@ def payload_vars(payload: dict) -> dict[str, str]:
     def s(v) -> str:
         return "" if v is None else str(v)
 
+    instructions = s(payload.get("instructions")).strip()
+    instructions_block = (
+        "The recorder's owner typed these instructions for this run in the app. They "
+        "come from the owner, not from the memo, so follow them (they take precedence "
+        f"over the default handling):\n<instructions>\n{instructions}\n</instructions>\n\n"
+        if instructions else ""
+    )
     return {
+        "instructions": instructions,
+        "instructions_block": instructions_block,
         "text": s(transcript.get("text")),
         "summary": s(transcript.get("summary")),
         # AI-generated title (server >= 2026-09-07); empty for older payloads.

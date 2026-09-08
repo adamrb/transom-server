@@ -20,7 +20,7 @@ class FakeEngine:
         self.error = error
         self.calls = 0
 
-    async def transcribe(self, audio_path: Path, hotwords: str | None = None) -> EngineResult:
+    async def transcribe(self, audio_path: Path, hotwords: str | None = None, progress=None) -> EngineResult:
         self.calls += 1
         self.last_hotwords = hotwords
         if self.error:
@@ -76,6 +76,92 @@ def test_successful_transcription_persists_everything(tmp_path, monkeypatch):
     assert len(md_files) == 1
     md = md_files[0].read_text()
     assert "**Speaker 2:** hi" in md and 'device_sn: "881A"' in md
+
+
+class ProgressEngine(FakeEngine):
+    """Reports progress from a worker thread the way the real engine does, and
+    records what the store showed at each report."""
+
+    def __init__(self, store, result):
+        super().__init__(result=result)
+        self.store = store
+        self.seen: list[tuple[str | None, float | None]] = []
+
+    async def transcribe(self, audio_path, hotwords=None, progress=None):
+        loop = asyncio.get_running_loop()
+
+        def work():
+            progress("transcribing", 0.25)
+            progress("transcribing", 0.5)
+            progress("diarizing", None)
+
+        await asyncio.to_thread(work)
+        await asyncio.sleep(0)  # let the hopped-over updates run
+        row = self.store.get(self.rec_id)
+        self.seen.append((row["stage"], row["progress"]))
+        return self.result
+
+
+def test_progress_reports_land_on_the_row_and_are_cleared_when_done(tmp_path, monkeypatch):
+    settings = make_env(tmp_path, monkeypatch)
+    store = Store(settings.db_path)
+    engine = ProgressEngine(store, EngineResult(text="hello", segments=[Segment(0, 1, "hello")], duration=1.0))
+    t = Transcriber(settings, store, engine=engine)
+    rec_id = insert_recording(store, tmp_path)
+    engine.rec_id = rec_id
+    asyncio.run(t._process(store.get(rec_id)))
+    assert engine.seen == [("diarizing", None)]          # the last report before the engine returned
+    rec = store.get(rec_id)
+    assert rec["status"] == "done" and rec["stage"] is None and rec["progress"] is None
+    # A straggling report after completion does not touch a finished row.
+    t._set_progress(rec_id, "transcribing", 0.9)
+    assert store.get(rec_id)["stage"] is None
+
+
+def test_progress_cleared_when_transcription_fails(tmp_path, monkeypatch):
+    settings = make_env(tmp_path, monkeypatch)
+    store = Store(settings.db_path)
+    t = Transcriber(settings, store, engine=FakeEngine(error=EngineError("STT down")))
+    rec_id = insert_recording(store, tmp_path)
+    asyncio.run(t._process(store.get(rec_id)))
+    rec = store.get(rec_id)
+    assert rec["status"] == "failed" and rec["stage"] is None and rec["progress"] is None
+
+
+def test_no_speech_recording_is_done_but_not_exported_or_routed(tmp_path, monkeypatch):
+    settings = make_env(tmp_path, monkeypatch, PB_MARKDOWN_EXPORT_DIR=str(tmp_path / "notes"),
+                        PB_ROUTER_ENABLED="true", PB_ROUTER_BASE_URL="http://llm/v1", PB_ROUTER_MODEL="m")
+    store = Store(settings.db_path)
+    engine = FakeEngine(result=EngineResult(text="", segments=[], duration=4.0))
+    t = Transcriber(settings, store, engine=engine)
+    routed = []
+
+    async def fake_router(rec_id):
+        routed.append(rec_id)
+    monkeypatch.setattr(t, "_run_router", fake_router)
+    rec_id = insert_recording(store, tmp_path)
+    asyncio.run(t._process(store.get(rec_id)))
+    rec = store.get(rec_id)
+    assert rec["status"] == "done" and rec["transcript_text"] == "" and rec["title"] is None
+    assert json.loads(Path(rec["transcript_path"]).read_text())["segments"] == []
+    assert not list((tmp_path / "notes").glob("*.md"))   # nothing to file
+    assert routed == []                                    # nothing to route
+
+    # A re-transcribe that now finds no speech removes the note the earlier
+    # transcription exported, instead of leaving stale text behind.
+    engine.result = EngineResult(text="hello there", segments=[Segment(0, 1, "hello there")], duration=4.0)
+    store.update(rec_id, status="pending")
+    asyncio.run(t._process(store.get(rec_id)))
+    assert len(list((tmp_path / "notes").glob("*.md"))) == 1
+    engine.result = EngineResult(text="", segments=[], duration=4.0)
+    store.update(rec_id, status="pending")
+    asyncio.run(t._process(store.get(rec_id)))
+    assert store.get(rec_id)["transcript_text"] == ""
+    assert not list((tmp_path / "notes").glob("*.md"))
+    # Button presses landing later on the silent recording do not conjure a note either.
+    store.update(rec_id, marks=json.dumps([1.5]))
+    assert t.refresh_highlights(rec_id) is not None
+    assert not list((tmp_path / "notes").glob("*.md"))
 
 
 def test_engine_error_marks_failed_and_counts_attempts(tmp_path, monkeypatch):
@@ -367,7 +453,7 @@ def test_marks_patched_mid_transcription_are_used_at_commit(tmp_path, monkeypatc
     store = Store(settings.db_path)
 
     class RacyEngine(FakeEngine):
-        async def transcribe(self, audio_path, hotwords=None):
+        async def transcribe(self, audio_path, hotwords=None, progress=None):
             # Marks arrive (PATCH) while the model is still running.
             store.update(self.rec_id, marks=json.dumps([31.0]))
             return await super().transcribe(audio_path, hotwords)

@@ -18,9 +18,12 @@ import logging
 import time
 from pathlib import Path
 
-from .base import EngineError, EngineResult, Segment, render_text
+from .base import EngineError, EngineResult, ProgressCallback, Segment, render_text
 
 log = logging.getLogger("plaud-bridge.engine.local")
+
+# Minimum wall-clock gap between two progress reports while decoding.
+PROGRESS_INTERVAL_S = 2.0
 
 
 class LocalWhisperEngine:
@@ -189,9 +192,11 @@ class LocalWhisperEngine:
 
     # -- transcription ------------------------------------------------------
 
-    async def transcribe(self, audio_path: Path, hotwords: str | None = None) -> EngineResult:
+    async def transcribe(
+        self, audio_path: Path, hotwords: str | None = None, progress: ProgressCallback | None = None
+    ) -> EngineResult:
         async with self._lock:
-            return await asyncio.to_thread(self._transcribe_sync, audio_path, hotwords)
+            return await asyncio.to_thread(self._transcribe_sync, audio_path, hotwords, progress)
 
     def _probe_duration(self, audio_path: Path) -> float | None:
         """Container-header duration probe (cheap; no decode). Used to reject
@@ -227,7 +232,9 @@ class LocalWhisperEngine:
             log.info("hotwords trimmed to %d of %d terms (%d-token budget)", len(kept), len(terms), max_tokens)
         return ", ".join(kept) or None
 
-    def _transcribe_sync(self, audio_path: Path, hotwords: str | None = None) -> EngineResult:
+    def _transcribe_sync(
+        self, audio_path: Path, hotwords: str | None = None, progress: ProgressCallback | None = None
+    ) -> EngineResult:
         probed = self._probe_duration(audio_path)
         if probed and probed > self.max_duration_s:
             raise EngineError(
@@ -273,6 +280,7 @@ class LocalWhisperEngine:
             segments = []
             # (start, end, word, index of the whisper segment it came from)
             words: list[tuple[float, float, str, int]] = []
+            last_report = 0.0
             for idx, s in enumerate(seg_iter):  # generator: inference happens during this loop
                 segments.append(
                     Segment(start=round(s.start, 2), end=round(s.end, 2), text=s.text.strip())
@@ -280,6 +288,13 @@ class LocalWhisperEngine:
                 for w in (getattr(s, "words", None) or []):
                     if w.start is not None and w.end is not None:
                         words.append((w.start, w.end, w.word, idx))
+                # Whisper yields segments in audio order, so the last end time
+                # over the total duration is how far through the audio we are.
+                # Throttled: a long recording yields thousands of segments.
+                now = time.monotonic()
+                if progress and info.duration and now - last_report >= PROGRESS_INTERVAL_S:
+                    last_report = now
+                    progress("transcribing", min(0.99, max(0.0, s.end / info.duration)))
         except EngineError:
             raise
         except Exception as exc:
@@ -288,6 +303,8 @@ class LocalWhisperEngine:
 
         diarize_s = 0.0
         if self.diarization and segments:
+            if progress:
+                progress("diarizing", None)  # pyannote gives no partial results
             t1 = time.monotonic()
             try:
                 self._apply_diarization(audio_path, segments, words)

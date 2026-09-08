@@ -10,7 +10,13 @@ Engines take an audio file and return an EngineResult. Two implementations:
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
+
+# Progress reports from an engine: (stage, fraction). Stage is "transcribing"
+# or "diarizing"; the fraction is 0..1 of the audio handled so far, or None
+# when the stage has no measurable progress. May be called from a worker
+# thread, so implementations must be thread-safe or hop to the event loop.
+ProgressCallback = Callable[[str, float | None], None]
 
 
 @dataclass
@@ -41,7 +47,9 @@ class EngineResult:
 class TranscriptionEngine(Protocol):
     name: str
 
-    async def transcribe(self, audio_path: Path, hotwords: str | None = None) -> EngineResult: ...
+    async def transcribe(
+        self, audio_path: Path, hotwords: str | None = None, progress: ProgressCallback | None = None
+    ) -> EngineResult: ...
 
 
 class EngineError(Exception):

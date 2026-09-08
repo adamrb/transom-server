@@ -112,6 +112,9 @@ MIGRATION_COLUMNS = {
         "summary": "TEXT",
         "title": "TEXT",
         "marks": "TEXT",   # JSON list of button-press offsets in seconds
+        # Live transcription progress (only meaningful while status = transcribing).
+        "progress": "REAL",   # 0..1 fraction of the audio decoded so far
+        "stage": "TEXT",      # transcribing | diarizing | summarizing
     },
     "vocabulary": {
         "weight": "INTEGER NOT NULL DEFAULT 0",
@@ -122,6 +125,8 @@ MIGRATION_COLUMNS = {
     "router_runs": {
         # Client-supplied key so a re-sent "run automations" cannot start a second run.
         "idempotency_key": "TEXT",
+        # What the user typed when re-running automations by hand (trusted steer).
+        "instructions": "TEXT",
     },
     "deliveries": {
         "router_run_id": "TEXT",

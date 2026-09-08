@@ -411,7 +411,7 @@ def test_delivery_row_exists_as_pending_before_action_runs(tmp_path, monkeypatch
 class FakeEngine:
     name = "fake"
 
-    async def transcribe(self, audio_path: Path, hotwords: str | None = None) -> EngineResult:
+    async def transcribe(self, audio_path: Path, hotwords: str | None = None, progress=None) -> EngineResult:
         return EngineResult(text="a work standup transcript", duration=1.0)
 
 
@@ -523,7 +523,7 @@ def test_cancel_mid_transcription_resets_to_pending(tmp_path, monkeypatch):
     class CancelledEngine:
         name = "fake"
 
-        async def transcribe(self, audio_path, hotwords=None):
+        async def transcribe(self, audio_path, hotwords=None, progress=None):
             raise asyncio.CancelledError()
 
     t = Transcriber(s, store, engine=CancelledEngine(), router=Router(s, store))
@@ -972,7 +972,7 @@ def test_rerun_router_idempotency_key(tmp_path, monkeypatch):
                                         duration_s=3.0, started_at="2026-09-07T12:00:00Z", source="test", uploaded_at=utcnow_iso(),
                                         audio_path=str(tmp_path / "r.mp3"), status="done", transcript_text="a note", title="T")
         calls = {"n": 0}
-        async def fake_route(rec, idempotency_key=None):
+        async def fake_route(rec, idempotency_key=None, instructions=None):
             calls["n"] += 1
             await asyncio.sleep(0.2)   # long enough for a concurrent duplicate to land mid-run
             run_id = store.insert_router_run(recording_id=rec["id"], created_at=utcnow_iso(), model="fake",
@@ -999,6 +999,82 @@ def test_rerun_router_idempotency_key(tmp_path, monkeypatch):
             assert client.post(f"/api/v1/recordings/{rec_id}/route", headers=H).status_code == 200 and calls["n"] == 4  # no key: runs
         finally:
             client.delete(f"/api/v1/recordings/{rec_id}", headers=H)
+
+
+def test_instructions_steer_the_decision_and_ride_with_the_payload(tmp_path, monkeypatch):
+    """Typed instructions are trusted: they go to the router LLM in their own
+    block, are stored on the run, and travel with every delivery payload."""
+    s = make_settings(tmp_path, monkeypatch)
+    store = Store(s.db_path)
+    add_route(store, name="hook", action_type="webhook", action_config={"url": "http://hook/notify"})
+    router = Router(s, store)
+    router.transport, llm_requests, webhook_requests = make_transport(['{"routes": ["hook"]}', '{"routes": ["hook"]}'])
+    rec = store.get(insert_done_recording(store, tmp_path))
+
+    run = asyncio.run(router.route_recording(rec, instructions="file this as a work meeting"))
+    system, user = (m["content"] for m in llm_requests[0]["messages"][:2])
+    assert "<instructions>" in system                      # the model is told what the block means
+    assert user.startswith("Instructions from the user (trusted):\n<instructions>\nfile this as a work meeting\n</instructions>")
+    assert "<transcript>" in user
+    assert run["instructions"] == "file this as a work meeting"
+    sent = json.loads(webhook_requests[0].content)
+    assert sent["instructions"] == "file this as a work meeting"
+    assert json.loads(run["deliveries"][0]["payload"])["instructions"] == "file this as a work meeting"
+
+    run2 = asyncio.run(router.route_recording(rec))
+    assert run2["instructions"] is None
+    assert "instructions" not in json.loads(webhook_requests[1].content)
+    assert "<instructions>" not in llm_requests[1]["messages"][1]["content"]
+
+
+def test_rerun_router_accepts_an_instructions_body(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from app import main as m
+    with TestClient(m.app) as client:
+        store = m.store; H = {"Authorization": f"Bearer {m.settings.auth_tokens[0]}"}
+        rec_id = store.insert_recording(device_sn="881A", session_id=22, filename="r.mp3", sha256="w" * 64, size_bytes=1,
+                                        duration_s=3.0, started_at="2026-09-08T12:00:00Z", source="test", uploaded_at=utcnow_iso(),
+                                        audio_path=str(tmp_path / "r.mp3"), status="done", transcript_text="a note", title="T")
+        seen = []
+        async def fake_route(rec, idempotency_key=None, instructions=None):
+            seen.append(instructions)
+            run_id = store.insert_router_run(recording_id=rec["id"], created_at=utcnow_iso(), model="fake",
+                                             decision=json.dumps({"routes": []}), error=None,
+                                             idempotency_key=idempotency_key, instructions=instructions)
+            run = store.get_router_run(run_id); run["deliveries"] = []
+            return run
+        monkeypatch.setattr(m.router_engine, "route_recording", fake_route)
+        try:
+            r = client.post(f"/api/v1/recordings/{rec_id}/route", headers=H, json={"instructions": "  just summarize, do not file  "})
+            assert r.status_code == 200 and r.json()["instructions"] == "just summarize, do not file"
+            assert client.post(f"/api/v1/recordings/{rec_id}/route", headers=H).status_code == 200            # no body
+            assert client.post(f"/api/v1/recordings/{rec_id}/route", headers=H, json={"instructions": "   "}).status_code == 200
+            assert seen == ["just summarize, do not file", None, None]
+            assert client.post(f"/api/v1/recordings/{rec_id}/route", headers=H, json={"instructions": "x" * 2001}).status_code == 422
+            # With an idempotency key the instructions belong to that key's run.
+            k = {"Idempotency-Key": "click-0009-abcdef"}
+            r1 = client.post(f"/api/v1/recordings/{rec_id}/route", headers={**H, **k}, json={"instructions": "as meeting"})
+            r2 = client.post(f"/api/v1/recordings/{rec_id}/route", headers={**H, **k}, json={"instructions": "as meeting"})
+            assert r1.json()["id"] == r2.json()["id"] and r2.json()["instructions"] == "as meeting" and seen[-1] == "as meeting"
+            log = client.get("/api/v1/routing/log", headers=H).json()
+            runs = log if isinstance(log, list) else log.get("runs") or log.get("items")
+            assert any(x.get("instructions") == "as meeting" for x in runs)
+        finally:
+            client.delete(f"/api/v1/recordings/{rec_id}", headers=H)
+
+
+def test_public_recording_carries_no_speech_and_progress_stage():
+    from app.main import _public
+    base = dict(id="r", status="done", transcript_text="", marks=None, stage=None, progress=None)
+    assert _public(base)["no_speech"] is True and _public(base)["stage"] is None
+    assert _public({**base, "transcript_text": "hello"})["no_speech"] is False
+    live = _public({**base, "status": "transcribing", "stage": "diarizing", "progress": 0.4})
+    assert live["no_speech"] is False and live["stage"] == "diarizing" and live["progress"] == 0.4
+    assert _public({**base, "status": "transcribing"})["stage"] == "transcribing"   # started, no report yet
+    queued = _public({**base, "status": "pending", "transcript_text": None})
+    assert queued["stage"] == "queued" and queued["progress"] is None and queued["no_speech"] is False
+    stale = _public({**base, "status": "failed", "stage": "transcribing", "progress": 0.2})
+    assert stale["stage"] is None and stale["progress"] is None
 
 
 def test_finish_delivery_is_bound_to_its_attempt(tmp_path):

@@ -42,7 +42,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
@@ -309,8 +309,17 @@ def _public(rec: dict) -> dict:
     rec.pop("transcript_path", None)
     text = rec.pop("transcript_text", None)
     rec["has_transcript"] = rec["status"] == "done"
+    # Finished, but the audio held no speech (silence, a pocket recording).
+    rec["no_speech"] = rec["status"] == "done" and not (text or "").strip()
     rec["text_preview"] = (text or "")[:240] or None
     rec["marks"] = parse_marks(rec.get("marks"))  # stored as JSON text, served as a list
+    # Live progress: stage + 0..1 fraction while transcribing, "queued" while waiting.
+    if rec["status"] == "transcribing":
+        rec["stage"] = rec.get("stage") or "transcribing"
+    elif rec["status"] == "pending":
+        rec["stage"], rec["progress"] = "queued", None
+    else:
+        rec["stage"], rec["progress"] = None, None
     return rec
 
 
@@ -463,7 +472,9 @@ async def get_transcript(rec_id: str):
     if rec["status"] != "done" or not rec["transcript_path"]:
         raise HTTPException(status_code=409, detail=f"transcript not ready (status: {rec['status']})")
     with open(rec["transcript_path"]) as fh:
-        return json.load(fh)
+        transcript = json.load(fh)
+    transcript["no_speech"] = not (transcript.get("text") or "").strip()
+    return transcript
 
 
 class VocabEntryBody(BaseModel):
@@ -798,8 +809,19 @@ async def recording_routing(rec_id: str):
     }
 
 
+class RerunBody(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    # What the user wants done this time ("file this as a work meeting", "just
+    # summarize, don't file"). Trusted: typed by the user in the app, not
+    # spoken in the recording. Passed to the router LLM and to the actions.
+    instructions: str | None = Field(default=None, max_length=2000)
+
+
 @app.post("/api/v1/recordings/{rec_id}/route", dependencies=[Depends(require_auth)])
-async def rerun_router(rec_id: str, request: Request, response: Response):
+async def rerun_router(
+    rec_id: str, request: Request, response: Response, body: RerunBody | None = Body(default=None)
+):
     """Run the router again. Routing is synchronous and its deliveries have side
     effects (notes written, agents started), so a client that lost the response
     must not create a second run by re-sending: with an Idempotency-Key header
@@ -810,9 +832,10 @@ async def rerun_router(rec_id: str, request: Request, response: Response):
         raise HTTPException(status_code=404, detail="not found")
     if not rec.get("transcript_text"):
         raise HTTPException(status_code=409, detail=f"no transcript yet (status: {rec['status']})")
+    instructions = (body.instructions or "").strip() or None if body else None
     key = request.headers.get("Idempotency-Key")
     if key is None:
-        return _run_public(await router_engine.route_recording(rec))
+        return _run_public(await router_engine.route_recording(rec, instructions=instructions))
     if not _IDEMPOTENCY_KEY_RE.fullmatch(key):
         raise HTTPException(status_code=400, detail="Idempotency-Key must be 8-128 chars of [A-Za-z0-9_-]")
     slot = (rec_id, key)
@@ -832,7 +855,7 @@ async def rerun_router(rec_id: str, request: Request, response: Response):
     fut = asyncio.get_running_loop().create_future()
     _route_inflight[slot] = fut
     try:
-        run = await router_engine.route_recording(rec, idempotency_key=key)
+        run = await router_engine.route_recording(rec, idempotency_key=key, instructions=instructions)
         fut.set_result(run)
     except BaseException as exc:  # let concurrent waiters fail the same way
         fut.set_exception(exc)
