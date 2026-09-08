@@ -186,13 +186,25 @@ class Store:
         q = "SELECT * FROM recordings"
         where: list[str] = []
         args: list = []
-        if status:
+        if status == "no_speech":
+            # Finished, but the audio held no speech (see main._public, which
+            # uses str.strip(): blank means spaces, tabs and newlines alike).
+            where.append(
+                "status = 'done' AND TRIM(COALESCE(transcript_text, ''), "
+                "' ' || char(9) || char(10) || char(13)) = ''"
+            )
+        elif status:
             where.append("status = ?")
             args.append(status)
         if query:
-            where.append("(transcript_text LIKE ? OR summary LIKE ? OR filename LIKE ?)")
-            like = f"%{query}%"
-            args += [like, like, like]
+            # Literal substring search: LIKE metacharacters in what the user typed
+            # are escaped so "100%" or "a_b" mean those characters.
+            where.append(
+                "(title LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' "
+                "OR transcript_text LIKE ? ESCAPE '\\' OR filename LIKE ? ESCAPE '\\')"
+            )
+            like = "%" + like_escape(query) + "%"
+            args += [like, like, like, like]
         if where:
             q += " WHERE " + " AND ".join(where)
         q += " ORDER BY uploaded_at DESC LIMIT ? OFFSET ?"
@@ -548,6 +560,11 @@ class Store:
         with self._lock:
             row = self._conn.execute(q, args).fetchone()
         return dict(row) if row else None
+
+
+def like_escape(text: str) -> str:
+    """Escape SQLite LIKE metacharacters for use with ESCAPE '\\'."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def utcnow_iso() -> str:

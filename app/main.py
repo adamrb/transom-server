@@ -8,8 +8,10 @@ Endpoints (all under /api/v1, Bearer-token auth except /health):
   GET  /recordings                      list recordings
   GET  /recordings/lookup               find by device_sn + session_id
   GET  /recordings/{id}                 metadata
-  GET  /recordings/{id}/audio           audio file
+  GET  /recordings/{id}/audio           audio file (bearer OR signed link; Range supported)
+  POST /recordings/{id}/audio-link      mint a signed, 1-hour streaming URL for the audio
   GET  /recordings/{id}/transcript      transcript JSON (409 while pending)
+  PATCH /recordings/{id}/speakers       rename speakers ("Speaker 1" -> "Alex")
   POST /recordings/{id}/retranscribe    reset a recording for the worker
   GET  /routes                          list AI routing routes
   POST /routes                          create a route
@@ -19,6 +21,7 @@ Endpoints (all under /api/v1, Bearer-token auth except /health):
   GET  /routing/log                     recent router runs with deliveries
   GET  /recordings/{id}/routing         runs + deliveries for one recording
   POST /recordings/{id}/route           rerun the router for a recording
+  POST /recordings/{id}/route/preview   dry run: the decision only, nothing delivered or recorded
   POST /deliveries/{id}/retry           re-execute a delivery's action
   POST /apk                             upload/replace the hosted Android APK
   GET  /apk/info                        hosted-APK manifest (404 if none)
@@ -32,11 +35,13 @@ import hmac
 import secrets
 import json
 import logging
+import mimetypes
 import os
 import re
 import shutil
 import sqlite3
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,7 +53,7 @@ from pydantic import BaseModel, Field
 
 from .config import settings
 from .db import Store, utcnow_iso
-from .formatting import build_paragraphs
+from .formatting import MAX_SPEAKER_NAME_CHARS, build_paragraphs, speaker_labels
 from .highlights import parse_marks
 from .plaud import PlaudAuthError, PlaudClient
 from .router import Router, folder_error
@@ -147,6 +152,48 @@ def _session_for(token: str) -> dict | None:
     return store.session_by_hash(hashlib.sha256(token.encode()).hexdigest())
 
 
+# ── signed audio links ───────────────────────────────────────────────────────
+# A browser <audio> element cannot send a bearer header, so the dashboard asks
+# for a short-lived link instead: the same audio path with sig+exp query params.
+# The signing key is derived from the configured API token (no extra config);
+# signatures are checked against every configured token so rotation does not
+# cut a link off mid-playback.
+
+AUDIO_LINK_TTL_S = 60 * 60
+_AUDIO_PATH_RE = re.compile(r"^/api/v1/recordings/([A-Za-z0-9_-]{1,64})/audio$")
+_AUDIO_LINK_EXPIRED = "This audio link has expired. Reload the recording to get a new one."
+
+
+def _audio_link_key(token: str) -> bytes:
+    return hmac.new(token.encode(), b"plaud-bridge:audio-link:v1", hashlib.sha256).digest()
+
+
+def _audio_link_sig(rec_id: str, exp: int, token: str) -> str:
+    return hmac.new(_audio_link_key(token), f"{rec_id}:{exp}".encode(), hashlib.sha256).hexdigest()
+
+
+def _audio_link_ok(rec_id: str, sig: str | None, exp: str | None) -> bool:
+    if not sig or not exp or not _AUDIO_PATH_RE.match(f"/api/v1/recordings/{rec_id}/audio"):
+        return False
+    try:
+        exp_i = int(exp)
+    except ValueError:
+        return False
+    if exp_i <= int(time.time()) or exp_i > int(time.time()) + AUDIO_LINK_TTL_S + 60:
+        return False
+    return any(hmac.compare_digest(sig, _audio_link_sig(rec_id, exp_i, t)) for t in settings.auth_tokens)
+
+
+def _audio_link_request(request: Request) -> tuple[str, bool] | None:
+    """(rec_id, valid) when this is a GET for an audio file that presents a
+    signed link; None when it is not a signed-link request at all."""
+    m = _AUDIO_PATH_RE.match(request.url.path)
+    if request.method != "GET" or not m or "sig" not in request.query_params:
+        return None
+    rec_id = m.group(1)
+    return rec_id, _audio_link_ok(rec_id, request.query_params.get("sig"), request.query_params.get("exp"))
+
+
 def _token_ok(request: Request) -> bool:
     """A configured token (PB_AUTH_TOKENS) or a live browser session minted by
     the phone's QR approval. Session ids are remembered on the request so
@@ -173,11 +220,16 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
     if (path.startswith("/api/") and not _is_public(path, request.method)
             and not _token_ok(request) and not _result_callback_ok(request)):
-        return JSONResponse(
-            {"detail": "invalid or missing bearer token"},
-            status_code=401,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        link = _audio_link_request(request)
+        if link is not None and not link[1]:
+            # A link that was valid once: tell the player to fetch a fresh one.
+            return JSONResponse({"detail": _AUDIO_LINK_EXPIRED}, status_code=403)
+        if link is None:
+            return JSONResponse(
+                {"detail": "invalid or missing bearer token"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
@@ -304,11 +356,45 @@ async def plaud_user_token(body: UserTokenRequest):
         raise HTTPException(status_code=502, detail="Plaud partner API request failed (see server logs)")
 
 
+# Failure text people can act on. The raw exception string (`error_detail`)
+# stays available behind a disclosure; the sentence is what a list row shows.
+# Order matters: the first matching rule wins.
+_FRIENDLY_ERRORS: list[tuple[tuple[str, ...], str]] = [
+    (("over the", "too long", "max_duration", "duration_s"), "The recording is too long to transcribe."),
+    (("no audio decoded", "decode", "ffmpeg", "invalid data", "could not read", "unsupported format",
+      "no such file", "not found", "is a directory", "permission denied", "audio file"),
+     "Couldn't read the audio file."),
+    (("summar",), "Summary failed, transcript is ready."),
+    (("diariz",), "Couldn't identify speakers."),
+    (("timed out", "timeout"), "Transcription took too long and was stopped."),
+    (("not installed", "not configured", "unknown pb_stt_engine", "not set"),
+     "Transcription isn't set up on the server."),
+    (("connect", "unreachable", "refused", "endpoint returned", "name or service", "network"),
+     "Couldn't reach the transcription service."),
+    (("out of memory", "cuda", "cudnn", "cublas"), "The transcription engine ran out of resources."),
+]
+
+
+def friendly_error(raw: str | None) -> str | None:
+    if not raw or not str(raw).strip():
+        return None
+    low = str(raw).lower()
+    for needles, sentence in _FRIENDLY_ERRORS:
+        if any(n in low for n in needles):
+            return sentence
+    return "Transcription failed."
+
+
 def _public(rec: dict) -> dict:
     rec = dict(rec)
     rec.pop("audio_path", None)
     rec.pop("transcript_path", None)
     text = rec.pop("transcript_text", None)
+    # `error` is a sentence for people; the raw exception text moves to
+    # `error_detail` (the DB column keeps the raw string).
+    raw_error = rec.get("error")
+    rec["error_detail"] = raw_error or None
+    rec["error"] = friendly_error(raw_error)
     rec["has_transcript"] = rec["status"] == "done"
     # Finished, but the audio held no speech (silence, a pocket recording).
     rec["no_speech"] = rec["status"] == "done" and not (text or "").strip()
@@ -422,6 +508,52 @@ async def upload_recording(file: UploadFile, metadata: str = Form("{}", max_leng
     return JSONResponse({"id": rec_id, "duplicate": False}, status_code=201)
 
 
+SNIPPET_CHARS = 160
+
+
+def _snippet(text: str, query: str, width: int = SNIPPET_CHARS) -> str | None:
+    """About `width` characters around the first case-insensitive hit of
+    `query` in `text`, cut at word boundaries where possible and ellipsised
+    where trimmed. None when the query does not occur."""
+    if not text or not query:
+        return None
+    flat = " ".join(text.split())
+    hit = flat.lower().find(query.lower())
+    if hit < 0:
+        return None
+    if len(flat) <= width:
+        return flat
+    lead = max(0, (width - len(query)) // 2)
+    start = max(0, hit - lead)
+    end = min(len(flat), start + width)
+    start = max(0, end - width)
+    if start > 0:
+        # Move to the next word boundary, unless that would swallow the hit.
+        sp = flat.find(" ", start, hit)
+        if sp >= 0:
+            start = sp + 1
+    if end < len(flat):
+        sp = flat.rfind(" ", max(hit + len(query), start), end)
+        if sp > hit + len(query):
+            end = sp
+    piece = flat[start:end].strip()
+    return ("…" if start > 0 else "") + piece + ("…" if end < len(flat) else "")
+
+
+def _search_match(rec: dict, query: str | None) -> tuple[str | None, str | None]:
+    """Which field a list search hit and a snippet of it: title, summary, then
+    transcript. A hit on the file name only counts as the title (that is what
+    the row shows when there is no title)."""
+    if not query:
+        return None, None
+    for field, key in (("title", "title"), ("summary", "summary"), ("transcript", "transcript_text"),
+                       ("title", "filename")):
+        snippet = _snippet(rec.get(key) or "", query)
+        if snippet is not None:
+            return field, snippet
+    return None, None
+
+
 @app.get("/api/v1/recordings", dependencies=[Depends(require_auth)])
 async def list_recordings(
     limit: int = Query(100, ge=1, le=500),
@@ -429,11 +561,14 @@ async def list_recordings(
     status: str | None = Query(None, max_length=20),
     q: str | None = Query(None, max_length=200),
 ):
-    return {
-        "recordings": [
-            _public(r) for r in store.list(limit=limit, offset=offset, status=status, query=q)
-        ]
-    }
+    q = (q or "").strip() or None
+    items = []
+    for r in store.list(limit=limit, offset=offset, status=status, query=q):
+        field, snippet = _search_match(r, q)
+        item = _public(r)
+        item["match_field"], item["match_snippet"] = field, snippet
+        items.append(item)
+    return {"recordings": items}
 
 
 @app.get("/api/v1/stats", dependencies=[Depends(require_auth)])
@@ -445,7 +580,7 @@ async def stats():
 async def lookup_recording(device_sn: str, session_id: int):
     rec = store.find_by_session(device_sn, session_id)
     if not rec:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Recording not found.")
     return _public(rec)
 
 
@@ -453,31 +588,104 @@ async def lookup_recording(device_sn: str, session_id: int):
 async def get_recording(rec_id: str):
     rec = store.get(rec_id)
     if not rec:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Recording not found.")
     return _public(rec)
 
 
-@app.get("/api/v1/recordings/{rec_id}/audio", dependencies=[Depends(require_auth)])
-async def get_audio(rec_id: str):
+def _audio_media_type(filename: str | None) -> str:
+    guessed, _ = mimetypes.guess_type(filename or "")
+    return guessed if guessed and guessed.startswith("audio/") else "audio/mpeg"
+
+
+@app.get("/api/v1/recordings/{rec_id}/audio")
+async def get_audio(rec_id: str, request: Request):
+    """The audio file. Accepts the bearer header (the app) OR a signed link
+    from POST /audio-link (the dashboard's <audio> element). Range requests
+    get 206 partial content so players can seek without downloading it all."""
+    link = _audio_link_request(request)
+    if not _token_ok(request):
+        if link is None:
+            raise HTTPException(status_code=401, detail="invalid or missing bearer token",
+                                headers={"WWW-Authenticate": "Bearer"})
+        if not link[1]:
+            raise HTTPException(status_code=403, detail=_AUDIO_LINK_EXPIRED)
     rec = store.get(rec_id)
     if not rec:
-        raise HTTPException(status_code=404, detail="not found")
-    return FileResponse(rec["audio_path"], media_type="audio/mpeg", filename=rec["filename"])
+        raise HTTPException(status_code=404, detail="Recording not found.")
+    if not Path(rec["audio_path"]).is_file():
+        raise HTTPException(status_code=404, detail="The audio file is missing on the server.")
+    # FileResponse handles Range (206 / 416) and sets Accept-Ranges: bytes.
+    return FileResponse(rec["audio_path"], media_type=_audio_media_type(rec["filename"]),
+                        filename=rec["filename"])
+
+
+@app.post("/api/v1/recordings/{rec_id}/audio-link", dependencies=[Depends(require_auth)])
+async def audio_link(rec_id: str):
+    """A URL for the audio that works without a header for one hour (an
+    <audio src>). Signed with a key derived from the server's API token."""
+    if not store.get(rec_id):
+        raise HTTPException(status_code=404, detail="Recording not found.")
+    if not settings.auth_tokens:
+        raise HTTPException(status_code=503, detail="Audio links need an access token configured on the server.")
+    exp = int(time.time()) + AUDIO_LINK_TTL_S
+    sig = _audio_link_sig(rec_id, exp, settings.auth_tokens[0])
+    return {"url": f"/api/v1/recordings/{rec_id}/audio?sig={sig}&exp={exp}", "expires_at": exp}
+
+
+def _transcript_view(rec: dict) -> dict:
+    """The transcript document as clients read it, with the derived fields
+    (no_speech, paragraphs for pre-reader-layout files, speaker list)."""
+    if rec["status"] != "done" or not rec["transcript_path"]:
+        raise HTTPException(status_code=409, detail="The transcript isn't ready yet.")
+    try:
+        with open(rec["transcript_path"]) as fh:
+            transcript = json.load(fh)
+    except (OSError, ValueError):
+        raise HTTPException(status_code=409, detail="The transcript file is missing on the server.")
+    transcript["no_speech"] = not (transcript.get("text") or "").strip()
+    if "paragraphs" not in transcript:  # documents written before the reader layout existed
+        # Renames are applied to the segments themselves, so derived paragraphs carry them.
+        transcript["paragraphs"] = build_paragraphs(transcript.get("segments") or [], transcript.get("highlights") or [])
+    transcript["speakers"] = speaker_labels(transcript)
+    transcript.setdefault("speaker_names", {})
+    return transcript
 
 
 @app.get("/api/v1/recordings/{rec_id}/transcript", dependencies=[Depends(require_auth)])
 async def get_transcript(rec_id: str):
     rec = store.get(rec_id)
     if not rec:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Recording not found.")
+    return _transcript_view(rec)
+
+
+class SpeakerRenames(BaseModel):
+    model_config = {"extra": "forbid"}
+    renames: dict[str, str] = Field(min_length=1, max_length=50)
+
+
+@app.patch("/api/v1/recordings/{rec_id}/speakers", dependencies=[Depends(require_auth)])
+async def rename_speakers(rec_id: str, body: SpeakerRenames):
+    """Give speakers names: {"renames": {"Speaker 1": "Alex"}}. Labels not in
+    the transcript are ignored; a blank new name is refused. The names stick
+    (segments, paragraphs, text, exported note, and a speaker_names map that
+    survives highlight refreshes)."""
+    rec = store.get(rec_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Recording not found.")
     if rec["status"] != "done" or not rec["transcript_path"]:
-        raise HTTPException(status_code=409, detail=f"transcript not ready (status: {rec['status']})")
-    with open(rec["transcript_path"]) as fh:
-        transcript = json.load(fh)
-    transcript["no_speech"] = not (transcript.get("text") or "").strip()
-    if "paragraphs" not in transcript:  # documents written before the reader layout existed
-        transcript["paragraphs"] = build_paragraphs(transcript.get("segments") or [], transcript.get("highlights") or [])
-    return transcript
+        raise HTTPException(status_code=409, detail="The transcript isn't ready yet.")
+    renames: dict[str, str] = {}
+    for old, new in body.renames.items():
+        new = " ".join(new.split())
+        if not new:
+            raise HTTPException(status_code=422, detail="A speaker name can't be blank.")
+        if len(new) > MAX_SPEAKER_NAME_CHARS:
+            raise HTTPException(status_code=422, detail=f"Speaker names are limited to {MAX_SPEAKER_NAME_CHARS} characters.")
+        renames[old] = new
+    if transcriber.rename_speakers(rec_id, renames) is None:
+        raise HTTPException(status_code=409, detail="The transcript file is missing on the server.")
+    return _transcript_view(store.get(rec_id) or rec)
 
 
 class VocabEntryBody(BaseModel):
@@ -539,7 +747,7 @@ async def patch_recording(rec_id: str, body: RecordingPatch):
     transcript agree with the row."""
     rec = store.get(rec_id)
     if not rec:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Recording not found.")
     title = " ".join(body.title.split())
     if not title:
         raise HTTPException(status_code=422, detail="title must not be blank")
@@ -557,7 +765,7 @@ async def set_marks(rec_id: str, body: MarksBody):
     recomputed in place, no re-transcription needed."""
     rec = store.get(rec_id)
     if not rec:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Recording not found.")
     marks = parse_marks(body.marks)
     store.update(rec_id, marks=json.dumps(marks))
     # Re-read AFTER writing: if the transcriber finished in between, it may have
@@ -579,9 +787,9 @@ async def export_markdown(rec_id: str):
 
     rec = store.get(rec_id)
     if not rec:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Recording not found.")
     if rec["status"] != "done" or not rec["transcript_path"]:
-        raise HTTPException(status_code=409, detail=f"transcript not ready (status: {rec['status']})")
+        raise HTTPException(status_code=409, detail="The transcript isn't ready yet.")
     with open(rec["transcript_path"]) as fh:
         transcript = json.load(fh)
     title = rec.get("title") or transcript.get("title") or rec["filename"]
@@ -608,7 +816,7 @@ async def export_markdown(rec_id: str):
 async def retranscribe(rec_id: str):
     rec = store.get(rec_id)
     if not rec:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Recording not found.")
     if rec.get("transcript_path"):
         Path(rec["transcript_path"]).unlink(missing_ok=True)
     store.update(
@@ -623,7 +831,7 @@ async def retranscribe(rec_id: str):
 async def delete_recording(rec_id: str):
     rec = store.get(rec_id)
     if not rec:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Recording not found.")
     for key in ("audio_path", "transcript_path"):
         if rec.get(key):
             Path(rec[key]).unlink(missing_ok=True)
@@ -796,6 +1004,9 @@ async def routing_log(limit: int = Query(50, ge=1, le=200)):
             "id": rec["id"], "title": rec.get("title"), "filename": rec["filename"],
             "started_at": rec["started_at"],
         } if rec else None
+        run["recording_title"] = rec.get("title") if rec else None
+        run["recording_deleted"] = rec is None
+        run["recorded_at"] = (rec.get("started_at") or rec.get("uploaded_at")) if rec else None
         runs.append(_run_public(run))
     return {"runs": runs}
 
@@ -803,7 +1014,7 @@ async def routing_log(limit: int = Query(50, ge=1, le=200)):
 @app.get("/api/v1/recordings/{rec_id}/routing", dependencies=[Depends(require_auth)])
 async def recording_routing(rec_id: str):
     if not store.get(rec_id):
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Recording not found.")
     runs = []
     for run in store.router_runs_for_recording(rec_id):
         run["deliveries"] = store.deliveries_for_run(run["id"])
@@ -834,9 +1045,9 @@ async def rerun_router(
     still in progress, by awaiting it)."""
     rec = store.get(rec_id)
     if not rec:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail="Recording not found.")
     if not rec.get("transcript_text"):
-        raise HTTPException(status_code=409, detail=f"no transcript yet (status: {rec['status']})")
+        raise HTTPException(status_code=409, detail="This recording has no transcript yet.")
     instructions = (body.instructions or "").strip() or None if body else None
     key = request.headers.get("Idempotency-Key")
     if key is None:
@@ -872,6 +1083,36 @@ async def rerun_router(
 
 _IDEMPOTENCY_KEY_RE = re.compile(r"[A-Za-z0-9_-]{8,128}")
 _route_inflight: dict[tuple[str, str], "asyncio.Future"] = {}
+
+
+@app.post("/api/v1/recordings/{rec_id}/route/preview", dependencies=[Depends(require_auth)])
+async def preview_router(rec_id: str, body: RerunBody | None = Body(default=None)):
+    """Dry run: what would automations do with this recording? Runs the routing
+    decision only. Nothing is delivered, no run is recorded, no side effects.
+    The contract's route_id/route_name/reason describe the first match;
+    `matches` lists every route the model picked."""
+    if not settings.router_enabled:
+        raise HTTPException(status_code=409, detail="Automations are turned off on the server")
+    rec = store.get(rec_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Recording not found.")
+    if not rec.get("transcript_text"):
+        raise HTTPException(status_code=409, detail="This recording has no transcript yet.")
+    if not router_engine.configured:
+        raise HTTPException(status_code=409, detail="Automations are not set up on the server.")
+    instructions = (body.instructions or "").strip() or None if body else None
+    routes = store.list_routes(enabled_only=True)
+    matched: list[dict] = []
+    if routes:
+        matched, error = await router_engine.decide(rec, routes, instructions)
+        if error:
+            log.warning("automations preview failed for %s: %s", rec_id, error)
+            raise HTTPException(status_code=502, detail="Couldn't run automations. Try again.")
+    by_name = {r["name"]: r for r in routes}
+    matches = [{"route_id": by_name[m["name"]]["id"], "route_name": m["name"], "reason": m.get("reason")}
+               for m in matched if m["name"] in by_name]
+    first = matches[0] if matches else {"route_id": None, "route_name": None, "reason": None}
+    return {**first, "model": settings.router_model, "matches": matches}
 
 
 class DeliveryResultBody(BaseModel):

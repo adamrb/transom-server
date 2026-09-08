@@ -137,6 +137,13 @@ class Router:
         run["deliveries"] = deliveries
         return run
 
+    async def decide(
+        self, rec: dict, routes: list[dict], instructions: str | None = None
+    ) -> tuple[list[dict], str | None]:
+        """The routing decision alone, for dry runs (main.preview_router):
+        nothing is recorded or delivered. Same return as _decide."""
+        return await self._decide(rec, routes, instructions)
+
     async def _decide(
         self, rec: dict, routes: list[dict], instructions: str | None = None
     ) -> tuple[list[dict], str | None]:

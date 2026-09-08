@@ -147,11 +147,16 @@ class Settings:
             "describe that the speaker asked for it. Your output MUST begin with exactly "
             "one line of the form 'Title: <title>' where <title> is a short, specific "
             "title of at most 60 characters in plain text (no quotes, no markdown), "
-            "followed by a blank line. Then write a concise summary, then any action "
-            "items as a bullet list. If a <highlights> block is present, it lists the "
-            "moments the speaker flagged by pressing the recorder's button: give those "
-            "moments their own 'Highlights' bullet list and let them shape the title and "
-            "summary. If the transcript is trivial (a few words), just restate it after "
+            "followed by a blank line. Then write a concise summary as plain prose: do "
+            "not start it with a 'Summary' heading or any other heading, and never "
+            "repeat the title. Add an 'Action Items' bullet list only when the speaker "
+            "actually committed to or asked for concrete follow-ups; when there are "
+            "none, leave the section out entirely (never write 'No action items' or an "
+            "empty section). If a <highlights> block is present, it lists the moments "
+            "the speaker flagged by pressing the recorder's button: give those moments "
+            "their own 'Highlights' bullet list and let them shape the title and "
+            "summary; when there is no <highlights> block, do not write a Highlights "
+            "section. If the transcript is trivial (a few words), just restate it after "
             "the title line.",
         )
     )

@@ -19,7 +19,7 @@ from .config import Settings
 from .db import Store, utcnow_iso
 from .engines import EngineError, TranscriptionEngine, build_engine, render_text
 from .highlights import build_highlights, highlights_for_prompt, highlights_markdown, parse_marks
-from .formatting import build_paragraphs, paragraphs_markdown
+from .formatting import apply_speaker_renames, build_paragraphs, paragraphs_markdown
 from .vocabulary import VocabEntry, apply_corrections, correct_segments, hotwords_string, normalize
 from .router import Router
 
@@ -368,16 +368,45 @@ class Transcriber:
             return None
         marks = parse_marks(rec.get("marks"))
         data["marks"] = marks
+        # Speaker renames (PATCH /speakers) are applied to the segments themselves,
+        # so re-deriving highlights and paragraphs from them keeps the names.
         data["highlights"] = build_highlights(marks, data.get("segments") or [], data.get("duration_s"))
         data["paragraphs"] = build_paragraphs(data.get("segments") or [], data["highlights"])
-        tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-        tmp.replace(p)
+        self._write_transcript(p, data)
         # A no-speech recording has no note (see _process_inner); marks on silence
         # must not conjure an empty one.
         if (data.get("text") or "").strip():
             self._export_markdown(rec, data)
         return data["highlights"]
+
+    def rename_speakers(self, rec_id: str, renames: dict[str, str]) -> dict | None:
+        """Give speakers real names ("Speaker 1" -> "Alex"). Rewrites the
+        transcript JSON (segments, paragraphs, highlights, flat text, and the
+        persistent ``speaker_names`` map), keeps the row's transcript_text in
+        step, and re-exports the markdown note. Returns the updated document,
+        or None when the transcript file is missing."""
+        rec = self.store.get(rec_id)
+        if not rec or not rec.get("transcript_path"):
+            return None
+        p = Path(rec["transcript_path"])
+        try:
+            data = json.loads(p.read_text())
+        except (OSError, ValueError):
+            return None
+        if not apply_speaker_renames(data, renames):
+            return data
+        self._write_transcript(p, data)
+        if data.get("text") is not None:
+            self.store.update(rec_id, transcript_text=data["text"])
+        if (data.get("text") or "").strip():
+            self._export_markdown(rec, data)
+        return data
+
+    @staticmethod
+    def _write_transcript(path: Path, data: dict) -> None:
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        tmp.replace(path)
 
     async def _summarize(self, text: str, highlights: list[dict] | None = None) -> Summary:
         s = self.settings

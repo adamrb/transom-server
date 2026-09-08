@@ -104,20 +104,23 @@ All endpoints under `/api/v1`. Every route except `/health` requires `Authorizat
 | GET | `/auth/check` | 204 if the token is valid |
 | POST | `/plaud/user-token` | `{user_id, expires_in?}` → Plaud SDK user token |
 | POST | `/recordings` | multipart upload: `file` + `metadata` JSON string |
-| GET | `/recordings` | list (`limit`, `offset`, `status`) |
+| GET | `/recordings` | list (`limit`, `offset`, `status` incl. `no_speech`, `q` search; with `q` each item carries `match_field` + `match_snippet`) |
 | GET | `/recordings/lookup?device_sn&session_id` | find one |
-| GET | `/recordings/{id}` | metadata |
-| GET | `/recordings/{id}/audio` | the audio file |
-| GET | `/recordings/{id}/transcript` | transcript JSON; `409` while pending |
+| GET | `/recordings/{id}` | metadata (`error` is a plain sentence, the raw text is `error_detail`) |
+| GET | `/recordings/{id}/audio` | the audio file; bearer header **or** a signed link (`sig`+`exp`); HTTP Range → `206` |
+| POST | `/recordings/{id}/audio-link` | `{url, expires_at}`: a signed streaming URL valid for one hour (for `<audio src>`); `403` once expired |
+| GET | `/recordings/{id}/transcript` | transcript JSON (+ `speakers`, `speaker_names`); `409` while pending |
+| PATCH | `/recordings/{id}/speakers` | `{"renames": {"Speaker 1": "Alex"}}` → rename speakers everywhere (transcript, note); returns the transcript |
 | POST | `/recordings/{id}/retranscribe` | requeue for the worker |
 | DELETE | `/recordings/{id}` | remove recording + transcript |
 | GET | `/stats` | counts, total duration, bytes |
 | GET/POST | `/routes` | list / create AI routing routes |
 | PUT/DELETE | `/routes/{id}` | update / delete a route |
 | GET | `/router/status` | `{enabled, configured, model}` |
-| GET | `/routing/log?limit=50` | recent router runs with their deliveries |
+| GET | `/routing/log?limit=50` | recent router runs with their deliveries (+ `recording_title`, `recording_deleted`, `recorded_at`) |
 | GET | `/recordings/{id}/routing` | router runs + deliveries for one recording |
 | POST | `/recordings/{id}/route` | rerun the router now (`409` if no transcript yet) |
+| POST | `/recordings/{id}/route/preview` | dry run: `{route_id, route_name, reason, model, matches}`; nothing delivered or recorded (`409` if routing is off or no transcript) |
 | POST | `/deliveries/{id}/retry` | re-execute a delivery's action |
 | POST | `/apk` | upload/replace the hosted Android APK: `file` + `metadata` JSON string |
 | GET | `/apk/info` | hosted-APK manifest (`404` if none) — the app's update check |

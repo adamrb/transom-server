@@ -87,7 +87,7 @@ def build_paragraphs(segments: list[dict], highlights: list[dict] | None = None)
         text = (seg.get("text") or "").strip()
         if not text:
             continue
-        speaker = (seg.get("speaker") or ("Unknown speaker" if diarized else None))
+        speaker = (seg.get("speaker") or (UNKNOWN_SPEAKER if diarized else None))
         start, end = _num(seg.get("start")), _num(seg.get("end"))
         if current is not None:
             gap = (start - current["end"]) if (start is not None and current["end"] is not None) else 0.0
@@ -158,3 +158,101 @@ def paragraphs_markdown(paragraphs: list[dict], highlights: list[dict] | None = 
 def paragraphs_plain(paragraphs: list[dict]) -> str:
     """Plain-text version for clipboards: 'Speaker: text' paragraphs."""
     return "\n\n".join(f"{p['speaker']}: {p['text']}" if p.get("speaker") else p["text"] for p in paragraphs)
+
+
+# ── speaker labels ───────────────────────────────────────────────────────────
+
+MAX_SPEAKER_NAME_CHARS = 64
+# What an unlabeled segment is called in a diarized transcript (same string
+# as build_paragraphs and engines.render_text use).
+UNKNOWN_SPEAKER = "Unknown speaker"
+
+
+def speaker_labels(doc: dict) -> list[str]:
+    """Distinct speaker labels in first-appearance order, taken from the
+    paragraphs (what clients render) and falling back to the segments."""
+    out: list[str] = []
+    for item in (doc.get("paragraphs") or doc.get("segments") or []):
+        label = item.get("speaker")
+        if label and label not in out:
+            out.append(label)
+    return out
+
+
+def segments_text(segments: list[dict]) -> str:
+    """Render the flat transcript text from segment dicts: the same layout as
+    engines.render_text (speaker turns on their own 'Label: text' lines when
+    any segment is labeled, plain prose otherwise)."""
+    if not any(s.get("speaker") for s in segments):
+        return " ".join((s.get("text") or "").strip() for s in segments if (s.get("text") or "").strip())
+    lines: list[str] = []
+    current: object = object()  # sentinel != any speaker value
+    for seg in segments:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        speaker = seg.get("speaker")
+        if speaker != current:
+            current = speaker
+            lines.append(f"\n{speaker or UNKNOWN_SPEAKER}: {text}")
+        else:
+            lines.append(text)
+    return " ".join(lines).replace(" \n", "\n").strip()
+
+
+def apply_speaker_renames(doc: dict, renames: dict[str, str]) -> bool:
+    """Rename speakers in a transcript document, in place.
+
+    `renames` maps a label as it currently appears ("Speaker 1", or a name
+    given earlier) to its new name. Segments, paragraphs and highlight speaker
+    lists are rewritten in one pass (so swapping two labels works), the flat
+    ``text`` is re-rendered from the segments when labels are embedded in it,
+    and ``speaker_names`` (original engine label -> current name) is updated
+    so the choice survives any later re-derivation. Unknown labels are
+    ignored. Returns True when anything changed."""
+    renames = {old: new for old, new in renames.items() if old and new and old != new}
+    if not renames:
+        return False
+    segments = doc.get("segments") or []
+    # In a diarized document, segments without a label are shown (by
+    # build_paragraphs and render_text) as "Unknown speaker"; renaming that
+    # label must reach those segments, or a refresh would bring it back.
+    diarized = any(s.get("speaker") for s in segments)
+    unlabeled = UNKNOWN_SPEAKER if diarized and any(not s.get("speaker") for s in segments) else None
+    present = set(speaker_labels(doc)) | {s.get("speaker") for s in segments} | {unlabeled}
+    renames = {old: new for old, new in renames.items() if old in present}
+    if not renames:
+        return False
+
+    def relabel(item: dict, fallback: str | None = None) -> None:
+        label = item.get("speaker") or fallback
+        if label in renames:
+            item["speaker"] = renames[label]
+
+    for seg in segments:
+        relabel(seg, unlabeled)
+    for para in doc.get("paragraphs") or []:
+        relabel(para)
+    for h in doc.get("highlights") or []:
+        if isinstance(h.get("speakers"), list):
+            h["speakers"] = sorted({renames.get(s, s) for s in h["speakers"] if s})
+
+    # Persistent map keyed on the label the engine produced. A label being
+    # renamed is either an original label still shown as itself, or the
+    # current name of one or more originals (two speakers merged under one
+    # name): every original behind it moves. Resolved against the map as it
+    # was before this batch, so swapping two labels in one call works.
+    names: dict[str, str] = dict(doc.get("speaker_names") or {})
+    before = dict(names)
+    for old, new in renames.items():
+        origs = [orig for orig, cur in before.items() if cur == old] or [old]
+        for orig in origs:
+            if new == orig:
+                names.pop(orig, None)
+            else:
+                names[orig] = new
+    doc["speaker_names"] = names
+
+    if diarized:
+        doc["text"] = segments_text(segments)
+    return True
