@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#F9F9F9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#121212" media="(prefers-color-scheme: dark)" />
+    <title>Plaud Bridge</title>
+    <!-- Pre-paint theme: ?theme= (the Android app's choice, never saved) wins over the saved
+         preference (localStorage pb_theme), which wins over "system". Runs before any CSS so
+         there is no flash. Keep in sync with src/theme/ThemeProvider.tsx. -->
+    <script>
+      (function () {
+        try {
+          var q = new URLSearchParams(location.search).get('theme');
+          var t = q || localStorage.getItem('pb_theme') || 'system';
+          if (t !== 'light' && t !== 'dark') t = 'system';
+          document.documentElement.setAttribute('data-theme', t);
+        } catch (e) {
+          /* storage blocked: stay on system */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

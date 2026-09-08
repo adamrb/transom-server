@@ -1,0 +1,305 @@
+/*
+  Tailwind v4 theme: maps the M3 tokens in tokens.css onto utility names so components write
+  `bg-surface-container-high text-on-surface-variant rounded-lg shadow-e2 ease-standard`.
+
+  Colour utilities (bg-*, text-*, border-*, fill-*, ring-*):
+    surface, surface-dim, surface-container-lowest|low|(default)|high|highest, card, card-raised,
+    on-surface, on-surface-body, on-surface-variant, outline, outline-variant,
+    primary, on-primary, primary-container, on-primary-container,
+    secondary-container, on-secondary-container,
+    error, on-error, error-container, on-error-container,
+    success, success-container, on-success-container,
+    warning, warning-container, on-warning-container, highlight-bar,
+    inverse-surface, inverse-on-surface, scrim, state-hover, state-press, selection-tint,
+    spk1..spk4, on-spk1..on-spk4
+  Type scale (text-*): display-s, headline-l, headline-m, headline-s, title-l, title-m, title-s,
+    body-l, body-m, body-s, label-l, label-m, label-s, transcript, mono
+  Radii (rounded-*): xs sm md lg xl 2xl status full
+  Shadows (shadow-*): e1 e2 e3
+  Easing (ease-*): standard, emph-decel, emph-accel
+  Durations: use the `dur-short` `dur-medium` `dur-long` utilities (transition-duration).
+*/
+@import 'tailwindcss';
+@import './tokens.css';
+
+/* One breakpoint: md = 840 px (rail / bottom nav), lg = 1100 px (list pane 400 vs 340 px). */
+@theme {
+  --breakpoint-*: initial;
+  --breakpoint-md: 840px;
+  --breakpoint-lg: 1100px;
+}
+
+@theme inline {
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+  --color-white: #ffffff;
+  --color-black: #000000;
+
+  --color-surface: var(--surface);
+  --color-surface-dim: var(--surface-dim);
+  --color-surface-container-lowest: var(--sc-lowest);
+  --color-surface-container-low: var(--sc-low);
+  --color-surface-container: var(--sc);
+  --color-surface-container-high: var(--sc-high);
+  --color-surface-container-highest: var(--sc-highest);
+  --color-card: var(--card);
+  --color-card-raised: var(--card-raised);
+  --color-on-surface: var(--on-surface);
+  --color-on-surface-body: var(--on-surface-body);
+  --color-on-surface-variant: var(--on-surface-variant);
+  --color-outline: var(--outline);
+  --color-outline-variant: var(--outline-variant);
+  --color-primary: var(--primary);
+  --color-on-primary: var(--on-primary);
+  --color-primary-container: var(--primary-container);
+  --color-on-primary-container: var(--on-primary-container);
+  --color-secondary-container: var(--secondary-container);
+  --color-on-secondary-container: var(--on-secondary-container);
+  --color-error: var(--error);
+  --color-on-error: var(--on-error);
+  --color-error-container: var(--error-container);
+  --color-on-error-container: var(--on-error-container);
+  --color-success: var(--success);
+  --color-success-container: var(--success-container);
+  --color-on-success-container: var(--on-success-container);
+  --color-warning: var(--warning);
+  --color-warning-container: var(--warning-container);
+  --color-on-warning-container: var(--on-warning-container);
+  --color-highlight-bar: var(--highlight-bar);
+  --color-inverse-surface: var(--inverse-surface);
+  --color-inverse-on-surface: var(--inverse-on-surface);
+  --color-scrim: var(--scrim);
+  --color-state-hover: var(--state-hover);
+  --color-state-press: var(--state-press);
+  --color-selection-tint: var(--selection-tint);
+  --color-spk1: var(--spk1);
+  --color-on-spk1: var(--on-spk1);
+  --color-spk2: var(--spk2);
+  --color-on-spk2: var(--on-spk2);
+  --color-spk3: var(--spk3);
+  --color-on-spk3: var(--on-spk3);
+  --color-spk4: var(--spk4);
+  --color-on-spk4: var(--on-spk4);
+
+  --font-sans: Roboto, 'Roboto Flex', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-display: 'Roboto Flex', Roboto, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --text-*: initial;
+  --text-display-s: 36px;
+  --text-display-s--line-height: 44px;
+  --text-display-s--font-weight: 300;
+  --text-headline-l: 32px;
+  --text-headline-l--line-height: 40px;
+  --text-headline-l--font-weight: 300;
+  --text-headline-m: 28px;
+  --text-headline-m--line-height: 36px;
+  --text-headline-m--font-weight: 400;
+  --text-headline-s: 24px;
+  --text-headline-s--line-height: 32px;
+  --text-headline-s--font-weight: 400;
+  --text-title-l: 22px;
+  --text-title-l--line-height: 28px;
+  --text-title-l--font-weight: 400;
+  --text-title-m: 16px;
+  --text-title-m--line-height: 24px;
+  --text-title-m--font-weight: 500;
+  --text-title-m--letter-spacing: 0.1px;
+  --text-title-s: 14px;
+  --text-title-s--line-height: 20px;
+  --text-title-s--font-weight: 500;
+  --text-title-s--letter-spacing: 0.1px;
+  --text-body-l: 16px;
+  --text-body-l--line-height: 24px;
+  --text-body-l--letter-spacing: 0.2px;
+  --text-body-m: 14px;
+  --text-body-m--line-height: 20px;
+  --text-body-m--letter-spacing: 0.15px;
+  --text-body-s: 12px;
+  --text-body-s--line-height: 16px;
+  --text-body-s--letter-spacing: 0.3px;
+  --text-label-l: 14px;
+  --text-label-l--line-height: 20px;
+  --text-label-l--font-weight: 500;
+  --text-label-l--letter-spacing: 0.1px;
+  --text-label-m: 12px;
+  --text-label-m--line-height: 16px;
+  --text-label-m--font-weight: 500;
+  --text-label-m--letter-spacing: 0.4px;
+  --text-label-s: 11px;
+  --text-label-s--line-height: 16px;
+  --text-label-s--font-weight: 500;
+  --text-label-s--letter-spacing: 0.4px;
+  --text-transcript: 15px;
+  --text-transcript--line-height: 26px;
+  --text-transcript--letter-spacing: 0.15px;
+  --text-mono: 13.5px;
+  --text-mono--line-height: 1.55;
+
+  --radius-*: initial;
+  --radius-xs: var(--radius-xs);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+  --radius-2xl: var(--radius-2xl);
+  --radius-status: var(--radius-status);
+  --radius-full: 9999px;
+
+  --shadow-*: initial;
+  --shadow-e1: var(--e1);
+  --shadow-e2: var(--e2);
+  --shadow-e3: var(--e3);
+
+  --ease-standard: var(--ease-standard);
+  --ease-emph-decel: var(--ease-emph-decel);
+  --ease-emph-accel: var(--ease-emph-accel);
+}
+
+/* `dark:` follows html[data-theme], not only the OS: explicit dark, or system while the OS is dark. */
+@custom-variant dark {
+  &:where([data-theme='dark'], [data-theme='dark'] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where([data-theme='system'], [data-theme='system'] *) {
+      @slot;
+    }
+  }
+}
+
+@utility dur-short {
+  transition-duration: var(--dur-short);
+}
+@utility dur-medium {
+  transition-duration: var(--dur-medium);
+}
+@utility dur-long {
+  transition-duration: var(--dur-long);
+}
+/* M3 state layer: an overlay of the current text colour at 8 % (hover) / 12 % (press). */
+@utility state-layer {
+  position: relative;
+  overflow: hidden;
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: currentColor;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-short) var(--ease-standard);
+  }
+  &:hover::after {
+    opacity: 0.08;
+  }
+  &:active::after {
+    opacity: 0.12;
+  }
+  &:disabled::after {
+    display: none;
+  }
+}
+@utility tnum {
+  font-variant-numeric: tabular-nums;
+}
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+@utility focus-ring {
+  &:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+@keyframes lp-indeterminate {
+  0% {
+    left: -40%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+/* Self-hosted fonts (latin subsets). No CDN. */
+@font-face {
+  font-family: 'Roboto Flex';
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('/static/fonts/roboto-flex.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('/static/fonts/roboto.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Roboto Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/static/fonts/roboto-mono.woff2') format('woff2');
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    scrollbar-color: var(--outline) transparent;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--on-surface);
+    font-size: 14px;
+    line-height: 20px;
+    overflow: hidden;
+  }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+    letter-spacing: inherit;
+  }
+  button {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: inherit;
+  }
+  :focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+  [hidden] {
+    display: none !important;
+  }
+  ::selection {
+    background: var(--selection-tint);
+  }
+}

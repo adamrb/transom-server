@@ -1,0 +1,5 @@
+node_modules
+dist
+../app/static
+public/fonts
+package-lock.json

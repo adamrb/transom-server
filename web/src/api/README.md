@@ -1,0 +1,36 @@
+# API layer (`src/api`)
+
+Everything that talks to the FastAPI server lives here. Feature code never calls `fetch` directly.
+
+## Files
+
+| File                   | What it holds                                                                                                                                                                                                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `client.ts`            | `apiFetch` / `apiRequest` / `apiJson` (bearer from `pb_token`, 401 → `pb:auth-required` event, FastAPI `detail` → `ApiError.message`), `ApiError`, `NetworkError`, `errorMessage(err, fallback)`.                                                                                    |
+| `types.ts`             | Zod schemas + inferred TS types for every endpoint. Loose objects, nullish optional fields.                                                                                                                                                                                          |
+| `keys.ts`              | `qk` query-key factory and `POLL` cadences (15 s idle, 5 s while in flight).                                                                                                                                                                                                         |
+| `token.ts`             | `tokenStore` (get/set/clear/subscribe) and `TOKEN_RE`.                                                                                                                                                                                                                               |
+| `queryClient.ts`       | `createQueryClient()` with retry rules (4xx final, network/5xx twice).                                                                                                                                                                                                               |
+| `hooks/recordings.ts`  | `useRecordings`, `useRecording`, `useTranscript`, `fetchAudioLink`, `fetchAudioBlob`, `fetchExportMarkdown`, `useRenameRecording`, `useRenameSpeakers`, `useRetranscribe`, `useDeleteRecording`.                                                                                     |
+| `hooks/automations.ts` | `useRoutes`, `useCreateRoute`, `useUpdateRoute`, `useDeleteRoute`, `useRouterStatus`, `useRoutingLog`, `useRecordingRouting`, `useRunAutomations` (Idempotency-Key via `routeKeyStore`), `usePreviewAutomations`, `useRetryDelivery`, `routeInstructionsStore`, `isDeliveryWorking`. |
+| `hooks/vocabulary.ts`  | `useVocabulary`, `useSaveVocabulary`, `useImportVocabulary`, `parseVocabularyText`.                                                                                                                                                                                                  |
+| `hooks/auth.ts`        | `checkToken`, `createLoginRequest`, `pollLoginRequest`, `useSessions`, `useRevokeSession`, `signOut`, `browserLabel`.                                                                                                                                                                |
+| `hooks/apk.ts`         | `useApkInfo` (404 → `null`), `fetchApkBlob`, `uploadApk` / `useUploadApk` (XHR progress), `useDeleteApk`.                                                                                                                                                                            |
+| `hooks/misc.ts`        | `useStats` (15 s, its error is the "Can't reach your server" signal), `useHealth`.                                                                                                                                                                                                   |
+
+## Rules
+
+- **User words only.** Show `errorMessage(err, 'Couldn't export the transcript.')` or a snackbar with it. Never `err.status`, never `err.message` from a non-`ApiError`.
+- **401** is handled centrally: the auth provider listens for `AUTH_REQUIRED_EVENT` and shows the gate. Do not catch 401 in features.
+- **404 on newer endpoints** (audio-link, preview, speakers, sessions) means the server is older than the app. Check `err instanceof ApiError && err.notFound` and degrade (blob playback, hide the button, "Your server does not list signed-in computers yet.").
+- **409** on transcript/export means "not ready yet"; render the in-flight state, not an error.
+- **Polling** is owned by the hooks (`refetchInterval`); TanStack pauses it while the tab is hidden. Do not add `setInterval`s.
+- **Mutations invalidate**: every mutation already invalidates the right keys. Use `onSuccess` in the component only for UI (snackbar, close dialog).
+- **Idempotency**: `useRunAutomations` reads/writes the key in `sessionStorage` (`pb.routeKey.<id>`) exactly as the old dashboard did.
+
+## Adding an endpoint
+
+1. Add the zod schema and type to `types.ts` (loose object, `.nullish()` for optional fields).
+2. Add a key to `keys.ts` if it is a read.
+3. Add the hook to the matching `hooks/*.ts`: `useQuery` for reads, `useMutation` with invalidation for writes. Export it from `hooks/index.ts` (already `export *`).
+4. Add an MSW handler to `src/test/msw.ts` and a test.

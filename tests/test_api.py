@@ -166,9 +166,23 @@ def test_user_token_validation(client):
     assert r.status_code == 422  # too short
 
 
-def test_dashboard_served(client):
+def test_dashboard_served(client, tmp_path, monkeypatch):
+    """`/` serves the built web app's index.html (never cached, since its asset
+    names change per build) and explains itself with a 503 when web/ has not
+    been built, instead of crashing."""
+    from app import main as m
+
+    built = tmp_path / "static"
+    built.mkdir()
+    (built / "index.html").write_text("<!doctype html><title>Plaud Bridge</title><div id=root></div>")
+    monkeypatch.setattr(m, "STATIC_DIR", built)
     r = client.get("/")
     assert r.status_code == 200 and "Plaud Bridge" in r.text
+    assert r.headers.get("cache-control") == "no-cache"
+
+    monkeypatch.setattr(m, "STATIC_DIR", tmp_path / "missing")
+    r = client.get("/")
+    assert r.status_code == 503 and "not been built" in r.text
 
 
 def test_security_headers(client):

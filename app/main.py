@@ -1423,9 +1423,30 @@ async def delete_apk():
 
 
 # ── Web dashboard ────────────────────────────────────────────────────────────
+# The React app (web/) builds into app/static: index.html plus hashed assets under
+# app/static/assets and the fonts under app/static/fonts. The Docker image builds it;
+# a dev checkout may not have run `npm run build` yet, so both routes tolerate its absence.
 STATIC_DIR = Path(__file__).parent / "static"
+
+if STATIC_DIR.is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+else:
+    log.warning("web app not built: %s is missing (run `npm run build` in web/)", STATIC_DIR)
+
+_UNBUILT_HTML = (
+    "<!doctype html><meta charset='utf-8'><title>Plaud Bridge</title>"
+    "<body style='font-family:system-ui;padding:32px;max-width:520px'>"
+    "<h1>Plaud Bridge</h1><p>The web app has not been built on this server yet. "
+    "Run <code>npm ci &amp;&amp; npm run build</code> in <code>web/</code>, or rebuild the Docker image.</p>"
+)
 
 
 @app.get("/", include_in_schema=False)
 async def dashboard():
-    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+    index = STATIC_DIR / "index.html"
+    if not index.is_file():
+        return Response(_UNBUILT_HTML, media_type="text/html", status_code=503)
+    # The entry document must never be cached: its asset names change with every build.
+    return FileResponse(index, media_type="text/html", headers={"Cache-Control": "no-cache"})

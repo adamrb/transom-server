@@ -1,0 +1,131 @@
+/*
+  Material 3 colour roles for Plaud Bridge, derived from the Android app's palette
+  (values/colors.xml, values-night/colors.xml). Primary is the app's monochrome primary,
+  not a brand hue: phone and web share one scheme.
+
+  Every colour is written once with light-dark(); the active side is chosen by
+  `color-scheme`, which follows the html[data-theme] attribute set by the pre-paint script
+  in index.html and by ThemeProvider (system | light | dark).
+
+  Tailwind utilities map onto these names in theme.css (bg-surface-container, text-on-surface…).
+*/
+:root {
+  color-scheme: light dark;
+
+  /* surfaces */
+  --surface: light-dark(#f9f9f9, #121212); /* pb_background */
+  --surface-dim: light-dark(#dadada, #121212);
+  --sc-lowest: light-dark(#ffffff, #0c0c0c); /* pb_surface: cards (light) */
+  --sc-low: light-dark(#f3f3f3, #1a1a1a);
+  --sc: light-dark(#ededed, #1e1e1e); /* ~pb_surface_variant / cards (dark), menus */
+  --sc-high: light-dark(#e6e6e6, #262626); /* search bar, avatars, text areas */
+  --sc-highest: light-dark(#dfdfdf, #2c2c2c); /* tracks */
+  /* the surface a card uses: sc-lowest in light, sc in dark (the app does the same) */
+  --card: light-dark(#ffffff, #1e1e1e);
+  --card-raised: light-dark(#ededed, #262626); /* player, menus */
+
+  /* text */
+  --on-surface: light-dark(#1f1f1f, #ececec); /* pb_on_surface 16.5:1 / 14.1:1 */
+  --on-surface-body: light-dark(#3d3d3d, #d6d6d6); /* pb_text_body 10.9:1 / 11.5:1 */
+  --on-surface-variant: light-dark(#646464, #b0b0b0); /* pb_on_surface_variant 5.9:1 / 7.7:1 */
+  --outline: light-dark(#c6c6c6, #5a5a5a);
+  --outline-variant: light-dark(#ebebeb, #2e2e2e);
+
+  /* primary (neutral) */
+  --primary: light-dark(#1f1f1f, #e8e8e8); /* pb_primary */
+  --on-primary: light-dark(#ffffff, #1a1a1a);
+  --primary-container: light-dark(#e4e4e4, #3a3a3a);
+  --on-primary-container: light-dark(#1f1f1f, #ececec);
+  --secondary-container: light-dark(#e6e6e6, #353535); /* tonal buttons, selected chips, nav indicator */
+  --on-secondary-container: light-dark(#1f1f1f, #ececec);
+
+  /* semantic */
+  --error: light-dark(#c93b2f, #ff6b5e); /* pb_error 5.1:1 / 6.0:1 */
+  --on-error: light-dark(#ffffff, #1a1a1a);
+  --error-container: light-dark(#fbe3e0, #4a1b16);
+  --on-error-container: light-dark(#6e1c14, #ffb4ab);
+  --success: light-dark(#357a50, #7fc79a); /* pb_success */
+  --success-container: light-dark(#ddefe3, #1b3a28);
+  --on-success-container: light-dark(#134b2b, #a9e4bf);
+  --warning: light-dark(#9e5c00, #ffb74d); /* pb_warning: in-flight words, bookmark star */
+  --warning-container: light-dark(#ffe9cc, #4a3212);
+  --on-warning-container: light-dark(#5c3400, #ffd8a0);
+  --highlight-bar: light-dark(#ff9500, #ffb74d); /* pb_highlight_flash */
+
+  /* inverse (snackbar) */
+  --inverse-surface: light-dark(#2f2f2f, #e6e6e6);
+  --inverse-on-surface: light-dark(#f1f1f1, #1f1f1f);
+
+  /* overlays and state layers */
+  --scrim: light-dark(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.6));
+  --state-hover: light-dark(rgba(31, 31, 31, 0.08), rgba(236, 236, 236, 0.08));
+  --state-press: light-dark(rgba(31, 31, 31, 0.12), rgba(236, 236, 236, 0.12));
+  --selection-tint: light-dark(rgba(61, 61, 61, 0.12), rgba(255, 255, 255, 0.12)); /* now-playing paragraph */
+
+  /* speaker tonal pairs (container / on-container), muted so they sit beside a neutral primary */
+  --spk1: light-dark(#dce7f5, #2a3d57);
+  --on-spk1: light-dark(#1e3a5f, #c9dcf5);
+  --spk2: light-dark(#ddeedc, #25422b);
+  --on-spk2: light-dark(#1f4d2a, #bfe3c3);
+  --spk3: light-dark(#f6e3d6, #523320);
+  --on-spk3: light-dark(#6a3410, #f5cdb4);
+  --spk4: light-dark(#eadff3, #3e2d57);
+  --on-spk4: light-dark(#4b2a6e, #dcc8f0);
+
+  /* elevation */
+  --shadow-a: light-dark(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.4));
+  --shadow-b: light-dark(rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.25));
+  --shadow-c: light-dark(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3));
+  --shadow-d: light-dark(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.35));
+  --shadow-e: light-dark(rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.45));
+  --e1: 0 1px 2px var(--shadow-a), 0 1px 3px 1px var(--shadow-b);
+  --e2: 0 1px 2px var(--shadow-a), 0 2px 6px 2px var(--shadow-c);
+  --e3: 0 4px 8px 3px var(--shadow-d), 0 1px 3px var(--shadow-e);
+
+  /* shape (the app's radii) */
+  --radius-xs: 4px; /* menus */
+  --radius-sm: 8px; /* chips, snackbar */
+  --radius-md: 12px; /* buttons, text fields */
+  --radius-lg: 16px; /* cards, list items */
+  --radius-xl: 24px; /* player */
+  --radius-2xl: 28px; /* login card, bottom sheets */
+  --radius-status: 6px; /* status words */
+
+  /* motion */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emph-decel: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-emph-accel: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --dur-short: 150ms; /* state layers, icon swaps */
+  --dur-medium: 250ms; /* selection, chips, switches, nav indicator */
+  --dur-long: 350ms; /* bottom sheets, phone detail overlay */
+
+  /* layout */
+  --rail-w: 80px;
+  --bottom-nav-h: 80px;
+  --appbar-h: 64px;
+  --embedded-bottom-pad: 120px; /* the Android app's floating tab bar */
+
+  /* the colour behind a floating text-field label; Card overrides it with the card colour */
+  --field-bg: var(--surface);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-short: 0ms;
+    --dur-medium: 0ms;
+    --dur-long: 0ms;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0s !important;
+    transition-duration: 0s !important;
+  }
+}
