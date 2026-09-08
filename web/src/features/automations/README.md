@@ -40,13 +40,38 @@ danger`). Turned-off rules are dimmed. "Add rule" is a tonal `Button` in the sec
 
 ```
 automations/
-  AutomationsPage.tsx     route component: banner, Rules section, Activity section
-  StatusBanner.tsx
-  rules/                  RuleCard, RuleList, RuleEditorDialog, actionWords.ts (type → user words)
-  activity/               ActivityLog, RunCard, DeliveryRow, groupRuns.ts
-  *.test.tsx              MSW-backed tests (fixtures: routeAgent, routeNotes, logRun, deliveryFailed)
+  AutomationsPage.tsx     route component: banner, Rules section, Activity section (all hidden
+                          behind the banner when the server has no automations endpoint)
+  StatusBanner.tsx        on / turned off / not set up / too old, plus rulesSummary()
+  SectionHeader.tsx       "Rules" / "Activity" header with sentence and trailing actions
+  rules/
+    actionWords.ts        ACTION_KINDS, actionIcon(), actionChip()  (type → user words)
+    RulesSection.tsx      list, toggle (optimistic PUT), delete confirm, opens the editor
+    RuleCard.tsx          glyph, name, Switch, description, chip, Edit / Delete
+    RuleEditor.tsx        draft state, buildRouteBody() validation, save; uses the parts below
+    EditorDialog.tsx      560 px dialog (desktop) / full-screen dialog (phone) on <dialog>
+    ActionKindField.tsx   radio list: Send it to the agent / Save a note in a folder / Just record
+    WebhookFields.tsx     Agent address + secret header (password, Show/Hide, Remove chip)
+    MarkdownFields.tsx    Folder in your vault
+    TryItPanel.tsx        pick a recent recording → POST route/preview → matches[] with reasons
+  activity/
+    groupRuns.ts          groupRuns(), runTitle() ("Deleted recording"), runRecordedAt(), runCanOpen()
+    ActivitySection.tsx   useRoutingLog (15 s), Refresh, empty / error states, cards
+    ActivityCard.tsx      title (opens #/rec/<id> unless deleted), times, note, decisions, outcomes
+    RunDecisions.tsx      DecisionLine per matched rule, "Nothing matched", run error + Details
+    DecisionLine.tsx      glyph + rule name + reason behind "Why?" (or inline for previews)
+    OutcomeLine.tsx       a delivery: chip only Working/Failed, tries, Retry, outcome sentence
+    GroupedRuns.tsx       "Earlier runs (n)" disclosure
+  automations.test.tsx    banner states, chip mapping, toggle optimistic + revert, delete, empties
+  ruleEditor.test.tsx     validation, secret-header semantics, 409 inline, Try it (matches[])
+  activity.test.tsx       grouping, titles, Why?, Earlier runs, Retry, navigation
 ```
 
-Hooks: `useRoutes`, `useCreateRoute`, `useUpdateRoute`, `useDeleteRoute`, `useRouterStatus`,
-`useRoutingLog`, `useRetryDelivery`, `usePreviewAutomations`. Errors: `errorMessage(err, fallback)`
-through `useSnackbar()`.
+Hooks (`src/api/hooks/automations.ts`): `useRoutes`, `useCreateRoute`, `useUpdateRoute` (optimistic
+cache update, rolled back on error), `useDeleteRoute`, `useRouterStatus`, `useRoutingLog`,
+`useRetryDelivery`, `usePreviewAutomations`, `routeBody(route, patch)`. Errors:
+`errorMessage(err, fallback)` through `useSnackbar()`; 5xx never leak their text (the fallback shows).
+
+Wanted in the design system (wrapped locally for now): a `Dialog` size/full-screen variant
+(`EditorDialog`), a `Radio` list item (`ActionKindField`), a `Select`-like picker (the Try-it
+recording picker is an outlined `Button` + `Popover`).

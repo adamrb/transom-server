@@ -13,11 +13,26 @@ import {
   RoutingLogSchema,
   type Delivery,
   type RecordingRouting,
+  type Route,
   type RouteBody,
   type RouterRun,
 } from '../types';
 
+type RoutesList = { routes: Route[] };
+
 /* ------------------------------------------ rules ------------------------------------------ */
+
+/** The full PUT body for a rule as it is now (the server replaces every field on PUT). */
+export function routeBody(route: Route, patch: Partial<RouteBody> = {}): RouteBody {
+  return {
+    name: route.name,
+    description: route.description,
+    action_type: route.action_type,
+    action_config: route.action_config ?? {},
+    enabled: route.enabled,
+    ...patch,
+  };
+}
 
 /** All rules (routes), enabled or not. */
 export function useRoutes() {
@@ -42,7 +57,37 @@ export function useUpdateRoute() {
   return useMutation({
     mutationFn: ({ id, body }: { id: string; body: RouteBody }) =>
       apiJson(`/routes/${encodeURIComponent(id)}`, RouteSchema, { method: 'PUT', json: body }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.routes }),
+    // Optimistic: the rules list shows the change at once (a Switch must not lag behind the
+    // finger) and snaps back if the server refuses.
+    onMutate: async ({ id, body }) => {
+      await qc.cancelQueries({ queryKey: qk.routes });
+      const previous = qc.getQueryData<RoutesList>(qk.routes)?.routes.find((r) => r.id === id);
+      if (previous) {
+        qc.setQueryData<RoutesList>(
+          qk.routes,
+          (list) =>
+            list && {
+              ...list,
+              routes: list.routes.map((r) =>
+                r.id === id
+                  ? { ...r, ...body, action_config: body.action_config as Route['action_config'] }
+                  : r,
+              ),
+            },
+        );
+      }
+      return { previous };
+    },
+    // Roll back only this rule, so a failure here does not undo another rule's pending change.
+    onError: (_err, { id }, ctx) => {
+      const previous = ctx?.previous;
+      if (!previous) return;
+      qc.setQueryData<RoutesList>(
+        qk.routes,
+        (list) => list && { ...list, routes: list.routes.map((r) => (r.id === id ? previous : r)) },
+      );
+    },
+    onSettled: () => void qc.invalidateQueries({ queryKey: qk.routes }),
   });
 }
 
