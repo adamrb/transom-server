@@ -119,6 +119,10 @@ MIGRATION_COLUMNS = {
     "login_requests": {
         "client": "TEXT",
     },
+    "router_runs": {
+        # Client-supplied key so a re-sent "run automations" cannot start a second run.
+        "idempotency_key": "TEXT",
+    },
     "deliveries": {
         "router_run_id": "TEXT",
         "action_type": "TEXT",
@@ -393,6 +397,16 @@ class Store:
                 (limit,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def router_run_by_key(self, recording_id: str, idempotency_key: str) -> dict | None:
+        """The run a client already created with this key, if any (replay)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM router_runs WHERE recording_id = ? AND idempotency_key = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (recording_id, idempotency_key),
+            ).fetchone()
+        return dict(row) if row else None
 
     def router_runs_for_recording(self, recording_id: str) -> "list[dict]":
         with self._lock:

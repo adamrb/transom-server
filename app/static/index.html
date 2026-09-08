@@ -1380,20 +1380,41 @@ async function loadRoutingSection(id) {
       </div>
     </div>`;
 }
+// One idempotency key per click, kept until the server gives a definitive
+// answer: if the response is lost, the retry re-sends the same key and gets
+// the run that already happened instead of starting a second one.
+// Kept in sessionStorage so a reload while the request is out does not mint a
+// fresh key (and a second run) on the next click.
+const pendingRouteKeys = {
+  get(id) { try { return sessionStorage.getItem('pb.routeKey.' + id); } catch { return null; } },
+  set(id, key) { try { sessionStorage.setItem('pb.routeKey.' + id, key); } catch {} },
+  clear(id) { try { sessionStorage.removeItem('pb.routeKey.' + id); } catch {} },
+};
+function routeKey(id) {
+  let key = pendingRouteKeys.get(id);
+  if (!key) {
+    key = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2)).replace(/[^A-Za-z0-9_-]/g, '');
+    pendingRouteKeys.set(id, key);
+  }
+  return key;
+}
 async function runRouting(id) {
   const btn = $('run-routing-btn'), msg = $('routing-msg');
   if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
   try {
-    const r = await api(`/recordings/${id}/route`, { method: 'POST' });
+    const r = await api(`/recordings/${id}/route`, { method: 'POST', headers: { 'Idempotency-Key': routeKey(id) } });
     if (r.status === 409) {
+      pendingRouteKeys.clear(id);
       if (msg) { msg.textContent = 'No transcript yet — routing needs a finished transcript.'; msg.className = 'err'; }
       if (btn) { btn.disabled = false; btn.textContent = 'Run routing'; }
       return;
     }
     if (!r.ok) throw new Error('HTTP ' + r.status);
+    pendingRouteKeys.clear(id);
     await loadRoutingSection(id);
   } catch {
-    if (msg) { msg.textContent = 'Routing run failed.'; msg.className = 'err'; }
+    // Network error or 5xx: the key stays so the next click replays, not repeats.
+    if (msg) { msg.textContent = 'Routing run failed. Try again; a lost response will not run it twice.'; msg.className = 'err'; }
     if (btn) { btn.disabled = false; btn.textContent = 'Run routing'; }
   }
 }

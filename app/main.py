@@ -26,6 +26,7 @@ Endpoints (all under /api/v1, Bearer-token auth except /health):
   DELETE /apk                           unhost the current APK
 """
 
+import asyncio
 import hashlib
 import hmac
 import secrets
@@ -798,14 +799,51 @@ async def recording_routing(rec_id: str):
 
 
 @app.post("/api/v1/recordings/{rec_id}/route", dependencies=[Depends(require_auth)])
-async def rerun_router(rec_id: str):
+async def rerun_router(rec_id: str, request: Request, response: Response):
+    """Run the router again. Routing is synchronous and its deliveries have side
+    effects (notes written, agents started), so a client that lost the response
+    must not create a second run by re-sending: with an Idempotency-Key header
+    the same key returns the run it already produced (also while that run is
+    still in progress, by awaiting it)."""
     rec = store.get(rec_id)
     if not rec:
         raise HTTPException(status_code=404, detail="not found")
     if not rec.get("transcript_text"):
         raise HTTPException(status_code=409, detail=f"no transcript yet (status: {rec['status']})")
-    run = await router_engine.route_recording(rec)
+    key = request.headers.get("Idempotency-Key")
+    if key is None:
+        return _run_public(await router_engine.route_recording(rec))
+    if not _IDEMPOTENCY_KEY_RE.fullmatch(key):
+        raise HTTPException(status_code=400, detail="Idempotency-Key must be 8-128 chars of [A-Za-z0-9_-]")
+    slot = (rec_id, key)
+    fut = _route_inflight.get(slot)
+    if fut is not None:
+        # A concurrent duplicate: wait for the first request's run instead of starting
+        # another. Checked before the table: the run row exists from the moment the first
+        # request inserts it, while its deliveries may still be executing.
+        run = await asyncio.shield(fut)
+        response.headers["Idempotent-Replayed"] = "true"
+        return _run_public(dict(run))
+    existing = store.router_run_by_key(rec_id, key)
+    if existing:
+        existing["deliveries"] = store.deliveries_for_run(existing["id"])
+        response.headers["Idempotent-Replayed"] = "true"
+        return _run_public(existing)
+    fut = asyncio.get_running_loop().create_future()
+    _route_inflight[slot] = fut
+    try:
+        run = await router_engine.route_recording(rec, idempotency_key=key)
+        fut.set_result(run)
+    except BaseException as exc:  # let concurrent waiters fail the same way
+        fut.set_exception(exc)
+        raise
+    finally:
+        _route_inflight.pop(slot, None)
     return _run_public(run)
+
+
+_IDEMPOTENCY_KEY_RE = re.compile(r"[A-Za-z0-9_-]{8,128}")
+_route_inflight: dict[tuple[str, str], "asyncio.Future"] = {}
 
 
 class DeliveryResultBody(BaseModel):

@@ -79,11 +79,13 @@ class Router:
 
     # ── decision ───────────────────────────────────────────────────────────
 
-    async def route_recording(self, rec: dict) -> dict:
+    async def route_recording(self, rec: dict, idempotency_key: str | None = None) -> dict:
         """Decide which routes match `rec` and execute their actions.
 
         Returns the recorded router_runs row with the deliveries it created
-        embedded under "deliveries".
+        embedded under "deliveries". `idempotency_key` is stored on the run so
+        a client that lost the response can re-send and get this run back
+        instead of triggering a second one (see main.rerun_router).
         """
         routes = self.store.list_routes(enabled_only=True)
         created_at = utcnow_iso()
@@ -113,6 +115,7 @@ class Router:
             model=self.settings.router_model if routes else None,
             decision=decision,
             error=error,
+            idempotency_key=idempotency_key,
         )
 
         if not error:

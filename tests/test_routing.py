@@ -960,6 +960,47 @@ def test_lost_handoff_response_is_repaired_by_the_agents_callback(tmp_path, monk
             client.delete(f"/api/v1/recordings/{rec_id}", headers={"Authorization": f"Bearer {tok}"})
 
 
+def test_rerun_router_idempotency_key(tmp_path, monkeypatch):
+    """Same key => the same run (no second run, no second delivery), also for
+    two requests racing each other; a different key => a new run; a bad key
+    => 400; no key => the old always-run behaviour."""
+    from fastapi.testclient import TestClient
+    from app import main as m
+    with TestClient(m.app) as client:
+        store = m.store; tok = m.settings.auth_tokens[0]; H = {"Authorization": f"Bearer {tok}"}
+        rec_id = store.insert_recording(device_sn="881A", session_id=21, filename="r.mp3", sha256="q" * 64, size_bytes=1,
+                                        duration_s=3.0, started_at="2026-09-07T12:00:00Z", source="test", uploaded_at=utcnow_iso(),
+                                        audio_path=str(tmp_path / "r.mp3"), status="done", transcript_text="a note", title="T")
+        calls = {"n": 0}
+        async def fake_route(rec, idempotency_key=None):
+            calls["n"] += 1
+            await asyncio.sleep(0.2)   # long enough for a concurrent duplicate to land mid-run
+            run_id = store.insert_router_run(recording_id=rec["id"], created_at=utcnow_iso(), model="fake",
+                                             decision=json.dumps({"routes": []}), error=None, idempotency_key=idempotency_key)
+            run = store.get_router_run(run_id); run["deliveries"] = []
+            return run
+        monkeypatch.setattr(m.router_engine, "route_recording", fake_route)
+        try:
+            k = {"Idempotency-Key": "click-0001-abcdef"}
+            r1 = client.post(f"/api/v1/recordings/{rec_id}/route", headers={**H, **k})
+            assert r1.status_code == 200 and "Idempotent-Replayed" not in r1.headers
+            r2 = client.post(f"/api/v1/recordings/{rec_id}/route", headers={**H, **k})       # lost response, re-sent
+            assert r2.status_code == 200 and r2.json()["id"] == r1.json()["id"] and r2.headers["Idempotent-Replayed"] == "true"
+            assert calls["n"] == 1
+            r3 = client.post(f"/api/v1/recordings/{rec_id}/route", headers={**H, "Idempotency-Key": "click-0002-abcdef"})
+            assert r3.json()["id"] != r1.json()["id"] and calls["n"] == 2
+            assert client.post(f"/api/v1/recordings/{rec_id}/route", headers={**H, "Idempotency-Key": "bad key!"}).status_code == 400
+            # concurrent duplicates share one run
+            import threading
+            results = []
+            def go(): results.append(client.post(f"/api/v1/recordings/{rec_id}/route", headers={**H, "Idempotency-Key": "click-0003-abcdef"}).json()["id"])
+            ts = [threading.Thread(target=go) for _ in range(3)]; [t.start() for t in ts]; [t.join() for t in ts]
+            assert len(set(results)) == 1 and calls["n"] == 3
+            assert client.post(f"/api/v1/recordings/{rec_id}/route", headers=H).status_code == 200 and calls["n"] == 4  # no key: runs
+        finally:
+            client.delete(f"/api/v1/recordings/{rec_id}", headers=H)
+
+
 def test_finish_delivery_is_bound_to_its_attempt(tmp_path):
     import os
     os.environ["PB_DATA_DIR"] = str(tmp_path); os.environ["PB_AUTH_TOKENS"] = "t"
