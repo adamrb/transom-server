@@ -29,6 +29,7 @@ export function FilePicker({
   className,
 }: FilePickerProps) {
   const id = useId();
+  const helperId = helper ? `${id}-helper` : undefined;
   const inputRef = useRef<HTMLInputElement>(null);
   return (
     <div className={cn('flex flex-col gap-1', className)}>
@@ -57,6 +58,8 @@ export function FilePicker({
           type="file"
           accept={accept}
           disabled={disabled}
+          aria-describedby={helperId}
+          aria-invalid={error || undefined}
           className="sr-only"
           onChange={(e) => {
             onChange(e.currentTarget.files?.[0] ?? null);
@@ -65,7 +68,10 @@ export function FilePicker({
         />
       </div>
       {helper && (
-        <div className={cn('px-1 text-body-s', error ? 'text-error' : 'text-on-surface-variant')}>
+        <div
+          id={helperId}
+          className={cn('px-1 text-body-s', error ? 'text-error' : 'text-on-surface-variant')}
+        >
           {helper}
         </div>
       )}

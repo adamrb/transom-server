@@ -239,11 +239,21 @@ describe('Try it on a recording', () => {
     renderWithProviders(<RuleEditor route={fx.routeAgent} open onClose={() => {}} />);
     const panel = await screen.findByRole('region', { name: 'Try it on a recording' });
     // the newest finished recording with speech is picked by default; silent and unfinished ones are not offered
-    const picker = within(panel).getByRole('combobox', { name: 'Recording' }) as HTMLSelectElement;
-    await waitFor(() => expect(picker).toHaveValue(fx.recordingDone.id));
+    const picker = within(panel).getByRole('combobox', { name: 'Recording' });
+    await waitFor(() => expect(picker).toHaveAttribute('data-value', fx.recordingDone.id));
     expect(picker).toBeEnabled();
-    expect(within(picker).getAllByRole('option')).toHaveLength(1);
-    expect(within(picker).getByRole('option', { name: /The Political Fight/ })).toBeInTheDocument();
+    expect(picker).toHaveTextContent('The Political Fight');
+    await userEvent.click(picker);
+    const list = screen.getByRole('listbox', { name: 'Recording' });
+    expect(within(list).getAllByRole('option')).toHaveLength(1);
+    expect(within(list).getByRole('option', { name: /The Political Fight/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    // the list opened inside the editor's dialog, so it is not behind the modal
+    expect(list.closest('dialog')).not.toBeNull();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox')).toBeNull();
     await userEvent.click(within(panel).getByRole('button', { name: 'Try' }));
     const result = await within(panel).findByTestId('try-it-result');
     expect(previewed).toBe(fx.recordingDone.id);
@@ -270,7 +280,10 @@ describe('Try it on a recording', () => {
     renderWithProviders(<RuleEditor route={fx.routeAgent} open onClose={() => {}} />);
     const panel = await screen.findByRole('region', { name: 'Try it on a recording' });
     await waitFor(() =>
-      expect(within(panel).getByRole('combobox', { name: 'Recording' })).toHaveValue(fx.recordingDone.id),
+      expect(within(panel).getByRole('combobox', { name: 'Recording' })).toHaveAttribute(
+        'data-value',
+        fx.recordingDone.id,
+      ),
     );
     await userEvent.click(within(panel).getByRole('button', { name: 'Try' }));
     const result = await within(panel).findByTestId('try-it-result');
@@ -287,7 +300,10 @@ describe('Try it on a recording', () => {
     renderWithProviders(<RuleEditor route={fx.routeAgent} open onClose={() => {}} />);
     const panel = await screen.findByRole('region', { name: 'Try it on a recording' });
     await waitFor(() =>
-      expect(within(panel).getByRole('combobox', { name: 'Recording' })).toHaveValue(fx.recordingDone.id),
+      expect(within(panel).getByRole('combobox', { name: 'Recording' })).toHaveAttribute(
+        'data-value',
+        fx.recordingDone.id,
+      ),
     );
     await userEvent.click(within(panel).getByRole('button', { name: 'Try' }));
     await waitFor(() =>

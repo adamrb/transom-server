@@ -2,9 +2,15 @@ import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { LinearProgress } from '@/components/LinearProgress';
 import { RecordingsPage } from '@/features/recordings';
-import { AutomationsPage } from '@/features/automations';
-import { SettingsPage } from '@/features/settings';
 import { AppShell } from './AppShell';
+import { LoadBoundary, RouteFallback } from './RouteFallback';
+
+// Recordings is the first screen, so it ships in the main bundle; the other sections load on
+// first visit (one chunk each, cached by the browser afterwards).
+const AutomationsPage = lazy(() =>
+  import('@/features/automations').then((m) => ({ default: m.AutomationsPage })),
+);
+const SettingsPage = lazy(() => import('@/features/settings').then((m) => ({ default: m.SettingsPage })));
 
 // Visual QA gallery of every component; development only (never in the production bundle).
 const ComponentGallery = import.meta.env.DEV ? lazy(() => import('@/dev/ComponentGallery')) : null;
@@ -24,15 +30,35 @@ export function AppRoutes() {
       <Route element={<AppShell />}>
         <Route path="/" element={<RecordingsPage />} />
         <Route path="/rec/:id" element={<RecordingsPage />} />
-        <Route path="/automations" element={<AutomationsPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
+        <Route
+          path="/automations"
+          element={
+            <LoadBoundary what="Automations">
+              <Suspense fallback={<RouteFallback title="Automations" />}>
+                <AutomationsPage />
+              </Suspense>
+            </LoadBoundary>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <LoadBoundary what="Settings">
+              <Suspense fallback={<RouteFallback title="Settings" />}>
+                <SettingsPage />
+              </Suspense>
+            </LoadBoundary>
+          }
+        />
         {ComponentGallery && (
           <Route
             path="/dev/components"
             element={
-              <Suspense fallback={<LinearProgress label="Loading" />}>
-                <ComponentGallery />
-              </Suspense>
+              <LoadBoundary what="the component gallery">
+                <Suspense fallback={<LinearProgress label="Loading" />}>
+                  <ComponentGallery />
+                </Suspense>
+              </LoadBoundary>
             }
           />
         )}

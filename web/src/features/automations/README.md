@@ -1,13 +1,13 @@
 # Automations feature (`src/features/automations`)
 
-Owner: automations team. Entry: `AutomationsPage` (route `#/automations`). The placeholder shows the
-required frame: `SectionAppBar` (auto-hidden when embedded) plus a scroll container with
-`pt-(--content-top-pad) pb-(--content-bottom-pad)`, 24 px gutters (16 px on phone), inner max width 860 px.
+Entry: `AutomationsPage` (route `#/automations`, loaded on demand). Frame: `SectionAppBar`
+(auto-hidden when embedded) plus a scroll container with `pt-(--content-top-pad)
+pb-(--content-bottom-pad)`, 24 px gutters (16 px on phone), inner max width 860 px.
 
 Reference behaviour: `app/static/index.html` on `main` (`loadAutomations`, `loadRoutes`, `loadLog`,
 the route editor modal). Visual target: `shot-automations-*` and `shot-automations-activity-*`.
 
-## What to build (from SPEC.md)
+## What it does (from SPEC.md)
 
 - **Status banner** (`Banner`): `useRouterStatus` → success "Automations are on. Two of three rules
   are turned on · last run Today 2:48 AM" or warning when turned off / not set up. User words only;
@@ -48,12 +48,12 @@ automations/
     actionWords.ts        ACTION_KINDS, actionIcon(), actionChip()  (type → user words)
     RulesSection.tsx      list, toggle (optimistic PUT), delete confirm, opens the editor
     RuleCard.tsx          glyph, name, Switch, description, chip, Edit / Delete
-    RuleEditor.tsx        draft state, buildRouteBody() validation, save; uses the parts below
-    EditorDialog.tsx      560 px dialog (desktop) / full-screen dialog (phone) on <dialog>
-    ActionKindField.tsx   radio list: Send it to the agent / Save a note in a folder / Just record
+    RuleEditor.tsx        draft state, buildRouteBody() validation, save; `Dialog size="md" fullScreen`
+                          (560 px card on desktop, full-screen with a top bar on phone)
+    ActionKindField.tsx   `RadioGroup` in user words: Send it to the agent / Save a note / Just record
     WebhookFields.tsx     Agent address + secret header (password, Show/Hide, Remove chip)
     MarkdownFields.tsx    Folder in your vault
-    TryItPanel.tsx        pick a recent recording → POST route/preview → matches[] with reasons
+    TryItPanel.tsx        `Select` of recent recordings → POST route/preview → matches[] with reasons
   activity/
     groupRuns.ts          groupRuns(), runTitle() ("Deleted recording"), runRecordedAt(), runCanOpen()
     ActivitySection.tsx   useRoutingLog (15 s), Refresh, empty / error states, cards
@@ -72,6 +72,6 @@ cache update, rolled back on error), `useDeleteRoute`, `useRouterStatus`, `useRo
 `useRetryDelivery`, `usePreviewAutomations`, `routeBody(route, patch)`. Errors:
 `errorMessage(err, fallback)` through `useSnackbar()`; 5xx never leak their text (the fallback shows).
 
-Wanted in the design system (wrapped locally for now): a `Dialog` size/full-screen variant
-(`EditorDialog`), a `Radio` list item (`ActionKindField`), a `Select`-like picker (the Try-it
-recording picker is an outlined `Button` + `Popover`).
+Design-system pieces this feature relies on: `Dialog` (`size`, `fullScreen`), `RadioGroup`,
+`Select` (opens its list inside the editor's `<dialog>`), `Switch`, `TextField`, `Banner`,
+`StatusChip`, `ConfirmDialog danger`. The page itself is loaded on demand (see `shell/routes.tsx`).

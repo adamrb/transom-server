@@ -34,8 +34,9 @@ function pendingInstructions(id: string): string {
 /**
  * Instructions field + "Run automations" / "Run again" + "Preview". The instructions ride along
  * with the idempotency key: they are saved in sessionStorage when a run starts and a retry after a
- * lost reply replays exactly them (`useRunAutomations` sends the key; this row supplies the
- * instructions saved with it, not whatever the box holds now), as the old dashboard did.
+ * lost reply replays exactly them (`useRunAutomations` sends the key and clears both once the
+ * run is settled; this row supplies the instructions saved with it, not whatever the box holds
+ * now), as the old dashboard did.
  */
 export function RunAutomationsRow({ recordingId: id, hasRun }: RunAutomationsRowProps) {
   const snackbar = useSnackbar();
@@ -59,13 +60,11 @@ export function RunAutomationsRow({ recordingId: id, hasRun }: RunAutomationsRow
       { id, instructions },
       {
         onSuccess: () => {
-          routeInstructionsStore.clear(id);
           setDraft('');
           snackbar.show('Automations ran');
         },
         onError: (err) => {
           if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
-            routeInstructionsStore.clear(id);
             setMessage({
               text: err.conflict
                 ? err.userMessage('Automations need a finished transcript.')

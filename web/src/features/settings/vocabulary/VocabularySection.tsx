@@ -16,7 +16,7 @@ import { useVocabularyEditor, type VocabularyMode } from './useVocabularyEditor'
 
 const MODES = [
   { key: 'list', label: 'List', icon: 'format_list_bulleted' },
-  { key: 'text', label: 'Text', icon: 'description' },
+  { key: 'text', label: 'Text', icon: 'notes' },
 ] as const;
 
 function Code({ children }: { children: string }) {

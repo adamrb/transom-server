@@ -34,12 +34,14 @@ import history from '@material-symbols/svg-400/rounded/history.svg?raw';
 import ios_share from '@material-symbols/svg-400/rounded/ios_share.svg?raw';
 import keyboard_arrow_down from '@material-symbols/svg-400/rounded/keyboard_arrow_down.svg?raw';
 import keyboard_arrow_up from '@material-symbols/svg-400/rounded/keyboard_arrow_up.svg?raw';
+import laptop_windows from '@material-symbols/svg-400/rounded/laptop_windows.svg?raw';
 import light_mode from '@material-symbols/svg-400/rounded/light_mode.svg?raw';
 import link from '@material-symbols/svg-400/rounded/link.svg?raw';
 import logout from '@material-symbols/svg-400/rounded/logout.svg?raw';
 import mic from '@material-symbols/svg-400/rounded/mic.svg?raw';
 import mobile from '@material-symbols/svg-400/rounded/mobile.svg?raw';
 import more_vert from '@material-symbols/svg-400/rounded/more_vert.svg?raw';
+import notes from '@material-symbols/svg-400/rounded/notes.svg?raw';
 import open_in_new from '@material-symbols/svg-400/rounded/open_in_new.svg?raw';
 import palette from '@material-symbols/svg-400/rounded/palette.svg?raw';
 import pause from '@material-symbols/svg-400/rounded/pause.svg?raw';
@@ -57,6 +59,7 @@ import settings from '@material-symbols/svg-400/rounded/settings.svg?raw';
 import spellcheck from '@material-symbols/svg-400/rounded/spellcheck.svg?raw';
 import star from '@material-symbols/svg-400/rounded/star.svg?raw';
 import star_fill from '@material-symbols/svg-400/rounded/star-fill.svg?raw';
+import text_snippet from '@material-symbols/svg-400/rounded/text_snippet.svg?raw';
 import tune from '@material-symbols/svg-400/rounded/tune.svg?raw';
 import upload from '@material-symbols/svg-400/rounded/upload.svg?raw';
 import visibility from '@material-symbols/svg-400/rounded/visibility.svg?raw';
@@ -97,6 +100,8 @@ const RAW = {
   /** expand / collapse chevrons (Material renamed `expand_more`/`expand_less`) */
   keyboard_arrow_down,
   keyboard_arrow_up,
+  /** a laptop (Material has no plain `laptop`; this is `laptop_windows`, the generic one) */
+  laptop: laptop_windows,
   light_mode,
   link,
   logout,
@@ -104,6 +109,8 @@ const RAW = {
   /** the phone glyph (Material renamed `smartphone` to `mobile`) */
   mobile,
   more_vert,
+  /** lines of text (the vocabulary "Text" view) */
+  notes,
   open_in_new,
   palette,
   pause,
@@ -121,6 +128,8 @@ const RAW = {
   spellcheck,
   star,
   star_fill,
+  /** a note / snippet of text */
+  text_snippet,
   tune,
   upload,
   visibility,

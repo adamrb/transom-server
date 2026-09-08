@@ -1,69 +1,13 @@
 /**
- * Inside the Android app the page gets a tiny native bridge (window.PlaudBridgeApp) because a
- * WebView can neither download a blob nor, on some builds, reach navigator.clipboard. Elsewhere
- * the web APIs are used. Detection mirrors the vanilla dashboard exactly.
+ * The Android app's native bridge. The implementation lives in `@/lib/bridge` (so design-system
+ * components can use it); this module keeps the feature-level import path.
  */
-export function appBridge(): PlaudBridgeNative | null {
-  return (
-    (typeof window !== 'undefined' && typeof window.PlaudBridgeApp === 'object' && window.PlaudBridgeApp) ||
-    null
-  );
-}
-
-export type CopyResult = 'copied' | 'bridge' | 'failed';
-
-/**
- * Copy text: navigator.clipboard first, then the app bridge (which shows its own toast, so the
- * caller must not), then the execCommand fallback.
- */
-export async function copyText(text: string): Promise<CopyResult> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return 'copied';
-    }
-    throw new Error('no clipboard api');
-  } catch {
-    const b = appBridge();
-    if (b?.copyText) {
-      b.copyText(text);
-      return 'bridge';
-    }
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.position = 'fixed';
-    ta.style.opacity = '0';
-    document.body.appendChild(ta);
-    ta.select();
-    let ok = false;
-    try {
-      ok = !!document.execCommand && document.execCommand('copy');
-    } catch {
-      ok = false;
-    }
-    ta.remove();
-    return ok ? 'copied' : 'failed';
-  }
-}
-
-/** Trigger a browser download of a blob. */
-export function downloadBlob(blob: Blob, name: string): void {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = name;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
-export type ShareResult = 'bridge' | 'downloaded';
-
-/** Markdown export: the app's share sheet when embedded, otherwise a .md download. */
-export function shareMarkdown(name: string, markdown: string): ShareResult {
-  const b = appBridge();
-  if (b?.shareMarkdown) {
-    b.shareMarkdown(name, markdown);
-    return 'bridge';
-  }
-  downloadBlob(new Blob([markdown], { type: 'text/markdown' }), name);
-  return 'downloaded';
-}
+export {
+  appBridge,
+  copyText,
+  downloadBlob,
+  shareMarkdown,
+  readFileText,
+  type CopyResult,
+  type ShareResult,
+} from '@/lib/bridge';

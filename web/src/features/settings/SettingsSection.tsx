@@ -45,11 +45,12 @@ export interface SettingsRowProps extends Omit<ListItemProps, 'leading' | 'shape
   alignTop?: boolean;
 }
 
-/** A flat settings row: icon avatar, headline, supporting line, trailing control. */
-export function SettingsRow({ icon, alignTop, className, ...rest }: SettingsRowProps) {
+/** A flat settings row: icon avatar, headline, supporting line (wraps to two lines), trailing control. */
+export function SettingsRow({ icon, alignTop, className, wrap = true, ...rest }: SettingsRowProps) {
   return (
     <ListItem
       shape="flat"
+      wrap={wrap}
       leading={
         <Avatar
           kind="icon"

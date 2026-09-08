@@ -8,7 +8,7 @@ import { errorMessage } from '@/api/client';
 import { useUploadApk } from '@/api/hooks/apk';
 import type { ApkInfo, ApkMetadata } from '@/api/types';
 import { fmtSize } from '@/lib/format';
-import { FilePicker } from '../shared/FilePicker';
+import { FilePicker } from '@/components/FilePicker';
 
 export interface ApkUploadDialogProps {
   open: boolean;
@@ -108,7 +108,7 @@ export function ApkUploadDialog({ open, onClose, hosted }: ApkUploadDialogProps)
       open={open}
       onClose={() => !busy && onClose()}
       title="Upload a new version"
-      className="w-[520px]"
+      size="md"
       actions={
         <>
           <Button variant="text" onClick={onClose} disabled={busy}>
@@ -163,7 +163,7 @@ export function ApkUploadDialog({ open, onClose, hosted }: ApkUploadDialogProps)
             className="min-w-[160px] flex-[2]"
           />
           <TextField
-            label="Minimum Android API level (optional)"
+            label="Minimum API level (optional)"
             type="number"
             inputMode="numeric"
             min={1}
@@ -175,7 +175,7 @@ export function ApkUploadDialog({ open, onClose, hosted }: ApkUploadDialogProps)
               setError(null);
             }}
             disabled={busy}
-            className="min-w-[200px] flex-1"
+            className="min-w-[220px] flex-1"
           />
         </div>
         <TextField

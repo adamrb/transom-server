@@ -23,7 +23,7 @@ export function SessionRow({ session, onRevoke, busy }: SessionRowProps) {
     .join(' · ');
   return (
     <SettingsRow
-      icon="computer"
+      icon="laptop"
       headline={
         <span className="inline-flex max-w-full items-center gap-2">
           <span className="truncate">{sessionLabel(session)}</span>

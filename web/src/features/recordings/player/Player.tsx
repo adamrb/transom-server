@@ -1,10 +1,8 @@
 import { useState, type ReactNode } from 'react';
-import { Card, IconButton } from '@/components';
+import { Card, IconButton, SkipIcon, Slider } from '@/components';
 import { cn } from '@/lib/cn';
 import { fmtClock } from '@/lib/format';
 import { SKIP_BACK_S, SKIP_FORWARD_S, SPEEDS, type Speed } from './playerStore';
-import { PlayerSlider } from './PlayerSlider';
-import { SkipIcon } from './SkipIcon';
 import { usePlayer } from './usePlayer';
 
 export interface PlayerProps {
@@ -26,7 +24,7 @@ export function Player({ variant = 'docked', trailing, className }: PlayerProps)
   const max = p.duration || 0;
   const body = (
     <>
-      <PlayerSlider
+      <Slider
         label="Position"
         value={Math.min(shown, max || shown)}
         max={max || 1}
@@ -60,7 +58,13 @@ export function Player({ variant = 'docked', trailing, className }: PlayerProps)
         </span>
       </div>
       <div className="relative mt-1.5 flex items-center justify-center gap-5">
-        <SkipButton seconds={SKIP_BACK_S} direction="back" onClick={() => store.skip(-SKIP_BACK_S)} />
+        <IconButton
+          label={`Back ${SKIP_BACK_S} seconds`}
+          className="text-on-surface"
+          onClick={() => store.skip(-SKIP_BACK_S)}
+        >
+          <SkipIcon seconds={SKIP_BACK_S} direction="back" />
+        </IconButton>
         <IconButton
           icon={p.playing ? 'pause' : 'play_arrow'}
           label={p.playing ? 'Pause' : 'Play'}
@@ -70,7 +74,13 @@ export function Player({ variant = 'docked', trailing, className }: PlayerProps)
           className={cn(p.loading && 'animate-pulse')}
           onClick={() => store.toggle()}
         />
-        <SkipButton seconds={SKIP_FORWARD_S} direction="forward" onClick={() => store.skip(SKIP_FORWARD_S)} />
+        <IconButton
+          label={`Forward ${SKIP_FORWARD_S} seconds`}
+          className="text-on-surface"
+          onClick={() => store.skip(SKIP_FORWARD_S)}
+        >
+          <SkipIcon seconds={SKIP_FORWARD_S} direction="forward" />
+        </IconButton>
         {trailing && <div className="absolute right-0 top-1/2 -translate-y-1/2">{trailing}</div>}
       </div>
     </>
@@ -87,29 +97,6 @@ export function Player({ variant = 'docked', trailing, className }: PlayerProps)
     >
       {body}
     </Card>
-  );
-}
-
-function SkipButton({
-  seconds,
-  direction,
-  onClick,
-}: {
-  seconds: number;
-  direction: 'back' | 'forward';
-  onClick: () => void;
-}) {
-  const label = direction === 'back' ? `Back ${seconds} seconds` : `Forward ${seconds} seconds`;
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      className="inline-grid size-10 shrink-0 place-items-center rounded-full text-on-surface transition-colors dur-short hover:bg-state-hover active:bg-state-press focus-ring"
-    >
-      <SkipIcon seconds={seconds} direction={direction} />
-    </button>
   );
 }
 

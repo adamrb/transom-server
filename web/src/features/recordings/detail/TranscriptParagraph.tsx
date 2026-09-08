@@ -47,7 +47,9 @@ export const TranscriptParagraph = memo(function TranscriptParagraph({
       data-start={start}
       data-now={now || undefined}
       className={cn(
-        'group relative rounded-md py-1.5 pr-3 pl-3.5 transition-colors [scroll-margin-block:16px_160px]',
+        // Desktop reserves a right column for the time + play chip so text never runs under it.
+        // A jump lands the paragraph flush under the app bar (no sliver of the one before it).
+        'group relative rounded-md py-1.5 pr-3 pl-3.5 transition-colors [scroll-margin-block:0px_160px] md:pr-24',
         now && 'bg-selection-tint',
         flash ? 'bg-warning-container duration-0' : 'duration-[1500ms]',
       )}

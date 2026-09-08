@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Button } from '@/components/Button';
+import { CopyField } from '@/components/CopyField';
 import { ConfirmDialog } from '@/components/Dialog';
 import { IconButton } from '@/components/IconButton';
 import { Icon } from '@/components/Icon';
@@ -7,7 +8,7 @@ import { Skeleton } from '@/components/Skeleton';
 import { useSnackbar } from '@/components/Snackbar';
 import { errorMessage } from '@/api/client';
 import { fetchApkBlob, useApkInfo, useDeleteApk } from '@/api/hooks/apk';
-import { copyText, downloadBlob } from '@/features/shell/bridge';
+import { downloadBlob } from '@/features/shell/bridge';
 import { fmtSize, fmtWhen } from '@/lib/format';
 import { SettingsRow, SettingsSection } from '../SettingsSection';
 import { ApkUploadDialog } from './ApkUploadDialog';
@@ -37,13 +38,6 @@ export function AndroidAppSection() {
     } finally {
       setDownloading(false);
     }
-  };
-
-  const copySha = async () => {
-    if (!info) return;
-    const r = await copyText(info.sha256);
-    if (r === 'copied') snackbar.show('Checksum copied');
-    else if (r === 'failed') snackbar.error("Couldn't copy the checksum.");
   };
 
   const remove = () => {
@@ -99,6 +93,7 @@ export function AndroidAppSection() {
           {info.notes && (
             <div className="mt-2 whitespace-pre-wrap text-body-m text-on-surface-body">{info.notes}</div>
           )}
+          <CopyField label="Checksum" value={info.sha256} copiedMessage="Checksum copied" className="mt-3" />
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button
               variant="outlined"
@@ -108,9 +103,6 @@ export function AndroidAppSection() {
               onClick={() => void download()}
             >
               Download APK
-            </Button>
-            <Button variant="text" size="sm" icon="content_copy" onClick={() => void copySha()}>
-              Copy checksum
             </Button>
             <Button
               variant="danger"

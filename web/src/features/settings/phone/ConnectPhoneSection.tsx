@@ -2,9 +2,11 @@ import { useState } from 'react';
 import { Banner } from '@/components/Banner';
 import { Button } from '@/components/Button';
 import { Dialog } from '@/components/Dialog';
+import { IconButton } from '@/components/IconButton';
 import { tokenStore } from '@/api/token';
+import { useIsDesktop } from '@/lib/breakpoints';
 import { SettingsRow, SettingsSection } from '../SettingsSection';
-import { CopyField } from '../shared/CopyField';
+import { CopyField } from '@/components/CopyField';
 import { QrCard } from './QrCard';
 import { connectPayload, loginLink } from './connectPayload';
 
@@ -29,7 +31,7 @@ export function ConnectPhoneDialog({ open, onClose, token, origin }: ConnectPhon
       open={open}
       onClose={onClose}
       title="Connect a phone"
-      className="w-[480px]"
+      size="md"
       actions={<Button onClick={onClose}>Done</Button>}
     >
       <p>Scan this code with the Plaud Bridge app to link it to this server.</p>
@@ -53,6 +55,7 @@ export function ConnectPhoneDialog({ open, onClose, token, origin }: ConnectPhon
 /** Phone: one row with the button that opens the connect dialog. */
 export function ConnectPhoneSection() {
   const [open, setOpen] = useState(false);
+  const desktop = useIsDesktop();
   return (
     <SettingsSection title="Phone" card>
       <SettingsRow
@@ -60,9 +63,19 @@ export function ConnectPhoneSection() {
         headline="Connect a phone"
         supporting="Link the Plaud Bridge app on a phone to this server."
         trailing={
-          <Button variant="tonal" icon="qr_code" onClick={() => setOpen(true)}>
-            Connect a phone
-          </Button>
+          // On phone a labelled button would squeeze the row's text; the icon button carries the name.
+          desktop ? (
+            <Button variant="tonal" icon="qr_code" onClick={() => setOpen(true)}>
+              Connect a phone
+            </Button>
+          ) : (
+            <IconButton
+              variant="tonal"
+              icon="qr_code"
+              label="Connect a phone"
+              onClick={() => setOpen(true)}
+            />
+          )
         }
       />
       <ConnectPhoneDialog open={open} onClose={() => setOpen(false)} />

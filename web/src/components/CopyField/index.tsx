@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import { IconButton } from '@/components/IconButton';
 import { useSnackbar } from '@/components/Snackbar';
-import { copyText } from '@/features/shell/bridge';
+import { copyText } from '@/lib/bridge';
 import { cn } from '@/lib/cn';
 
 export interface CopyFieldProps {
@@ -11,15 +11,24 @@ export interface CopyFieldProps {
   secret?: boolean;
   /** Snackbar text after a successful copy. */
   copiedMessage?: string;
+  /** Monospace value (addresses, tokens, checksums). Default true. */
+  mono?: boolean;
   className?: string;
 }
 
 /**
- * A read-only value with a Copy button (server address, token, sign-in link). Secrets start
- * masked with a reveal toggle. Copy goes through the app bridge when embedded, which shows its
- * own toast, so the snackbar only fires for web copies.
+ * A read-only value with a Copy button (server address, token, sign-in link, checksum). Secrets
+ * start masked with a reveal toggle. Copy goes through the app bridge when embedded, which shows
+ * its own toast, so the snackbar only fires for web copies.
  */
-export function CopyField({ label, value, secret, copiedMessage = 'Copied', className }: CopyFieldProps) {
+export function CopyField({
+  label,
+  value,
+  secret,
+  copiedMessage = 'Copied',
+  mono = true,
+  className,
+}: CopyFieldProps) {
   const id = useId();
   const [shown, setShown] = useState(!secret);
   const snackbar = useSnackbar();
@@ -43,7 +52,10 @@ export function CopyField({ label, value, secret, copiedMessage = 'Copied', clas
           data-masked={shown ? undefined : true}
           value={shown ? value : '•'.repeat(Math.min(value.length, 24))}
           onFocus={(e) => e.currentTarget.select()}
-          className="h-12 min-w-0 flex-1 bg-transparent font-mono text-mono text-on-surface outline-none"
+          className={cn(
+            'h-12 min-w-0 flex-1 bg-transparent text-on-surface outline-none',
+            mono ? 'font-mono text-mono' : 'text-body-l',
+          )}
         />
         {secret && (
           <IconButton

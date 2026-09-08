@@ -1,6 +1,6 @@
 # Settings feature (`src/features/settings`)
 
-Owner: settings team. Entry: `SettingsPage` (route `#/settings`), which stacks `SETTINGS_SECTIONS` in
+Entry: `SettingsPage` (route `#/settings`, loaded on demand), which stacks `SETTINGS_SECTIONS` in
 order: Appearance, Vocabulary, Signed-in computers, Phone, Android app, This computer (sign out; keep
 it last, it is the only sign-out on phone). Embedded in the Android app there is no section app bar.
 
@@ -17,8 +17,6 @@ settings/
                             SettingsRow (flat ListItem with a 40 px icon avatar)
   AppearanceSection.tsx     theme: System / Light / Dark
   SignOutSection.tsx        "This computer" sign out
-  shared/                   CopyField (read-only value + copy, `secret` masks with dots),
-                            FilePicker (labelled file input as an outlined button), readFileText
   vocabulary/
     VocabularySection.tsx   the card: help text, filter, counts, List/Text toggle, footer with
                             status + Import… / Revert / Save
@@ -36,7 +34,7 @@ settings/
     connectPayload.ts       `{"v":1,"url":origin,"token":token}` and `origin/#token=…`, byte for byte
                             what the old dashboard produced
   apk/
-    AndroidAppSection.tsx   hosted version card (Download APK, Copy checksum, Remove) + Upload row
+    AndroidAppSection.tsx   hosted version card (checksum `CopyField`, Download APK, Remove) + Upload row
     ApkUploadDialog.tsx     file, version code, version name, notes; XHR progress; `validateApkForm`
   *.test.tsx                MSW-backed tests next to each folder
 ```
@@ -55,6 +53,9 @@ prompt guards unsaved edits.
 
 ## Conventions
 
-Errors go through `errorMessage(err, fallback)` into `useSnackbar()`; form validation is inline.
+Shared pieces come from the design system: `CopyField` (read-only value + copy, `secret` masks),
+`FilePicker` (labelled file input as an outlined button) and `readFileText` from `@/lib/bridge`;
+dialogs are `Dialog size="md"`. Errors go through `errorMessage(err, fallback)` into
+`useSnackbar()`; form validation is inline.
 404 on `/sessions` or `/vocabulary` means an older server: say so in user words, never a status code.
 Destructive buttons are `variant="danger"`, placed right, and confirmed with `ConfirmDialog danger`.

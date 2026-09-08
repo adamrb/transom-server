@@ -93,12 +93,15 @@ export function useVocabularyEditor(query: ReturnType<typeof useVocabulary>): Vo
   // A brand-new server text while un-pinned simply shows; while pinned it only moves the baseline.
   useEffect(() => {
     if (draft !== null && serverText !== null && draft === serverText) setDraft(null);
-  }, [draft, serverText]);
+  }, [draft, serverText, setDraft]);
 
   const text = draft ?? serverText ?? '';
   const dirty = draft !== null && serverText !== null && draft !== serverText;
 
-  const setText = useCallback((next: string) => setDraft(next === serverText ? null : next), [serverText]);
+  const setText = useCallback(
+    (next: string) => setDraft(next === serverText ? null : next),
+    [serverText, setDraft],
+  );
 
   const lines = useMemo(() => parseVocabularyLines(text), [text]);
   const sources = useMemo(() => {
@@ -157,7 +160,7 @@ export function useVocabularyEditor(query: ReturnType<typeof useVocabulary>): Vo
     [replaceLines],
   );
 
-  const revert = useCallback(() => setDraft(null), []);
+  const revert = useCallback(() => setDraft(null), [setDraft]);
   const adoptServer = revert;
 
   const entriesForSave = useCallback(

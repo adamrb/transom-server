@@ -1,12 +1,11 @@
-import { forwardRef, type ButtonHTMLAttributes } from 'react';
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 import { Icon, type IconName, type IconSize } from '@/components/Icon';
 
 export type IconButtonVariant = 'standard' | 'tonal' | 'filled';
 export type IconButtonSize = 'md' | 'lg' | 'xl';
 
-export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  icon: IconName;
+interface BaseProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /** Required: icon buttons have no visible text. Becomes aria-label and title. */
   label: string;
   variant?: IconButtonVariant;
@@ -20,6 +19,11 @@ export interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>
   noTitle?: boolean;
 }
 
+export type IconButtonProps =
+  | (BaseProps & { icon: IconName; children?: never })
+  /** A custom glyph (SkipIcon, a spinner): pass it as the child instead of `icon`. */
+  | (BaseProps & { icon?: undefined; children: ReactNode });
+
 const SIZE: Record<IconButtonSize, { box: string; icon: IconSize }> = {
   md: { box: 'size-10', icon: 20 },
   lg: { box: 'size-14', icon: 28 },
@@ -32,7 +36,7 @@ const VARIANT: Record<IconButtonVariant, string> = {
   filled: 'bg-primary text-on-primary state-layer',
 };
 
-/** 40 px round icon button with an M3 state layer. */
+/** 40 px round icon button with an M3 state layer. Takes an `icon` name or a custom glyph child. */
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
   {
     icon,
@@ -43,6 +47,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
     selected,
     noTitle,
     className,
+    children,
     type = 'button',
     ...rest
   },
@@ -65,7 +70,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       )}
       {...rest}
     >
-      <Icon name={icon} size={iconSize ?? SIZE[size].icon} />
+      {icon ? <Icon name={icon} size={iconSize ?? SIZE[size].icon} /> : children}
     </button>
   );
 });

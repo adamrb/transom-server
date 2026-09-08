@@ -74,7 +74,8 @@ export const TextField = forwardRef<HTMLInputElement | HTMLTextAreaElement, AnyT
             {...common}
             {...ta}
             className={cn(
-              'w-full resize-y rounded-md outline-none transition-shadow dur-short',
+              // resizable, but without the bright native corner grip (it glares in dark)
+              'w-full resize-y rounded-md outline-none transition-shadow dur-short [&::-webkit-resizer]:hidden',
               tonal
                 ? 'min-h-[168px] border-0 bg-surface-container-high px-3.5 py-3 focus:shadow-[inset_0_0_0_2px_var(--primary)]'
                 : cn(
@@ -122,7 +123,8 @@ export const TextField = forwardRef<HTMLInputElement | HTMLTextAreaElement, AnyT
             <label
               htmlFor={id}
               className={cn(
-                'pointer-events-none absolute -top-2 left-3 bg-(--field-bg) px-1 text-body-s',
+                // one line, never wider than the field: a long label must not wrap over the value
+                'pointer-events-none absolute -top-2 left-3 max-w-[calc(100%-24px)] truncate bg-(--field-bg) px-1 text-body-s',
                 error ? 'text-error' : 'text-on-surface-variant peer-focus:text-primary',
               )}
             >

@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, apiJson, apiRequest } from '../client';
 import { POLL, qk } from '../keys';
@@ -129,13 +130,39 @@ export const isDeliveryWorking = (d: Pick<Delivery, 'result_status' | 'status'>)
 
 export const routingWorking = (r: RecordingRouting | undefined) => !!r?.deliveries.some(isDeliveryWorking);
 
-/** Runs and deliveries for one recording. Polls every 15 s while a delivery is still working. */
-export function useRecordingRouting(id: string | null | undefined, enabled = true) {
+export interface RecordingRoutingOptions {
+  enabled?: boolean;
+  /**
+   * Keep looking every 15 s even while nothing is working: a run is expected soon (the automatic
+   * run starts a little after transcription finishes, and this hook cannot see the recording's
+   * status). Turn it off once the run has appeared.
+   */
+  catchUp?: boolean;
+  /** Replace the polling rule entirely (tests, unusual screens). */
+  refetchInterval?: number | false;
+}
+
+/**
+ * Runs and deliveries for one recording. Polls every 15 s while a delivery is still working, or
+ * while `catchUp` is on.
+ */
+export function useRecordingRouting(
+  id: string | null | undefined,
+  { enabled = true, catchUp = false, refetchInterval }: RecordingRoutingOptions = {},
+) {
+  const qc = useQueryClient();
+  // Catch-up starting (the recording just finished): look right away, then every 15 s.
+  useEffect(() => {
+    if (catchUp && id) void qc.invalidateQueries({ queryKey: qk.recordings.routing(id) });
+  }, [catchUp, id, qc]);
   return useQuery({
     queryKey: qk.recordings.routing(id ?? ''),
     queryFn: () => apiJson(`/recordings/${encodeURIComponent(id!)}/routing`, RecordingRoutingSchema),
     enabled: !!id && enabled,
-    refetchInterval: (query) => (routingWorking(query.state.data) ? POLL.routingWorking : false),
+    refetchInterval:
+      refetchInterval !== undefined
+        ? refetchInterval
+        : (query) => (routingWorking(query.state.data) ? POLL.routingWorking : catchUp ? POLL.idle : false),
   });
 }
 
@@ -178,8 +205,8 @@ export const routeInstructionsStore = {
 
 /**
  * Run automations on a recording (again). Sends an Idempotency-Key from `routeKeyStore` so a
- * re-sent request returns the run already made. On success the key is cleared and the
- * recording's routing plus the activity log refetch.
+ * re-sent request returns the run already made. On success the key and the instructions saved
+ * beside it are cleared and the recording's routing plus the activity log refetch.
  */
 export function useRunAutomations() {
   const qc = useQueryClient();
@@ -192,14 +219,19 @@ export function useRunAutomations() {
       }),
     onSuccess: (_run, { id }) => {
       routeKeyStore.clear(id);
+      routeInstructionsStore.clear(id);
       void qc.invalidateQueries({ queryKey: qk.recordings.routing(id) });
       void qc.invalidateQueries({ queryKey: qk.router.all });
     },
     onError: (err, { id }) => {
-      // A definitive 4xx means the server saw and refused it: a new attempt needs a new key.
-      // A 5xx, a proxy error or a network failure may have run the automations anyway, so the
-      // key stays and the retry replays that run instead of starting a second one.
-      if (err instanceof ApiError && err.status >= 400 && err.status < 500) routeKeyStore.clear(id);
+      // A definitive 4xx means the server saw and refused it: a new attempt needs a new key (and
+      // fresh instructions). A 5xx, a proxy error or a network failure may have run the
+      // automations anyway, so the key stays and the retry replays that run instead of starting
+      // a second one.
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        routeKeyStore.clear(id);
+        routeInstructionsStore.clear(id);
+      }
     },
   });
 }

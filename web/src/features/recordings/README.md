@@ -24,7 +24,8 @@ recordings/
                             (search hits <mark>ed), bookmark count, phone ⋮
     FilterChips.tsx         All ✓, Waiting, Transcribing, Failed, No speech, Not transcribed
     useListState.ts         search + filter in a module store (survives the phone route switch)
-  detail/
+  detail/                   (loaded on demand: `RecordingsPage` lazy-imports RecordingDetail and shows
+                            DetailSkeleton until the chunk arrives)
     RecordingDetail.tsx     small TopAppBar (Back, Jump to, More; title once scrolled), the cards,
                             the docked Player, JumpToMenu, MoreMenu, speaker RenameDialog
     DetailHeader.tsx        title (click → rename), when · duration · speakers · highlights (+ status
@@ -35,15 +36,20 @@ recordings/
     SummaryCard.tsx         Markdown of cleanSummary(), copy button
     HighlightsCard.tsx      ★ time + text rows; click reveals the paragraph and plays from the press
     TranscriptCard.tsx      paragraphs, find (Enter / Shift+Enter, "2 of 5"), now-playing marker
-    TranscriptParagraph.tsx SpeakerPill on speaker change, hover time+play pill (chip on phone),
-                            amber bar + star on bookmarked paragraphs, flash after a jump
+    TranscriptParagraph.tsx SpeakerPill on speaker change, time+play chip in a reserved right column
+                            on desktop (hover to show; always shown where nothing can hover), floated
+                            chip on phone, amber bar + star on bookmarked paragraphs, flash after a jump
     AutomationsCard.tsx     last run, decision, DeliveryRow (outcome alone; chips only Working /
-                            Failed; Retry), RunAutomationsRow (instructions, Run / Run again, Preview)
+                            Failed; Retry), RunAutomationsRow (instructions, Run / Run again, Preview).
+                            Polling is the hook's: `useRecordingRouting(id, { catchUp })` looks every
+                            15 s while a finished recording has no run yet or for 5 min after it
+                            turned done (the automatic run starts a little after transcription)
   player/
     playerStore.ts          the audio element + state (signed link, blob fallback on 404, link refresh
                             on error / expiry, speed in pb_speed, skips, markers), usePlayer hooks
-    Player.tsx              docked card / sheet body: slider (buffered + markers), times, speed, controls
-    MiniPlayer.tsx, PlayerSheet.tsx, JumpToMenu.tsx, PlayerSlider.tsx, SkipIcon.tsx
+    Player.tsx              docked card / sheet body: `Slider` (buffered + markers), times, speed,
+                            `IconButton` + shared `SkipIcon` for 15 s back / 30 s forward
+    MiniPlayer.tsx, PlayerSheet.tsx, JumpToMenu.tsx
   actions/
     useRecordingActions.tsx copy (same text as before), export (shareMarkdown), download, rename,
                             transcribe again (ConfirmDialog), delete (danger ConfirmDialog)
@@ -63,7 +69,8 @@ recordings/
   (`speaker_names` maps original → current name), so a rename keeps the colour.
 - Run automations: `useRunAutomations` sends the `Idempotency-Key` from sessionStorage; the
   instructions typed are saved beside it (`routeInstructionsStore`) and frozen while a key is
-  pending, so a retry after a lost reply replays the same request.
+  pending, so a retry after a lost reply replays the same request. The hook clears both once the
+  run settles (success or a definitive refusal).
 - Status words only while in flight / failed / silent / untranscribed. No timestamps in the
   transcript body; the gutter pill and the bookmarks are the jump points.
 - Newer-endpoint 404s degrade: no signed links → blob playback; no preview → the button goes;

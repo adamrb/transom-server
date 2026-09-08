@@ -1,19 +1,31 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { TopAppBar } from '@/components';
 import type { Recording } from '@/api';
 import { useEmbedded } from '@/features/shell/EmbeddedProvider';
+import { LoadBoundary } from '@/features/shell/RouteFallback';
 import { useIsDesktop } from '@/lib/breakpoints';
 import { MoreMenu } from './actions/MoreMenu';
 import { useRecordingActions } from './actions/useRecordingActions';
+import { DetailSkeleton } from './detail/DetailSkeleton';
 import { GettingStarted } from './detail/GettingStarted';
-import { RecordingDetail } from './detail/RecordingDetail';
 import { ListPane } from './list/ListPane';
 import { MiniPlayer } from './player/MiniPlayer';
 import { PlayerSheet } from './player/PlayerSheet';
 import { usePlayerErrors, usePlayerSelector, usePlayerStore } from './player/usePlayer';
 
 const recPath = (id: string) => `/rec/${encodeURIComponent(id)}`;
+
+// The detail (cards, transcript reader, player, automations) is the bulk of this feature and
+// nothing needs it until a recording is opened, so it loads on first open; the list ships first.
+const RecordingDetail = lazy(() =>
+  import('./detail/RecordingDetail').then((m) => ({ default: m.RecordingDetail })),
+);
+const detailFallback = (
+  <div className="min-h-0 overflow-hidden px-6 max-md:px-4">
+    <DetailSkeleton />
+  </div>
+);
 
 /** Space toggles playback unless the focus is somewhere that uses the key itself. */
 function isTypingTarget(el: EventTarget | null): boolean {
@@ -128,14 +140,18 @@ export function RecordingsPage() {
         <div className="grid h-full min-h-0 grid-cols-[340px_minmax(0,1fr)] lg:grid-cols-[400px_minmax(0,1fr)]">
           {list}
           {id ? (
-            <RecordingDetail
-              key={id}
-              id={id}
-              layout="pane"
-              embedded={embedded}
-              onBack={embedded ? goBack : undefined}
-              onAction={actions.act}
-            />
+            <LoadBoundary what="this recording" resetKey={id}>
+              <Suspense fallback={detailFallback}>
+                <RecordingDetail
+                  key={id}
+                  id={id}
+                  layout="pane"
+                  embedded={embedded}
+                  onBack={embedded ? goBack : undefined}
+                  onAction={actions.act}
+                />
+              </Suspense>
+            </LoadBoundary>
           ) : (
             <div className="flex min-h-0 flex-col">
               {!embedded && <TopAppBar variant="small" as="div" title="" />}
@@ -144,14 +160,18 @@ export function RecordingsPage() {
           )}
         </div>
       ) : id ? (
-        <RecordingDetail
-          key={id}
-          id={id}
-          layout="screen"
-          embedded={embedded}
-          onBack={goBack}
-          onAction={actions.act}
-        />
+        <LoadBoundary what="this recording" resetKey={id}>
+          <Suspense fallback={detailFallback}>
+            <RecordingDetail
+              key={id}
+              id={id}
+              layout="screen"
+              embedded={embedded}
+              onBack={goBack}
+              onAction={actions.act}
+            />
+          </Suspense>
+        </LoadBoundary>
       ) : (
         <>
           {list}

@@ -2,12 +2,13 @@ import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 import { Icon, type IconName } from '@/components/Icon';
 
-export type ButtonVariant = 'filled' | 'tonal' | 'outlined' | 'text' | 'danger';
+export type ButtonVariant = 'filled' | 'tonal' | 'outlined' | 'text' | 'danger' | 'danger-filled';
 export type ButtonSize = 'md' | 'sm';
 
 export interface ButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children'> {
   /** filled: the one thing to do. tonal: secondary. outlined: Retry / Download. text: Edit / Preview.
-   *  danger: red text; place it to the right, apart from the safe actions. */
+   *  danger: red text; place it to the right, apart from the safe actions. danger-filled: the
+   *  confirming button of a destructive dialog (error / on-error in both themes). */
   variant?: ButtonVariant;
   /** md = 40 px, sm = 32 px */
   size?: ButtonSize;
@@ -26,6 +27,7 @@ const VARIANT: Record<ButtonVariant, string> = {
   outlined: 'border border-outline text-on-surface',
   text: 'text-on-surface',
   danger: 'text-error',
+  'danger-filled': 'bg-error text-on-error',
 };
 
 const PAD: Record<ButtonSize, Record<'default' | 'text', string>> = {

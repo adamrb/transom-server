@@ -10,8 +10,10 @@ import {
   Card,
   Chip,
   ConfirmDialog,
+  CopyField,
   Dialog,
   EmptyState,
+  FilePicker,
   Icon,
   ICON_NAMES,
   IconButton,
@@ -23,11 +25,14 @@ import {
   MenuSeparator,
   Popover,
   ProgressRing,
+  RadioGroup,
   SearchBar,
   SegmentedButton,
+  Select,
   Skeleton,
   SkeletonListItem,
   SkeletonText,
+  SkipIcon,
   Slider,
   StatusChip,
   Switch,
@@ -58,7 +63,11 @@ export default function ComponentGallery() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [formDialogOpen, setFormDialogOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [kind, setKind] = useState<'webhook' | 'markdown' | 'none'>('webhook');
+  const [picked, setPicked] = useState<'a' | 'b' | 'c' | null>('a');
+  const [file, setFile] = useState<File | null>(null);
   const menuAnchor = useRef<HTMLButtonElement>(null);
   const sheetAnchor = useRef<HTMLButtonElement>(null);
 
@@ -396,6 +405,84 @@ export default function ComponentGallery() {
             </div>
           </Section>
 
+          <Section title="Radios, selects, copy fields, file pickers">
+            <div className="w-full max-w-[400px]">
+              <RadioGroup
+                label="What happens"
+                value={kind}
+                onChange={setKind}
+                options={[
+                  {
+                    key: 'webhook',
+                    label: 'Send it to the agent',
+                    description: 'Hands the transcript to your agent at a web address.',
+                    icon: 'send',
+                  },
+                  {
+                    key: 'markdown',
+                    label: 'Save a note in a folder',
+                    description: 'Writes a markdown note into your vault.',
+                    icon: 'description',
+                  },
+                  { key: 'none', label: 'Just record the decision', icon: 'block', disabled: true },
+                ]}
+              />
+            </div>
+            <Select
+              label="Recording"
+              value={picked}
+              onChange={setPicked}
+              options={[
+                {
+                  value: 'a',
+                  label: 'The Political Fight Over AI Data Centers',
+                  description: 'Today 2:48 AM',
+                },
+                { value: 'b', label: 'Standup', description: 'Yesterday 9:02 AM' },
+                { value: 'c', label: 'Silent memo', disabled: true },
+              ]}
+              className="w-[320px]"
+            />
+            <Select
+              label="Recording"
+              hideLabel
+              size="sm"
+              value={null}
+              onChange={() => {}}
+              options={[]}
+              placeholder="No finished recordings yet"
+              className="w-[280px]"
+            />
+            <CopyField label="Server address" value="https://plaud.example.net" className="w-[320px]" />
+            <CopyField label="Access token" value="abcdefghijklmnopqrstuvwxyz" secret className="w-[320px]" />
+            <FilePicker
+              label="Text file"
+              accept=".txt,.md"
+              file={file}
+              onChange={setFile}
+              helper="One term per line."
+              className="w-[320px]"
+            />
+            <div className="flex items-center gap-3 text-on-surface">
+              <SkipIcon seconds={15} direction="back" />
+              <SkipIcon seconds={30} direction="forward" />
+              <SkipIcon seconds={10} direction="back" size={20} />
+              <IconButton label="Back 15 seconds" className="text-on-surface">
+                <SkipIcon seconds={15} direction="back" />
+              </IconButton>
+            </div>
+            <div className="w-full max-w-[400px]">
+              <Slider
+                value={slider}
+                max={100}
+                buffered={Math.min(100, slider + 30)}
+                markers={[15, 62]}
+                onChange={setSlider}
+                label="Position (buffered)"
+              />
+            </div>
+          </Section>
+
           <Section title="Progress, skeletons, banners">
             <div className="w-full max-w-[400px]">
               <LinearProgress label="Loading" />
@@ -442,7 +529,10 @@ export default function ComponentGallery() {
               Open sheet
             </Button>
             <Button variant="outlined" onClick={() => setDialogOpen(true)}>
-              Dialog
+              Dialog (sm)
+            </Button>
+            <Button variant="outlined" onClick={() => setFormDialogOpen(true)}>
+              Form dialog (md, full screen on phone)
             </Button>
             <Button variant="outlined" onClick={() => setConfirmOpen(true)}>
               Destructive confirm
@@ -511,6 +601,50 @@ export default function ComponentGallery() {
                 defaultValue="The Political Fight Over AI Data Centers"
                 className="mt-2"
               />
+            </Dialog>
+            <Dialog
+              open={formDialogOpen}
+              onClose={() => setFormDialogOpen(false)}
+              title="New rule"
+              size="md"
+              fullScreen
+              actions={
+                <>
+                  <Button variant="text" onClick={() => setFormDialogOpen(false)} className="max-md:hidden">
+                    Cancel
+                  </Button>
+                  <Button onClick={() => setFormDialogOpen(false)}>Save</Button>
+                </>
+              }
+            >
+              <div className="flex flex-col gap-5 pt-1">
+                <TextField label="Name" placeholder="Work meetings" />
+                <TextField multiline label="When should this run?" rows={4} />
+                <RadioGroup
+                  label="What happens"
+                  value={kind}
+                  onChange={setKind}
+                  options={[
+                    { key: 'webhook', label: 'Send it to the agent', icon: 'send' },
+                    { key: 'markdown', label: 'Save a note in a folder', icon: 'description' },
+                    { key: 'none', label: 'Just record the decision', icon: 'block' },
+                  ]}
+                />
+                <Select
+                  label="Recording"
+                  value={picked}
+                  onChange={setPicked}
+                  options={[
+                    { value: 'a', label: 'The Political Fight Over AI Data Centers' },
+                    { value: 'b', label: 'Standup' },
+                    { value: 'c', label: 'Silent memo' },
+                  ]}
+                />
+                <p>Long content scrolls inside the dialog while the title and the buttons stay put.</p>
+                {Array.from({ length: 8 }, (_, i) => (
+                  <p key={i}>Paragraph {i + 1} of filler so the body is taller than the viewport.</p>
+                ))}
+              </div>
             </Dialog>
             <ConfirmDialog
               open={confirmOpen}

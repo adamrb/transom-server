@@ -15,14 +15,17 @@ export interface SliderProps extends Omit<
   onCommit?: (value: number) => void;
   /** Positions (same units as value) drawn as 6 px amber dots: the bookmarks. */
   markers?: number[];
+  /** End of the buffered range (same units as value): a faint bar from the handle to it. */
+  buffered?: number;
   /** Human text for assistive tech, e.g. the clock time. */
   formatValue?: (value: number) => string;
   label: string;
 }
 
 /**
- * M3 slider: 4 px track, primary fill, 4 × 20 handle, optional markers. A real range input sits
- * on top (transparent) so keyboard, touch and screen readers all work natively.
+ * M3 slider: 4 px track, primary fill, 4 × 20 handle, optional bookmark markers and buffered
+ * range. A real range input sits on top (transparent) so keyboard, touch and screen readers all
+ * work natively.
  */
 export const Slider = forwardRef<HTMLInputElement, SliderProps>(function Slider(
   {
@@ -33,6 +36,7 @@ export const Slider = forwardRef<HTMLInputElement, SliderProps>(function Slider(
     onChange,
     onCommit,
     markers = [],
+    buffered,
     formatValue,
     label,
     className,
@@ -43,14 +47,33 @@ export const Slider = forwardRef<HTMLInputElement, SliderProps>(function Slider(
 ) {
   const [active, setActive] = useState(false);
   const span = max - min || 1;
-  const pct = (v: number) => `${Math.min(100, Math.max(0, ((v - min) / span) * 100))}%`;
+  const pctNum = (v: number) => Math.min(100, Math.max(0, ((v - min) / span) * 100));
+  const pct = (v: number) => `${pctNum(v)}%`;
+  const valuePct = pctNum(value);
+  const bufferedPct = buffered === undefined ? 0 : pctNum(buffered);
   const commit = () => {
     setActive(false);
     onCommit?.(value);
   };
   return (
-    <div className={cn('relative flex h-7 items-center', disabled && 'opacity-[.38]', className)}>
+    <div
+      className={cn(
+        'relative flex h-7 items-center',
+        // Keyboard focus: a ring around the handle (M3), not the native rectangle around the track.
+        '[&:has(input:focus-visible)_[data-handle]]:outline-2 [&:has(input:focus-visible)_[data-handle]]:outline-offset-4 [&:has(input:focus-visible)_[data-handle]]:outline-primary',
+        disabled && 'opacity-[.38]',
+        className,
+      )}
+    >
       <div className="relative h-1 w-full rounded-full bg-surface-container-highest dark:bg-outline">
+        {bufferedPct > valuePct && (
+          <div
+            aria-hidden
+            data-buffered
+            className="absolute inset-y-0 rounded-full bg-on-surface-variant/25"
+            style={{ left: pct(value), width: `${bufferedPct - valuePct}%` }}
+          />
+        )}
         <div className="absolute inset-y-0 left-0 rounded-full bg-primary" style={{ width: pct(value) }} />
         {markers.map((m, i) => (
           <span
@@ -94,7 +117,7 @@ export const Slider = forwardRef<HTMLInputElement, SliderProps>(function Slider(
             commit();
         }}
         onBlur={() => active && commit()}
-        className="absolute inset-0 m-0 h-full w-full cursor-pointer appearance-none bg-transparent opacity-0 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:size-5 [&::-moz-range-thumb]:size-5 [&::-moz-range-thumb]:opacity-0"
+        className="absolute inset-0 m-0 h-full w-full cursor-pointer appearance-none bg-transparent opacity-0 outline-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:size-5 [&::-moz-range-thumb]:size-5 [&::-moz-range-thumb]:opacity-0"
         {...rest}
       />
     </div>

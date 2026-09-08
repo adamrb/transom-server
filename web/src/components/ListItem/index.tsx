@@ -18,6 +18,8 @@ export interface ListItemProps extends Omit<HTMLAttributes<HTMLDivElement>, 'tit
   interactive?: boolean;
   /** Extra content below the headline/supporting lines (rule descriptions). */
   children?: ReactNode;
+  /** Let a plain-text supporting line wrap to two lines instead of ellipsising (settings rows). */
+  wrap?: boolean;
 }
 
 /**
@@ -33,6 +35,7 @@ export const ListItem = forwardRef<HTMLDivElement, ListItemProps>(function ListI
     shape = 'card',
     selected,
     interactive,
+    wrap,
     className,
     children,
     onClick,
@@ -76,8 +79,18 @@ export const ListItem = forwardRef<HTMLDivElement, ListItemProps>(function ListI
       <div className="min-w-0 flex-1">
         <div className="truncate text-body-l text-on-surface">{headline}</div>
         {supporting && (
-          <div className="flex min-h-6 items-center gap-2 truncate text-body-m text-on-surface-variant">
-            {supporting}
+          <div
+            className={cn(
+              'flex min-h-6 min-w-0 items-center gap-2 text-body-m text-on-surface-variant',
+              !wrap && 'truncate',
+            )}
+          >
+            {/* text-overflow needs a text box, not a flex container: plain text gets its own span */}
+            {typeof supporting === 'string' ? (
+              <span className={wrap ? 'line-clamp-2' : 'truncate'}>{supporting}</span>
+            ) : (
+              supporting
+            )}
           </div>
         )}
         {children}

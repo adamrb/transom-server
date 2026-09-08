@@ -95,7 +95,6 @@ export function RenameDialog({
             setDraft(e.target.value);
             if (error) setError('');
           }}
-          className="[--field-bg:var(--sc-high)]"
         />
       </form>
     </Dialog>

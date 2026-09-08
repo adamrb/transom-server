@@ -1,5 +1,6 @@
 import { useRef, useState, type FormEvent } from 'react';
 import { Button } from '@/components/Button';
+import { Dialog } from '@/components/Dialog';
 import { Switch } from '@/components/Switch';
 import { TextField } from '@/components/TextField';
 import { useSnackbar } from '@/components/Snackbar';
@@ -13,7 +14,6 @@ import {
   type RouteBody,
 } from '@/api';
 import { ActionKindField } from './ActionKindField';
-import { EditorDialog } from './EditorDialog';
 import { MarkdownFields } from './MarkdownFields';
 import { TryItPanel } from './TryItPanel';
 import { WebhookFields } from './WebhookFields';
@@ -148,10 +148,12 @@ export function RuleEditor({ route, open, onClose }: RuleEditorProps) {
   const formId = 'rule-editor-form';
 
   return (
-    <EditorDialog
+    <Dialog
       open={open}
       onClose={onClose}
       title={route ? 'Edit rule' : 'New rule'}
+      size="md"
+      fullScreen
       initialFocusRef={nameRef}
       actions={
         <>
@@ -164,7 +166,7 @@ export function RuleEditor({ route, open, onClose }: RuleEditorProps) {
         </>
       }
     >
-      <form id={formId} onSubmit={submit} noValidate className="flex flex-col gap-5 pt-2">
+      <form id={formId} onSubmit={submit} noValidate className="flex flex-col gap-5 pt-1">
         <TextField
           ref={nameRef}
           label="Name"
@@ -230,6 +232,6 @@ export function RuleEditor({ route, open, onClose }: RuleEditorProps) {
           </p>
         )}
       </form>
-    </EditorDialog>
+    </Dialog>
   );
 }

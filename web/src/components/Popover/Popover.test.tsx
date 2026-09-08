@@ -48,6 +48,35 @@ describe('Popover', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
+  it('portals into the open <dialog> around its anchor, or into a given container', async () => {
+    function InDialog({ container }: { container?: HTMLElement }) {
+      const [open, setOpen] = useState(true);
+      const anchor = useRef<HTMLButtonElement>(null);
+      return (
+        <dialog open data-testid="host">
+          <button ref={anchor}>More</button>
+          <Popover
+            open={open}
+            onClose={() => setOpen(false)}
+            anchorRef={anchor}
+            as="menu"
+            container={container}
+          >
+            <MenuItem>Copy</MenuItem>
+          </Popover>
+        </dialog>
+      );
+    }
+    const { unmount } = render(<InDialog />);
+    expect(screen.getByRole('menu').closest('dialog')).toBe(screen.getByTestId('host'));
+    unmount();
+    const elsewhere = document.createElement('div');
+    document.body.appendChild(elsewhere);
+    render(<InDialog container={elsewhere} />);
+    expect(screen.getByRole('menu').parentElement).toBe(elsewhere);
+    elsewhere.remove();
+  });
+
   it('renders as a bottom sheet dialog with a title and closes on the scrim', async () => {
     render(<Harness as="sheet" />);
     await userEvent.click(screen.getByRole('button', { name: 'More' }));

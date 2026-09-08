@@ -1,10 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import { Card, Icon, SkeletonText, useSnackbar } from '@/components';
 import {
   ApiError,
   errorMessage,
-  qk,
   useRecordingRouting,
   useRetryDelivery,
   type Recording,
@@ -51,50 +49,37 @@ function Decision({ run }: { run: RouterRun }) {
   );
 }
 
+/** After a recording turns done, keep looking for the automatic run this long (5 minutes). */
+const CATCH_UP_MS = 5 * 60_000;
+
 /**
  * The Automations card of a recording: last run, its decision, the deliveries with their outcomes
  * (Retry when failed or unreported), and the run / preview row. Hidden when the server has no
- * automations (404); polls while a delivery is still working.
+ * automations (404). Polls while a delivery is still working, while a finished recording shows
+ * no run yet, and for a while after the recording turns done (the automatic run starts a little
+ * after transcription finishes, also after transcribing again).
  */
-/** While a finished recording has no run yet, look again this often, this many times (5 minutes). */
-const CATCH_UP_EVERY_MS = 15_000;
-const CATCH_UP_TIMES = 20;
-
 export function AutomationsCard({ rec }: { rec: Recording }) {
   const snackbar = useSnackbar();
-  const qc = useQueryClient();
-  const routing = useRecordingRouting(rec.id);
   const retry = useRetryDelivery();
   const canRun = rec.status === 'done' && !rec.no_speech;
-  const invalidate = () => void qc.invalidateQueries({ queryKey: qk.recordings.routing(rec.id) });
 
-  // The automatic run starts a little after transcription finishes (also after transcribing
-  // again), while `useRecordingRouting` stops polling once nothing is working. So: refetch the
-  // moment the recording turns done and start a bounded catch-up…
   const prevStatus = useRef(rec.status);
-  const [catchUp, setCatchUp] = useState(0);
+  const [catchUpUntil, setCatchUpUntil] = useState(0);
   useEffect(() => {
     const became = prevStatus.current !== 'done' && rec.status === 'done';
     prevStatus.current = rec.status;
-    if (became) {
-      invalidate();
-      setCatchUp((n) => n + 1);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rec.status, rec.id]);
-  // …and keep looking for a bounded while after each such transition, or while a finished
-  // recording still shows no run at all (opened after it finished).
-  const noRuns = !!routing.data && routing.data.runs.length === 0;
+    if (became) setCatchUpUntil(Date.now() + CATCH_UP_MS);
+  }, [rec.status]);
+
+  const [noRuns, setNoRuns] = useState(false);
+  const routing = useRecordingRouting(rec.id, {
+    catchUp: canRun && (noRuns || Date.now() < catchUpUntil),
+  });
+  const runs = routing.data?.runs.length;
   useEffect(() => {
-    if (!canRun || !(noRuns || catchUp > 0)) return;
-    let left = CATCH_UP_TIMES;
-    const t = setInterval(() => {
-      if (--left < 0) return clearInterval(t);
-      invalidate();
-    }, CATCH_UP_EVERY_MS);
-    return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canRun, noRuns, catchUp, rec.id]);
+    if (runs !== undefined) setNoRuns(runs === 0);
+  }, [runs]);
 
   if (routing.error instanceof ApiError && routing.error.notFound) return null;
 

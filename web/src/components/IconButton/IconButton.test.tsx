@@ -23,4 +23,15 @@ describe('IconButton', () => {
     expect(rail).not.toHaveAttribute('title');
     expect(rail.querySelector('svg')).toHaveAttribute('width', '22');
   });
+
+  it('takes a custom glyph as its child', () => {
+    render(
+      <IconButton label="Back 15 seconds">
+        <span data-testid="glyph">15</span>
+      </IconButton>,
+    );
+    const btn = screen.getByRole('button', { name: 'Back 15 seconds' });
+    expect(btn).toContainElement(screen.getByTestId('glyph'));
+    expect(btn.querySelector('svg')).toBeNull();
+  });
 });

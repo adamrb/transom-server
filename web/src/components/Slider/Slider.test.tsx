@@ -20,6 +20,18 @@ describe('Slider', () => {
     expect((document.querySelector('[data-handle]') as HTMLElement).style.left).toBe('25%');
   });
 
+  it('draws the buffered range from the handle to the buffered end', () => {
+    const { rerender } = render(
+      <Slider value={20} max={100} buffered={60} onChange={() => {}} label="Position" />,
+    );
+    const bar = document.querySelector('[data-buffered]') as HTMLElement;
+    expect(bar.style.left).toBe('20%');
+    expect(bar.style.width).toBe('40%');
+    // nothing behind the playhead
+    rerender(<Slider value={70} max={100} buffered={60} onChange={() => {}} label="Position" />);
+    expect(document.querySelector('[data-buffered]')).toBeNull();
+  });
+
   it('previews on change and commits on release', () => {
     const onChange = vi.fn();
     const onCommit = vi.fn();

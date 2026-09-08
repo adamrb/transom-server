@@ -6,8 +6,8 @@ import { useSnackbar } from '@/components/Snackbar';
 import { ApiError, errorMessage } from '@/api/client';
 import { parseVocabularyLines, useImportVocabulary, VOCAB_LIMITS } from '@/api/hooks/vocabulary';
 import { plural } from '@/lib/format';
-import { FilePicker } from '../shared/FilePicker';
-import { readFileText } from '../shared/readFileText';
+import { FilePicker } from '@/components/FilePicker';
+import { readFileText } from '@/lib/bridge';
 
 export interface ImportDialogProps {
   open: boolean;
@@ -91,7 +91,7 @@ export function ImportDialog({ open, onClose }: ImportDialogProps) {
       open={open}
       onClose={() => !busy && onClose()}
       title="Import vocabulary"
-      className="w-[520px]"
+      size="md"
       initialFocusRef={textRef}
       actions={
         <>

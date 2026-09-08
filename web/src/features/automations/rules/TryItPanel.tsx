@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Button } from '@/components/Button';
-import { Icon } from '@/components/Icon';
+import { Select } from '@/components/Select';
 import {
   ApiError,
   errorMessage,
@@ -49,6 +49,15 @@ export function TryItPanel({ className }: TryItPanelProps) {
     [recordings.data],
   );
   const picked = candidates.find((r) => r.id === pickedId) ?? candidates[0] ?? null;
+  const options = useMemo(
+    () =>
+      candidates.map((r) => ({
+        value: r.id,
+        label: recordingTitle(r),
+        description: fmtWhen(recordedAt(r)),
+      })),
+    [candidates],
+  );
 
   if (unsupported) return null;
 
@@ -68,7 +77,10 @@ export function TryItPanel({ className }: TryItPanelProps) {
   const matches = result ? previewMatches(result) : [];
 
   return (
-    <section className={cn('rounded-lg bg-surface-container p-4', className)} aria-labelledby="try-it-title">
+    <section
+      className={cn('rounded-lg bg-surface-container p-4 [--field-bg:var(--surface-container)]', className)}
+      aria-labelledby="try-it-title"
+    >
       <h3 id="try-it-title" className="m-0 text-title-s text-on-surface">
         Try it on a recording
       </h3>
@@ -77,40 +89,20 @@ export function TryItPanel({ className }: TryItPanelProps) {
         made here.
       </p>
       <div className="flex flex-wrap items-center gap-2">
-        {/* A native select: it lives in the dialog's top layer (a portalled menu would sit
-            behind the modal and be inert) and gives the phone its own picker. */}
-        <span className="relative min-w-0 flex-1">
-          <select
-            aria-label="Recording"
-            value={picked?.id ?? ''}
-            disabled={!candidates.length}
-            onChange={(e) => {
-              setPickedId(e.target.value);
-              preview.reset();
-            }}
-            className={cn(
-              'h-8 w-full appearance-none truncate rounded-[10px] border border-outline bg-transparent pr-8 pl-3 text-[13px] leading-5 font-medium text-on-surface',
-              'hover:bg-state-hover focus-ring disabled:opacity-[.38]',
-            )}
-          >
-            {candidates.length === 0 && (
-              <option value="">
-                {recordings.isPending ? 'Loading recordings…' : 'No finished recordings yet'}
-              </option>
-            )}
-            {candidates.map((r) => (
-              <option key={r.id} value={r.id}>
-                {recordingTitle(r)} · {fmtWhen(recordedAt(r))}
-              </option>
-            ))}
-          </select>
-          <Icon
-            name="keyboard_arrow_down"
-            size={16}
-            className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-on-surface-variant"
-          />
-        </span>
-        <Button variant="tonal" size="sm" onClick={run} loading={preview.isPending} disabled={!picked}>
+        <Select
+          label="Recording"
+          hideLabel
+          size="sm"
+          value={picked?.id ?? null}
+          onChange={(id) => {
+            setPickedId(id);
+            preview.reset();
+          }}
+          options={options}
+          placeholder={recordings.isPending ? 'Loading recordings…' : 'No finished recordings yet'}
+          className="min-w-0 flex-1"
+        />
+        <Button variant="tonal" onClick={run} loading={preview.isPending} disabled={!picked}>
           Try
         </Button>
       </div>
