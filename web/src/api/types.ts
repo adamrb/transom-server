@@ -85,11 +85,14 @@ export type Recording = z.infer<typeof RecordingSchema>;
 export const RecordingListSchema = z.looseObject({ recordings: z.array(RecordingSchema) });
 export type RecordingList = z.infer<typeof RecordingListSchema>;
 
+/** Server-side list filters: a status, or the virtual `no_speech` (finished, but silent). */
+export type RecordingFilter = RecordingStatus | 'no_speech';
+
 export interface RecordingListParams {
   limit?: number;
   offset?: number;
-  /** pending | transcribing | done | failed (server filter) */
-  status?: RecordingStatus | '';
+  /** pending | transcribing | done | failed | stored | no_speech (server filter) */
+  status?: RecordingFilter | '';
   q?: string;
 }
 
@@ -225,6 +228,8 @@ export type Delivery = z.infer<typeof DeliverySchema>;
 
 export const DecisionSchema = z.looseObject({
   routes: z.array(z.looseObject({ name: str, reason: nstr })).default([]),
+  /** why nothing matched, when the assistant said */
+  reason: nstr,
 });
 export type Decision = z.infer<typeof DecisionSchema>;
 
