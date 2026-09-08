@@ -89,6 +89,16 @@ class Settings:
     stt_compute: str = field(default_factory=lambda: _env("PB_STT_COMPUTE", "auto"))
     stt_vad: bool = field(default_factory=lambda: _env_bool("PB_STT_VAD", True))
     stt_beam_size: int = field(default_factory=lambda: int(_env("PB_STT_BEAM_SIZE", "5")))
+    # Whisper's "condition on previous text": auto (None) keeps it on except when a
+    # hotwords (custom vocabulary) prompt is present, where it drops most speech in
+    # long recordings and loops on filler phrases. See LocalWhisperEngine.
+    stt_condition_on_previous: bool | None = field(
+        default_factory=lambda: (
+            None
+            if _env("PB_STT_CONDITION_ON_PREVIOUS", "auto").strip().lower() in ("", "auto")
+            else _env_bool("PB_STT_CONDITION_ON_PREVIOUS", True)
+        )
+    )
     # Plaud hardware records up to ~5 h per file; reject anything longer.
     stt_max_duration_s: int = field(default_factory=lambda: int(_env("PB_STT_MAX_DURATION_S", "18000")))
     # Speaker diarization (multi-speaker labeling); needs requirements-diarization.txt

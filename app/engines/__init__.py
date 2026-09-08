@@ -25,6 +25,7 @@ def build_engine(settings) -> "TranscriptionEngine | None":
             min_speakers=settings.stt_min_speakers,
             max_speakers=settings.stt_max_speakers,
             beam_size=settings.stt_beam_size,
+            condition_on_previous_text=settings.stt_condition_on_previous,
         )
     if settings.stt_engine == "openai":
         if not settings.transcribe_base_url:

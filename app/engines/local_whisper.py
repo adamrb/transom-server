@@ -42,6 +42,7 @@ class LocalWhisperEngine:
         max_speakers: int | None = None,
         beam_size: int = 5,
         cpu_threads: int = 0,
+        condition_on_previous_text: bool | None = None,
     ):
         self.model_name = model
         self.device = device
@@ -57,6 +58,7 @@ class LocalWhisperEngine:
         self.max_speakers = max_speakers
         self.beam_size = beam_size
         self.cpu_threads = cpu_threads
+        self.condition_on_previous_text = condition_on_previous_text
         self._model = None
         self._diar_proc = None
         self._lock = asyncio.Lock()
@@ -249,6 +251,18 @@ class LocalWhisperEngine:
                 # Custom vocabulary (names, products) biases decoding toward
                 # these spellings; None leaves the model unprompted.
                 hotwords=hotwords or None,
+                # Auto (None): keep Whisper's default context carry-over unless
+                # a hotwords prompt is present. With one, feeding the previous
+                # window's text back in makes Whisper drop most of the speech
+                # and fall into repetition loops ("by the way, by the way…").
+                # Measured on a 2 h 20 min podcast: 2.4k chars kept of 11.6k
+                # per 10 min with it on, all 11.6k with it off, same hotwords;
+                # without hotwords both settings transcribed everything.
+                condition_on_previous_text=(
+                    self.condition_on_previous_text
+                    if self.condition_on_previous_text is not None
+                    else not hotwords
+                ),
             )
             # Backstop for streams whose header lied or lacked a duration.
             if info.duration and info.duration > self.max_duration_s:
