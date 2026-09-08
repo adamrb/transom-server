@@ -3,81 +3,83 @@
   (values/colors.xml, values-night/colors.xml). Primary is the app's monochrome primary,
   not a brand hue: phone and web share one scheme.
 
-  Every colour is written once with light-dark(); the active side is chosen by
-  `color-scheme`, which follows the html[data-theme] attribute set by the pre-paint script
-  in index.html and by ThemeProvider (system | light | dark).
+  Light values live on :root; the dark block below overrides them when html[data-theme='dark']
+  is set (by the pre-paint script in index.html and ThemeProvider) or when the system prefers
+  dark and no explicit light theme is chosen. Written as two plain blocks rather than
+  light-dark() so older WebViews (the Android app embeds this page; Chrome < 123 has no
+  light-dark()) still get colours.
 
   Tailwind utilities map onto these names in theme.css (bg-surface-container, text-on-surface…).
 */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
 
   /* surfaces */
-  --surface: light-dark(#f9f9f9, #121212); /* pb_background */
-  --surface-dim: light-dark(#dadada, #121212);
-  --sc-lowest: light-dark(#ffffff, #0c0c0c); /* pb_surface: cards (light) */
-  --sc-low: light-dark(#f3f3f3, #1a1a1a);
-  --sc: light-dark(#ededed, #1e1e1e); /* ~pb_surface_variant / cards (dark), menus */
-  --sc-high: light-dark(#e6e6e6, #262626); /* search bar, avatars, text areas */
-  --sc-highest: light-dark(#dfdfdf, #2c2c2c); /* tracks */
+  --surface: #f9f9f9; /* pb_background */
+  --surface-dim: #dadada;
+  --sc-lowest: #ffffff; /* pb_surface: cards (light) */
+  --sc-low: #f3f3f3;
+  --sc: #ededed; /* ~pb_surface_variant / cards (dark), menus */
+  --sc-high: #e6e6e6; /* search bar, avatars, text areas */
+  --sc-highest: #dfdfdf; /* tracks */
   /* the surface a card uses: sc-lowest in light, sc in dark (the app does the same) */
-  --card: light-dark(#ffffff, #1e1e1e);
-  --card-raised: light-dark(#ededed, #262626); /* player, menus */
+  --card: #ffffff;
+  --card-raised: #ededed; /* player, menus */
 
   /* text */
-  --on-surface: light-dark(#1f1f1f, #ececec); /* pb_on_surface 16.5:1 / 14.1:1 */
-  --on-surface-body: light-dark(#3d3d3d, #d6d6d6); /* pb_text_body 10.9:1 / 11.5:1 */
-  --on-surface-variant: light-dark(#646464, #b0b0b0); /* pb_on_surface_variant 5.9:1 / 7.7:1 */
-  --outline: light-dark(#c6c6c6, #5a5a5a);
-  --outline-variant: light-dark(#ebebeb, #2e2e2e);
+  --on-surface: #1f1f1f; /* pb_on_surface 16.5:1 / 14.1:1 */
+  --on-surface-body: #3d3d3d; /* pb_text_body 10.9:1 / 11.5:1 */
+  --on-surface-variant: #646464; /* pb_on_surface_variant 5.9:1 / 7.7:1 */
+  --outline: #c6c6c6;
+  --outline-variant: #ebebeb;
 
   /* primary (neutral) */
-  --primary: light-dark(#1f1f1f, #e8e8e8); /* pb_primary */
-  --on-primary: light-dark(#ffffff, #1a1a1a);
-  --primary-container: light-dark(#e4e4e4, #3a3a3a);
-  --on-primary-container: light-dark(#1f1f1f, #ececec);
-  --secondary-container: light-dark(#e6e6e6, #353535); /* tonal buttons, selected chips, nav indicator */
-  --on-secondary-container: light-dark(#1f1f1f, #ececec);
+  --primary: #1f1f1f; /* pb_primary */
+  --on-primary: #ffffff;
+  --primary-container: #e4e4e4;
+  --on-primary-container: #1f1f1f;
+  --secondary-container: #e6e6e6; /* tonal buttons, selected chips, nav indicator */
+  --on-secondary-container: #1f1f1f;
 
   /* semantic */
-  --error: light-dark(#c93b2f, #ff6b5e); /* pb_error 5.1:1 / 6.0:1 */
-  --on-error: light-dark(#ffffff, #1a1a1a);
-  --error-container: light-dark(#fbe3e0, #4a1b16);
-  --on-error-container: light-dark(#6e1c14, #ffb4ab);
-  --success: light-dark(#357a50, #7fc79a); /* pb_success */
-  --success-container: light-dark(#ddefe3, #1b3a28);
-  --on-success-container: light-dark(#134b2b, #a9e4bf);
-  --warning: light-dark(#9e5c00, #ffb74d); /* pb_warning: in-flight words, bookmark star */
-  --warning-container: light-dark(#ffe9cc, #4a3212);
-  --on-warning-container: light-dark(#5c3400, #ffd8a0);
-  --highlight-bar: light-dark(#ff9500, #ffb74d); /* pb_highlight_flash */
+  --error: #c93b2f; /* pb_error 5.1:1 / 6.0:1 */
+  --on-error: #ffffff;
+  --error-container: #fbe3e0;
+  --on-error-container: #6e1c14;
+  --success: #357a50; /* pb_success */
+  --success-container: #ddefe3;
+  --on-success-container: #134b2b;
+  --warning: #9e5c00; /* pb_warning: in-flight words, bookmark star */
+  --warning-container: #ffe9cc;
+  --on-warning-container: #5c3400;
+  --highlight-bar: #ff9500; /* pb_highlight_flash */
 
   /* inverse (snackbar) */
-  --inverse-surface: light-dark(#2f2f2f, #e6e6e6);
-  --inverse-on-surface: light-dark(#f1f1f1, #1f1f1f);
+  --inverse-surface: #2f2f2f;
+  --inverse-on-surface: #f1f1f1;
 
   /* overlays and state layers */
-  --scrim: light-dark(rgba(0, 0, 0, 0.4), rgba(0, 0, 0, 0.6));
-  --state-hover: light-dark(rgba(31, 31, 31, 0.08), rgba(236, 236, 236, 0.08));
-  --state-press: light-dark(rgba(31, 31, 31, 0.12), rgba(236, 236, 236, 0.12));
-  --selection-tint: light-dark(rgba(61, 61, 61, 0.12), rgba(255, 255, 255, 0.12)); /* now-playing paragraph */
+  --scrim: rgba(0, 0, 0, 0.4);
+  --state-hover: rgba(31, 31, 31, 0.08);
+  --state-press: rgba(31, 31, 31, 0.12);
+  --selection-tint: rgba(61, 61, 61, 0.12); /* now-playing paragraph */
 
   /* speaker tonal pairs (container / on-container), muted so they sit beside a neutral primary */
-  --spk1: light-dark(#dce7f5, #2a3d57);
-  --on-spk1: light-dark(#1e3a5f, #c9dcf5);
-  --spk2: light-dark(#ddeedc, #25422b);
-  --on-spk2: light-dark(#1f4d2a, #bfe3c3);
-  --spk3: light-dark(#f6e3d6, #523320);
-  --on-spk3: light-dark(#6a3410, #f5cdb4);
-  --spk4: light-dark(#eadff3, #3e2d57);
-  --on-spk4: light-dark(#4b2a6e, #dcc8f0);
+  --spk1: #dce7f5;
+  --on-spk1: #1e3a5f;
+  --spk2: #ddeedc;
+  --on-spk2: #1f4d2a;
+  --spk3: #f6e3d6;
+  --on-spk3: #6a3410;
+  --spk4: #eadff3;
+  --on-spk4: #4b2a6e;
 
   /* elevation */
-  --shadow-a: light-dark(rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.4));
-  --shadow-b: light-dark(rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.25));
-  --shadow-c: light-dark(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.3));
-  --shadow-d: light-dark(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.35));
-  --shadow-e: light-dark(rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.45));
+  --shadow-a: rgba(0, 0, 0, 0.18);
+  --shadow-b: rgba(0, 0, 0, 0.08);
+  --shadow-c: rgba(0, 0, 0, 0.1);
+  --shadow-d: rgba(0, 0, 0, 0.12);
+  --shadow-e: rgba(0, 0, 0, 0.2);
   --e1: 0 1px 2px var(--shadow-a), 0 1px 3px 1px var(--shadow-b);
   --e2: 0 1px 2px var(--shadow-a), 0 2px 6px 2px var(--shadow-c);
   --e3: 0 4px 8px 3px var(--shadow-d), 0 1px 3px var(--shadow-e);
@@ -109,11 +111,115 @@
   --field-bg: var(--surface);
 }
 
-:root[data-theme='light'] {
-  color-scheme: light;
-}
+/* Dark palette. Keep this block and the @media copy below identical. */
 :root[data-theme='dark'] {
   color-scheme: dark;
+  --surface: #121212;
+  --surface-dim: #121212;
+  --sc-lowest: #0c0c0c;
+  --sc-low: #1a1a1a;
+  --sc: #1e1e1e;
+  --sc-high: #262626;
+  --sc-highest: #2c2c2c;
+  --card: #1e1e1e;
+  --card-raised: #262626;
+  --on-surface: #ececec;
+  --on-surface-body: #d6d6d6;
+  --on-surface-variant: #b0b0b0;
+  --outline: #5a5a5a;
+  --outline-variant: #2e2e2e;
+  --primary: #e8e8e8;
+  --on-primary: #1a1a1a;
+  --primary-container: #3a3a3a;
+  --on-primary-container: #ececec;
+  --secondary-container: #353535;
+  --on-secondary-container: #ececec;
+  --error: #ff6b5e;
+  --on-error: #1a1a1a;
+  --error-container: #4a1b16;
+  --on-error-container: #ffb4ab;
+  --success: #7fc79a;
+  --success-container: #1b3a28;
+  --on-success-container: #a9e4bf;
+  --warning: #ffb74d;
+  --warning-container: #4a3212;
+  --on-warning-container: #ffd8a0;
+  --highlight-bar: #ffb74d;
+  --inverse-surface: #e6e6e6;
+  --inverse-on-surface: #1f1f1f;
+  --scrim: rgba(0, 0, 0, 0.6);
+  --state-hover: rgba(236, 236, 236, 0.08);
+  --state-press: rgba(236, 236, 236, 0.12);
+  --selection-tint: rgba(255, 255, 255, 0.12);
+  --spk1: #2a3d57;
+  --on-spk1: #c9dcf5;
+  --spk2: #25422b;
+  --on-spk2: #bfe3c3;
+  --spk3: #523320;
+  --on-spk3: #f5cdb4;
+  --spk4: #3e2d57;
+  --on-spk4: #dcc8f0;
+  --shadow-a: rgba(0, 0, 0, 0.4);
+  --shadow-b: rgba(0, 0, 0, 0.25);
+  --shadow-c: rgba(0, 0, 0, 0.3);
+  --shadow-d: rgba(0, 0, 0, 0.35);
+  --shadow-e: rgba(0, 0, 0, 0.45);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --surface: #121212;
+    --surface-dim: #121212;
+    --sc-lowest: #0c0c0c;
+    --sc-low: #1a1a1a;
+    --sc: #1e1e1e;
+    --sc-high: #262626;
+    --sc-highest: #2c2c2c;
+    --card: #1e1e1e;
+    --card-raised: #262626;
+    --on-surface: #ececec;
+    --on-surface-body: #d6d6d6;
+    --on-surface-variant: #b0b0b0;
+    --outline: #5a5a5a;
+    --outline-variant: #2e2e2e;
+    --primary: #e8e8e8;
+    --on-primary: #1a1a1a;
+    --primary-container: #3a3a3a;
+    --on-primary-container: #ececec;
+    --secondary-container: #353535;
+    --on-secondary-container: #ececec;
+    --error: #ff6b5e;
+    --on-error: #1a1a1a;
+    --error-container: #4a1b16;
+    --on-error-container: #ffb4ab;
+    --success: #7fc79a;
+    --success-container: #1b3a28;
+    --on-success-container: #a9e4bf;
+    --warning: #ffb74d;
+    --warning-container: #4a3212;
+    --on-warning-container: #ffd8a0;
+    --highlight-bar: #ffb74d;
+    --inverse-surface: #e6e6e6;
+    --inverse-on-surface: #1f1f1f;
+    --scrim: rgba(0, 0, 0, 0.6);
+    --state-hover: rgba(236, 236, 236, 0.08);
+    --state-press: rgba(236, 236, 236, 0.12);
+    --selection-tint: rgba(255, 255, 255, 0.12);
+    --spk1: #2a3d57;
+    --on-spk1: #c9dcf5;
+    --spk2: #25422b;
+    --on-spk2: #bfe3c3;
+    --spk3: #523320;
+    --on-spk3: #f5cdb4;
+    --spk4: #3e2d57;
+    --on-spk4: #dcc8f0;
+    --shadow-a: rgba(0, 0, 0, 0.4);
+    --shadow-b: rgba(0, 0, 0, 0.25);
+    --shadow-c: rgba(0, 0, 0, 0.3);
+    --shadow-d: rgba(0, 0, 0, 0.35);
+    --shadow-e: rgba(0, 0, 0, 0.45);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
