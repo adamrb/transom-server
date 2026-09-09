@@ -435,6 +435,103 @@ class TestStdinMode(RunnerTestBase):
         self.assertIn("Instruction: do the thing", result["stdin"])
 
 
+class TestChildCompletion(RunnerTestBase):
+    """completion = "child": the command starts the work; the runner reports only 'queued'
+    and hands the command the result callback so what it launched can report later."""
+
+    out_dir = tempfile.mkdtemp(prefix="runner-child-")
+    actions = {
+        "default": {
+            "command": [
+                sys.executable, "-c",
+                "import sys,json,os;open(sys.argv[1],'w').write(json.dumps("
+                "{k:v for k,v in os.environ.items() if k.startswith('PB_')}));"
+                "print('Started session s-1')",
+                os.path.join(out_dir, "env.json"),
+            ],
+            "stdin_template": "{text}",
+            "timeout_seconds": 30,
+            "completion": "child",
+        },
+        "plain": {
+            "command": [sys.executable, "-c", "import os,json;print(json.dumps({k:v for k,v in os.environ.items() if k.startswith('PB_RESULT_')}))"],
+            "timeout_seconds": 30,
+        },
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.receiver = ThreadingHTTPServer(("127.0.0.1", 0), _ResultReceiver)
+        threading.Thread(target=cls.receiver.serve_forever, daemon=True).start()
+        cls.runner.config["callback"] = {"base_url": f"http://127.0.0.1:{cls.receiver.server_address[1]}"}
+        cls.runner._start_reporting()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.receiver.shutdown()
+        super().tearDownClass()
+
+    def _payload(self, delivery_id, **kw):
+        p = payload(**kw)
+        p["delivery"] = {"id": delivery_id, "result_url": f"/api/v1/deliveries/{delivery_id}/result", "result_token": f"tok-{delivery_id}"}
+        return p
+
+    def _reports(self, delivery_id):
+        return [r for r in _ResultReceiver.received if r["path"].endswith(f"/{delivery_id}/result")]
+
+    def test_child_gets_callback_and_runner_reports_only_queued(self):
+        out_file = self.actions["default"]["command"][3]
+        if os.path.exists(out_file):
+            os.unlink(out_file)
+        status, _ = self.request(body=self._payload("child-000001"))
+        self.assertEqual(status, 202)
+        self.assertTrue(self.wait_for(lambda: os.path.exists(out_file) and os.path.getsize(out_file) > 0))
+        with open(out_file, encoding="utf-8") as f:
+            env = json.load(f)
+        self.assertEqual(env["PB_RESULT_URL"], self.runner.config["callback"]["base_url"] + "/api/v1/deliveries/child-000001/result")
+        self.assertEqual(env["PB_RESULT_TOKEN"], "tok-child-000001")
+        # Two reports, both 'queued': the start, then the command's last line. Never 'done'.
+        self.assertTrue(self.wait_for(lambda: len(self._reports("child-000001")) >= 2))
+        time.sleep(0.3)
+        reports = self._reports("child-000001")
+        self.assertEqual({r["body"]["status"] for r in reports}, {"queued"})
+        self.assertEqual(reports[-1]["body"]["summary"], "Started session s-1")
+
+    def test_plain_command_never_sees_the_token(self):
+        status, _ = self.request(body=self._payload("plain-000001", route_name="plain"))
+        self.assertEqual(status, 202)
+        self.assertTrue(self.wait_for(lambda: any(r["body"]["status"] == "done" for r in self._reports("plain-000001"))))
+        done = next(r for r in self._reports("plain-000001") if r["body"]["status"] == "done")
+        self.assertEqual(done["body"]["summary"], "{}")
+
+
+class TestChildCompletionConfig(unittest.TestCase):
+    def test_child_requires_command(self):
+        with self.assertRaises(agent_runner.ConfigError):
+            agent_runner._validate_executor("actions.x", {"agent": ["a"], "completion": "child"})
+        with self.assertRaises(agent_runner.ConfigError):
+            agent_runner._validate_executor("actions.x", {"command": ["a"], "completion": "later"})
+        agent_runner._validate_executor("actions.x", {"command": ["a"], "completion": "child"})
+        agent_runner._validate_executor("actions.x", {"command": ["a"]})
+        with self.assertRaises(agent_runner.ConfigError):
+            agent_runner._validate_executor("actions.x", {"command": ["a"], "completion": "child", "write_transcript_to_file": True})
+
+    def test_child_requires_a_callback_section(self):
+        def load(text):
+            with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+                f.write(text)
+            try:
+                return agent_runner.load_config(f.name)
+            finally:
+                os.unlink(f.name)
+        base = '[server]\ntoken="t"\n[actions.default]\ncommand=["/bin/true"]\ncompletion="child"\n'
+        with self.assertRaises(agent_runner.ConfigError):
+            load(base)
+        cfg = load(base + '[callback]\nbase_url="http://127.0.0.1:8090"\n')
+        self.assertEqual(cfg["actions"]["default"]["completion"], "child")
+
+
 class TestChatSaturation(RunnerTestBase):
     actions = {"default": {"command": ["/bin/true"]}}
     chat = {

@@ -50,6 +50,8 @@ export const RecordingRow = memo(
     const snippet = rec.match_snippet && rec.match_field !== 'title';
     const preview = stripSpeakerLabel(snippet ? rec.match_snippet! : rec.text_preview || '');
     const marks = rec.marks?.length ?? 0;
+    /** What the automations did with the recording (server one-liner); most rows have none. */
+    const automations = rec.automations ?? null;
 
     let supporting: React.ReactNode;
     if (word && isInFlight(rec)) {
@@ -123,7 +125,30 @@ export const RecordingRow = memo(
         interactive
         onClick={() => onOpen(rec.id)}
         className={cn('mb-1.5', className)}
-      />
+      >
+        {automations && !isInFlight(rec) && (
+          <div
+            data-testid="row-automations"
+            className={cn(
+              'truncate text-body-s',
+              automations.state === 'failed' || automations.state === 'unknown'
+                ? 'text-error'
+                : 'text-on-surface-variant',
+            )}
+            title={automations.line}
+          >
+            {automations.items.length
+              ? automations.items.map((it, i) => (
+                  <span key={`${it.route_name}-${i}`}>
+                    {i > 0 && ' · '}
+                    {it.route_name && <span className="font-medium">{it.route_name}: </span>}
+                    {it.summary}
+                  </span>
+                ))
+              : automations.line}
+          </div>
+        )}
+      </ListItem>
     );
   }),
 );

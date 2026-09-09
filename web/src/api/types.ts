@@ -50,6 +50,21 @@ export type RecordingStatus = z.infer<typeof RecordingStatusSchema>;
 /** transcribing | diarizing | summarizing while transcribing; queued while pending. */
 export const StageSchema = z.string().nullish();
 
+/**
+ * One line per recording about its latest automations run: overall state, a ready-made line
+ * ("Vault notes: Filed: Life/Topics/Dogs.md"), and one item per hand-off.
+ */
+export const AutomationsStateSchema = z.enum(['working', 'done', 'failed', 'unknown', 'skipped']);
+export type AutomationsState = z.infer<typeof AutomationsStateSchema>;
+export const AutomationsSummarySchema = z.looseObject({
+  state: AutomationsStateSchema,
+  line: str,
+  items: z.array(z.looseObject({ route_name: str, state: AutomationsStateSchema, summary: str })).default([]),
+  run_id: nstr,
+  run_at: nstr,
+});
+export type AutomationsSummary = z.infer<typeof AutomationsSummarySchema>;
+
 export const RecordingSchema = z.looseObject({
   id: str,
   device_sn: nstr,
@@ -80,6 +95,8 @@ export const RecordingSchema = z.looseObject({
   /** Search: which field matched (title | summary | transcript) and a snippet around the hit. */
   match_field: nstr,
   match_snippet: nstr,
+  /** What the latest automations run did with the recording; null when it never ran. */
+  automations: AutomationsSummarySchema.nullish(),
 });
 export type Recording = z.infer<typeof RecordingSchema>;
 export const RecordingListSchema = z.looseObject({ recordings: z.array(RecordingSchema) });

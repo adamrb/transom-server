@@ -104,7 +104,7 @@ All endpoints under `/api/v1`. Every route except `/health` requires `Authorizat
 | GET | `/auth/check` | 204 if the token is valid |
 | POST | `/plaud/user-token` | `{user_id, expires_in?}` → Plaud SDK user token |
 | POST | `/recordings` | multipart upload: `file` + `metadata` JSON string |
-| GET | `/recordings` | list (`limit`, `offset`, `status` incl. `no_speech`, `q` search; with `q` each item carries `match_field` + `match_snippet`) |
+| GET | `/recordings` | list (`limit`, `offset`, `status` incl. `no_speech`, `q` search; with `q` each item carries `match_field` + `match_snippet`). Every item (and `GET /recordings/{id}`) carries `automations`: what the latest router run did, as `{state: working\|done\|failed\|unknown\|skipped, line, items[{route_name, state, summary}], run_id, run_at}`, or `null` when the router never ran for it |
 | GET | `/recordings/lookup?device_sn&session_id` | find one |
 | GET | `/recordings/{id}` | metadata (`error` is a plain sentence, the raw text is `error_detail`) |
 | GET | `/recordings/{id}/audio` | the audio file; bearer header **or** a signed link (`sig`+`exp`); HTTP Range → `206` |

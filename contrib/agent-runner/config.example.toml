@@ -83,6 +83,25 @@ command = ["/usr/local/bin/my-append-script", "{started_at}"]
 stdin_template = "{text}"
 timeout_seconds = 30
 
+# --- A command that only STARTS the work (a long import, an interactive Claude
+# session) -----------------------------------------------------------------------
+# With completion = "child" the runner does not report the command's exit as
+# "done". It reports "queued" (the app shows "Working") with the command's last
+# stdout line as the interim text, and hands the command the result callback in
+# PB_RESULT_URL / PB_RESULT_TOKEN. Whatever the command launched then reports the
+# real outcome once, when it is finished:
+#     report-result.sh done   "Created Work/Meetings/2026/Q3/2026-09-09 - Standup.md"
+#     report-result.sh failed "The repo had uncommitted changes"
+# (report-result.sh sits next to agent_runner.py; it also accepts PB_RESULT_FILE,
+# a 0600 JSON file {"url","token"}, so a launcher can keep the token out of the
+# environment of the process it starts.) If nothing ever reports, the bridge
+# marks the hand-off "No result was reported" after its silence deadline.
+# [actions."start-session"]
+# command = ["/usr/local/bin/start-my-session.sh"]
+# stdin_template = "{text}"
+# timeout_seconds = 30
+# completion = "child"
+
 # An agent that files a work meeting as a real note in an Obsidian vault:
 # a meeting page in the vault's meetings folder, an entry on that day's daily
 # log page, and links to the people/project pages that already exist. Route

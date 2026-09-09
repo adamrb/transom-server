@@ -71,6 +71,39 @@ describe('recordings list', () => {
     expect(within(done).getByText('2')).toBeInTheDocument();
   });
 
+  it('shows what the automations did under a finished row, never under one still in flight', async () => {
+    const summary = {
+      state: 'done',
+      line: 'Vault notes: Filed: Life/Topics/Dogs.md',
+      items: [{ route_name: 'Vault notes', state: 'done', summary: 'Filed: Life/Topics/Dogs.md' }],
+      run_id: 'run-1',
+      run_at: '2026-09-08T00:30:00Z',
+    };
+    captureList(() => [
+      { ...fx.recordingDone, automations: summary },
+      { ...fx.recordingTranscribing, automations: summary },
+      {
+        ...fx.recordingDone,
+        id: 'rec_failed_auto',
+        title: 'Broken hand-off',
+        automations: {
+          state: 'failed',
+          line: 'Ask Claude: HTTP 500',
+          items: [{ route_name: 'Ask Claude', state: 'failed', summary: 'HTTP 500' }],
+        },
+      },
+      { ...fx.recordingDone, id: 'rec_plain', title: 'Nothing ran', automations: null },
+    ]);
+    renderRecordings();
+    const done = await screen.findByRole('button', { name: /Political Fight/ });
+    const line = within(done).getByTestId('row-automations');
+    expect(line).toHaveTextContent('Vault notes: Filed: Life/Topics/Dogs.md');
+    expect(within(line).getByText('Vault notes:')).toHaveClass('font-medium');
+    expect(within(screen.getByRole('button', { name: /Transcribing 42%/ })).queryByTestId('row-automations')).toBeNull();
+    expect(within(screen.getByRole('button', { name: /Broken hand-off/ })).getByTestId('row-automations')).toHaveClass('text-error');
+    expect(within(screen.getByRole('button', { name: /Nothing ran/ })).queryByTestId('row-automations')).toBeNull();
+  });
+
   it('sends the filter chip as the status parameter, including no_speech', async () => {
     const urls = captureList((url) =>
       url.searchParams.get('status') === 'no_speech' ? [fx.recordingSilent] : ALL,

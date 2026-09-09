@@ -434,6 +434,43 @@ class Store:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def latest_router_runs(self, recording_ids: "list[str]") -> "dict[str, dict]":
+        """The newest router run per recording, for list rows (one query for the
+        page rather than one per row). Recordings without a run are absent."""
+        ids = [i for i in dict.fromkeys(recording_ids) if i]
+        out: dict[str, dict] = {}
+        if not ids:
+            return out
+        with self._lock:
+            for chunk in (ids[i:i + 400] for i in range(0, len(ids), 400)):
+                marks = ",".join("?" * len(chunk))
+                rows = self._conn.execute(
+                    f"SELECT * FROM router_runs WHERE recording_id IN ({marks}) "
+                    "ORDER BY created_at DESC, rowid DESC",
+                    chunk,
+                ).fetchall()
+                for r in rows:
+                    out.setdefault(r["recording_id"], dict(r))
+        return out
+
+    def deliveries_for_runs(self, run_ids: "list[str]") -> "dict[str, list[dict]]":
+        """Deliveries grouped by router run, newest first within a run."""
+        ids = [i for i in dict.fromkeys(run_ids) if i]
+        out: dict[str, list[dict]] = {}
+        if not ids:
+            return out
+        with self._lock:
+            for chunk in (ids[i:i + 400] for i in range(0, len(ids), 400)):
+                marks = ",".join("?" * len(chunk))
+                rows = self._conn.execute(
+                    f"SELECT * FROM deliveries WHERE router_run_id IN ({marks}) "
+                    "ORDER BY created_at DESC, rowid DESC",
+                    chunk,
+                ).fetchall()
+                for r in rows:
+                    out.setdefault(r["router_run_id"], []).append(dict(r))
+        return out
+
     def insert_delivery(self, **fields) -> str:
         return self._insert("deliveries", fields)
 

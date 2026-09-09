@@ -24,6 +24,8 @@ RUN apt-get update \
 RUN npm install -g @zed-industries/claude-code-acp @openai/codex
 
 COPY agent_runner.py /app/agent_runner.py
+# For `completion = "child"` actions: the helper a launched process calls to report its outcome.
+COPY report-result.sh /app/report-result.sh
 
 # node:22-slim ships user `node` = uid 1000, HOME=/home/node
 USER node

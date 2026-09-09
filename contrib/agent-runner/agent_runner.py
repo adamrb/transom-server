@@ -142,6 +142,17 @@ def _validate_executor(section: str, table: dict) -> None:
         raise ConfigError(f"[{section}] env must be a table of string -> string")
     if not isinstance(table.get("model", ""), str):
         raise ConfigError(f"[{section}] model must be a string (ACP modelId)")
+    completion = table.get("completion", "runner")
+    if completion not in ("runner", "child"):
+        raise ConfigError(f"[{section}] completion must be \"runner\" (default) or \"child\"")
+    if completion == "child" and command is None:
+        raise ConfigError(f"[{section}] completion = \"child\" applies to `command` actions only")
+    if completion == "child" and table.get("write_transcript_to_file"):
+        raise ConfigError(
+            f"[{section}] completion = \"child\" cannot be combined with write_transcript_to_file: "
+            "the temp file is deleted when the launcher exits, before the work it started reads it. "
+            "Pass the transcript on stdin (stdin_template) and let the launcher keep its own copy."
+        )
 
 
 _RESULT_URL_RE = re.compile(r"/api/v1/deliveries/[A-Za-z0-9_-]{8,64}/result")
@@ -257,6 +268,11 @@ def load_config(path: str) -> dict:
         if isinstance(hb, bool) or not isinstance(hb, (int, float)) or not 1 <= hb <= 3600:
             raise ConfigError("[callback] heartbeat_seconds must be a number of seconds in 1..3600")
         cfg["callback"] = callback
+    # Without a callback a child-completing command could never report its outcome and every
+    # such delivery would end as "No result was reported": refuse the configuration up front.
+    child_actions = [n for n, a in actions.items() if a.get("completion", "runner") == "child"]
+    if child_actions and callback is None:
+        raise ConfigError(f"[actions.{child_actions[0]}] completion = \"child\" needs a [callback] section")
 
     chat = cfg.get("chat")
     if chat is not None:
@@ -368,15 +384,20 @@ def _kill_all_active() -> None:
         _kill_pgid(pid)
 
 
-def _reap(proc: subprocess.Popen, logger, label: str) -> None:
+def _reap(proc: subprocess.Popen, logger, label: str, close_streams: bool = True) -> None:
     """Post-kill cleanup that can never block the worker: close pipes and
-    wait a bounded time; log if descendants may have leaked."""
-    for stream in (proc.stdin, proc.stdout, proc.stderr):
-        try:
-            if stream:
-                stream.close()
-        except (OSError, ValueError):
-            pass
+    wait a bounded time; log if descendants may have leaked. A launcher whose
+    descendants were left alive on purpose (completion = "child") may have
+    passed them its stdout/stderr; closing a buffered pipe another thread is
+    still reading blocks on that reader, so such callers skip the close and
+    the reader threads (daemons) end when the descendant lets go."""
+    if close_streams:
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                if stream:
+                    stream.close()
+            except (OSError, ValueError):
+                pass
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
@@ -709,6 +730,19 @@ class Runner:
             self.logger.log(event="result.report_failed", status=status, path=url_path, error=str(e)[:300])
             return False
 
+    def _result_env(self, payload: dict) -> dict:
+        """PB_RESULT_URL / PB_RESULT_TOKEN for a command that reports its own
+        outcome (completion = "child"); empty when the payload carries no
+        usable callback or no [callback] is configured, same rules as
+        report_result."""
+        cb = self.config.get("callback")
+        delivery = (payload or {}).get("delivery") or {}
+        url_path, token = delivery.get("result_url"), delivery.get("result_token")
+        if not cb or not isinstance(url_path, str) or not _RESULT_URL_RE.fullmatch(url_path) \
+                or not isinstance(token, str) or not token:
+            return {}
+        return {"PB_RESULT_URL": cb["base_url"].rstrip("/") + url_path, "PB_RESULT_TOKEN": token}
+
     def _enqueue_report(self, job_id: int, payload: dict, status: str, summary: str, terminal: bool) -> None:
         """Hand a report to the reporter thread. The worker never waits on the
         bridge: a slow or blackholed callback endpoint must not stall actions or
@@ -947,10 +981,19 @@ class Runner:
                         timeout_s=timeout)
         started = time.monotonic()
         self._enqueue_report(job_id, variables.get("_payload") or {}, "queued", "Started", terminal=False)
+        # completion = "child": the command only starts the real work (a Claude session, a long
+        # import) and something it launches reports the outcome later with the callback the
+        # runner hands it here. Only then does a command see the result token.
+        child_reports = action.get("completion", "runner") == "child"
+        env = None
+        if child_reports:
+            env = dict(os.environ)
+            env.update(action.get("env") or {})
+            env.update(self._result_env(variables.get("_payload") or {}))
         timed_out = False
         try:
             proc = subprocess.Popen(
-                argv, cwd=cwd, shell=False, start_new_session=True,
+                argv, cwd=cwd, shell=False, start_new_session=True, env=env,
                 stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
@@ -980,8 +1023,13 @@ class Runner:
             out_t.join(timeout=5)
             err_t.join(timeout=5)
         finally:
-            _kill_pgid(proc.pid)
-            _reap(proc, self.logger, f"job-{job_id}")
+            # A launcher that handed off successfully (completion = "child", exit 0) leaves its
+            # descendants alive to finish and report; a failed or timed-out launcher, and every
+            # ordinary command, is cleaned up with its whole process group.
+            detached = child_reports and not timed_out and proc.returncode == 0
+            if not detached:
+                _kill_pgid(proc.pid)
+            _reap(proc, self.logger, f"job-{job_id}", close_streams=not detached)
             _untrack_pid(proc.pid)
         extra = {}
         if self.log_responses:
@@ -998,7 +1046,14 @@ class Runner:
             self._terminal(job_id, payload, "failed", f"Timed out after {int(timeout)}s")
         elif proc.returncode == 0:
             lines = [ln.strip() for ln in out_state["tail"].decode("utf-8", "replace").splitlines() if ln.strip()]
-            self._terminal(job_id, payload, "done", (lines[-1] if lines else "Done")[:2000])
+            last = (lines[-1] if lines else "Done")[:2000]
+            if child_reports:
+                # Not terminal: the launched work reports 'done'/'failed' itself (report-result.sh).
+                # The bridge keeps this as 'queued' and shows the last line meanwhile; if nothing
+                # ever reports, the bridge's own silence deadline turns it into 'unknown'.
+                self._enqueue_report(job_id, payload, "queued", last if lines else "Started; waiting for the result", terminal=False)
+            else:
+                self._terminal(job_id, payload, "done", last)
         else:
             err = err_state["tail"].decode("utf-8", "replace").strip().splitlines()
             self._terminal(job_id, payload, "failed",

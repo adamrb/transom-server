@@ -56,6 +56,7 @@ from .db import Store, utcnow_iso
 from .formatting import MAX_SPEAKER_NAME_CHARS, build_paragraphs, speaker_labels
 from .highlights import parse_marks
 from .plaud import PlaudAuthError, PlaudClient
+from .automations_summary import summarize_automations
 from .router import Router, folder_error
 from .transcriber import Transcriber
 
@@ -568,7 +569,23 @@ async def list_recordings(
         item = _public(r)
         item["match_field"], item["match_snippet"] = field, snippet
         items.append(item)
+    _attach_automations(items)
     return {"recordings": items}
+
+
+def _attach_automations(items: list[dict]) -> None:
+    """`automations`: what the latest router run did with each recording, for
+    list rows (see automations_summary). Two queries for the whole page."""
+    runs = store.latest_router_runs([i["id"] for i in items])
+    deliveries = store.deliveries_for_runs([r["id"] for r in runs.values()])
+    for item in items:
+        run = runs.get(item["id"])
+        if run:
+            run = _run_public(run)
+            public_deliveries = [_delivery_public(d) for d in deliveries.get(run["id"], [])]
+        else:
+            public_deliveries = []
+        item["automations"] = summarize_automations(run, public_deliveries)
 
 
 @app.get("/api/v1/stats", dependencies=[Depends(require_auth)])
@@ -581,7 +598,9 @@ async def lookup_recording(device_sn: str, session_id: int):
     rec = store.find_by_session(device_sn, session_id)
     if not rec:
         raise HTTPException(status_code=404, detail="Recording not found.")
-    return _public(rec)
+    item = _public(rec)
+    _attach_automations([item])
+    return item
 
 
 @app.get("/api/v1/recordings/{rec_id}", dependencies=[Depends(require_auth)])
@@ -589,7 +608,9 @@ async def get_recording(rec_id: str):
     rec = store.get(rec_id)
     if not rec:
         raise HTTPException(status_code=404, detail="Recording not found.")
-    return _public(rec)
+    item = _public(rec)
+    _attach_automations([item])
+    return item
 
 
 def _audio_media_type(filename: str | None) -> str:
