@@ -124,6 +124,9 @@ describe('status words', () => {
     expect(statusWord({ ...recordingTranscribing, stage: 'summarizing', progress: 1 })).toMatchObject({
       label: 'Summarizing',
     });
+    expect(statusWord({ ...recordingTranscribing, stage: 'cleaning', progress: 1 })).toMatchObject({
+      label: 'Cleaning up',
+    });
     expect(statusWord(recordingFailed)).toMatchObject({ label: 'Failed', tone: 'failed' });
     expect(statusWord({ ...recordingDone, status: 'stored' })).toMatchObject({ label: 'Not transcribed' });
     expect(statusWord(recordingSilent)).toMatchObject({ label: 'No speech', tone: 'neutral' });

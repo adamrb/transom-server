@@ -48,6 +48,113 @@ def insert_recording(store: Store, tmp_path: Path, **overrides) -> str:
     return store.insert_recording(**fields)
 
 
+def test_cleanup_pass_rewrites_segments_text_and_records_it(tmp_path, monkeypatch):
+    import httpx
+
+    settings = make_env(
+        tmp_path, monkeypatch,
+        PB_CLEANUP_ENABLED="true", PB_SUMMARY_BASE_URL="http://llm/v1", PB_SUMMARY_MODEL="m",
+        PB_CLEANUP_CONTEXT="works in cloud infra",
+    )
+    store = Store(settings.db_path)
+    store.replace_vocabulary([{"term": "Voltium", "aliases": ["Voltum"], "source": "manual", "weight": 1}])
+    engine = FakeEngine(result=EngineResult(
+        text="Speaker 1: we need VM two\nSpeaker 2: uh ask Voltum",
+        segments=[Segment(0, 1, "we need VM two", speaker="Speaker 1"),
+                  Segment(1, 2, "uh ask Voltum", speaker="Speaker 2")],
+        language="en", duration=2.0, model="tiny",
+    ))
+    t = Transcriber(settings, store, engine=engine)
+    posted = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        posted.append(body)
+        assert request.url.path.endswith("/chat/completions") and body["model"] == "m"
+        return httpx.Response(200, json={"choices": [{"message": {"content":
+            json.dumps({"0": "we need VM2", "1": "ask Voltium"})}}]})
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_client(transport=transport, **{kk: vv for kk, vv in k.items() if kk != "transport"}))
+    stages = []
+    real_set = t._set_progress
+    monkeypatch.setattr(t, "_set_progress", lambda rec_id, stage, frac: (stages.append(stage), real_set(rec_id, stage, frac)))
+    rec_id = insert_recording(store, tmp_path)
+
+    asyncio.run(t._process(store.get(rec_id)))
+
+    rec = store.get(rec_id)
+    assert rec["status"] == "done"
+    assert rec["transcript_text"] == "Speaker 1: we need VM2\nSpeaker 2: ask Voltium"
+    transcript = json.loads(Path(rec["transcript_path"]).read_text())
+    assert [s["text"] for s in transcript["segments"]] == ["we need VM2", "ask Voltium"]
+    assert transcript["cleanup"]["segments_changed"] == 2
+    # Vocabulary corrections ran first, so the model saw "Voltium" already
+    assert transcript["cleanup"]["changes"][1] == {"i": 1, "from": "uh ask Voltium"}
+    assert "cleaning" in stages and stages.index("cleaning") < stages.index("summarizing")
+    user = posted[0]["messages"][1]["content"]
+    assert "works in cloud infra" in user and "Voltium (often misheard as: Voltum)" in user
+    assert "[0] we need VM two" in user
+
+
+def test_cleanup_failure_keeps_recognizer_text(tmp_path, monkeypatch):
+    import httpx
+
+    settings = make_env(tmp_path, monkeypatch, PB_CLEANUP_ENABLED="true",
+                        PB_SUMMARY_BASE_URL="http://llm/v1", PB_SUMMARY_MODEL="m")
+    store = Store(settings.db_path)
+    engine = FakeEngine(result=EngineResult(text="hello VM two", segments=[Segment(0, 1, "hello VM two")], duration=1.0))
+    t = Transcriber(settings, store, engine=engine)
+    transport = httpx.MockTransport(lambda request: httpx.Response(502, text="down"))
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_client(transport=transport, **{kk: vv for kk, vv in k.items() if kk != "transport"}))
+    rec_id = insert_recording(store, tmp_path)
+
+    asyncio.run(t._process(store.get(rec_id)))
+
+    rec = store.get(rec_id)
+    assert rec["status"] == "done" and rec["transcript_text"] == "hello VM two"
+    transcript = json.loads(Path(rec["transcript_path"]).read_text())
+    assert transcript["cleanup"]["segments_changed"] == 0 and "502" in transcript["cleanup"]["error"]
+
+
+def test_cleanup_handles_text_only_results(tmp_path, monkeypatch):
+    import httpx
+
+    settings = make_env(tmp_path, monkeypatch, PB_CLEANUP_ENABLED="true",
+                        PB_SUMMARY_BASE_URL="http://llm/v1", PB_SUMMARY_MODEL="m")
+    store = Store(settings.db_path)
+    store.replace_vocabulary([{"term": "Voltium", "aliases": ["Voltum"], "source": "manual", "weight": 1}])
+    engine = FakeEngine(result=EngineResult(text="we need VM two and voltum", segments=[], duration=1.0))
+    t = Transcriber(settings, store, engine=engine)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert "[0] we need VM two and Voltium" in body["messages"][1]["content"]
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps({"0": "we need VM2 and Voltium"})}}]})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: real_client(transport=httpx.MockTransport(handler), **{kk: vv for kk, vv in k.items() if kk != "transport"}))
+    rec_id = insert_recording(store, tmp_path)
+    asyncio.run(t._process(store.get(rec_id)))
+    rec = store.get(rec_id)
+    assert rec["transcript_text"] == "we need VM2 and Voltium"
+    transcript = json.loads(Path(rec["transcript_path"]).read_text())
+    assert transcript["segments"] == [] and transcript["cleanup"]["segments_changed"] == 1
+
+
+def test_cleanup_disabled_leaves_no_trace(tmp_path, monkeypatch):
+    settings = make_env(tmp_path, monkeypatch)
+    store = Store(settings.db_path)
+    engine = FakeEngine(result=EngineResult(text="hello", segments=[Segment(0, 1, "hello")], duration=1.0))
+    t = Transcriber(settings, store, engine=engine)
+    rec_id = insert_recording(store, tmp_path)
+    asyncio.run(t._process(store.get(rec_id)))
+    transcript = json.loads(Path(store.get(rec_id)["transcript_path"]).read_text())
+    assert "cleanup" not in transcript
+
+
 def test_successful_transcription_persists_everything(tmp_path, monkeypatch):
     settings = make_env(tmp_path, monkeypatch, PB_MARKDOWN_EXPORT_DIR=str(tmp_path / "notes"))
     store = Store(settings.db_path)

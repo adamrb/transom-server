@@ -15,9 +15,10 @@ from pathlib import Path
 
 import httpx
 
+from .cleanup import CleanupResult, cleanup_segments, split_text
 from .config import Settings
 from .db import Store, utcnow_iso
-from .engines import EngineError, TranscriptionEngine, build_engine, render_text
+from .engines import EngineError, Segment, TranscriptionEngine, build_engine, render_text
 from .highlights import build_highlights, highlights_for_prompt, highlights_markdown, parse_marks
 from .formatting import apply_speaker_renames, build_paragraphs, paragraphs_markdown
 from .vocabulary import VocabEntry, apply_corrections, correct_segments, hotwords_string, normalize
@@ -241,6 +242,28 @@ class Transcriber:
             result.text = render_text(result.segments, fallback=apply_corrections(result.text, vocab))
         elif vocab:
             result.text = apply_corrections(result.text, vocab)
+        # LLM cleanup: misheard names/terms/numbers fixed with the vocabulary as
+        # a glossary (and fillers dropped), segment by segment so timestamps and
+        # speakers stay put. Best-effort; a failure keeps the recognizer's text.
+        cleanup: CleanupResult | None = None
+        if self.settings.cleanup_enabled and result.text.strip():
+            self._set_progress(rec_id, "cleaning", None)
+            if result.segments:
+                cleanup = await self._cleanup(result.segments, vocab)
+                if cleanup.changed:
+                    if vocab:  # the model may have spelled a term the vocabulary maps
+                        correct_segments(result.segments, vocab)
+                    result.text = render_text(
+                        result.segments, fallback=" ".join(s.text for s in result.segments if s.text)
+                    )
+            else:
+                # Text-only engines (an external endpoint answering plain JSON):
+                # clean sentence-aligned pieces of the text as pseudo-segments.
+                pieces = [Segment(None, None, p) for p in split_text(result.text)]
+                cleanup = await self._cleanup(pieces, vocab)
+                if cleanup.changed:
+                    joined = " ".join(p.text for p in pieces if p.text)
+                    result.text = apply_corrections(joined, vocab) if vocab else joined
         transcript_path = Path(rec["audio_path"]).with_suffix(".transcript.json")
         transcript = {
             "recording_id": rec_id,
@@ -257,6 +280,8 @@ class Transcriber:
             "text": result.text,
             "segments": [s.as_dict() for s in result.segments],
         }
+        if cleanup is not None:
+            transcript["cleanup"] = cleanup.as_dict()
         # Recorder button presses -> highlighted passages. The marks may also
         # arrive later via PATCH /marks (see refresh_highlights).
         current = self.store.get(rec_id) or rec
@@ -407,6 +432,47 @@ class Transcriber:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
         tmp.replace(path)
+
+    async def _cleanup(self, segments, vocab: list[VocabEntry]) -> CleanupResult:
+        """One chat completion per PB_CLEANUP_MAX_CHARS of transcript, editing
+        `segments` in place. Never raises: the pass is optional polish."""
+        s = self.settings
+        if not (s.cleanup_base_url and s.cleanup_model):
+            return CleanupResult(error="cleanup endpoint not configured")
+        headers = {}
+        if s.cleanup_api_key:
+            headers["Authorization"] = f"Bearer {s.cleanup_api_key}"
+        url = f"{s.cleanup_base_url.rstrip('/')}/chat/completions"
+
+        async def complete(system: str, user: str) -> str:
+            async with httpx.AsyncClient(timeout=s.cleanup_timeout_s) as client:
+                resp = await client.post(
+                    url, headers=headers,
+                    json={
+                        "model": s.cleanup_model,
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                    },
+                )
+            if resp.status_code != 200:
+                raise RuntimeError(f"cleanup endpoint returned {resp.status_code}: {resp.text[:200]}")
+            return resp.json()["choices"][0]["message"]["content"] or ""
+
+        try:
+            result = await cleanup_segments(
+                segments, vocab, complete,
+                context=s.cleanup_context, drop_fillers=s.cleanup_fillers,
+                max_chars=s.cleanup_max_chars, model=s.cleanup_model,
+            )
+        except Exception as exc:  # belt and braces: cleanup must never fail a transcription
+            log.warning("cleanup pass crashed, keeping recognizer text: %s", exc)
+            return CleanupResult(model=s.cleanup_model, error=f"{type(exc).__name__}: {exc}")
+        log.info("cleanup: %d segment(s) changed, %d rejected, %d call(s) in %.1fs%s",
+                 result.changed, result.rejected, result.calls, result.seconds,
+                 f" ({result.error})" if result.error else "")
+        return result
 
     async def _summarize(self, text: str, highlights: list[dict] | None = None) -> Summary:
         s = self.settings

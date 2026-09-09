@@ -16,6 +16,7 @@ export interface StatusWord {
 const STAGE: Record<string, string> = {
   transcribing: 'Transcribing',
   diarizing: 'Identifying speakers',
+  cleaning: 'Cleaning up',
   summarizing: 'Summarizing',
 };
 
