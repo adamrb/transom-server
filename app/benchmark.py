@@ -43,21 +43,22 @@ def word_error_rate(reference: str, hypothesis: str) -> float:
 
 
 async def bench_model(audio: Path, model: str, device: str, compute: str,
-                      diarize: bool, hf_token: str | None, engine_name: str = "local") -> dict:
+                      diarize: bool, hf_token: str | None, engine_name: str = "local",
+                      diarize_device: str | None = None) -> dict:
     if engine_name == "parakeet":
         from .engines.parakeet import ParakeetEngine
 
         # onnx-asr quantization names ("int8") ride in the --compute slot.
         engine = ParakeetEngine(
             model=model, device=device, quantization=None if compute == "auto" else compute,
-            diarization=diarize, hf_token=hf_token,
+            diarization=diarize, hf_token=hf_token, diarization_device=diarize_device,
         )
     else:
         from .engines.local_whisper import LocalWhisperEngine
 
         engine = LocalWhisperEngine(
             model=model, device=device, compute_type=compute,
-            diarization=diarize, hf_token=hf_token,
+            diarization=diarize, hf_token=hf_token, diarization_device=diarize_device,
         )
     row: dict = {"model": model, "device": device, "compute": compute}
     try:
@@ -112,6 +113,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="compute type: auto, int8, int8_float16, float16, float32 "
                         "(parakeet: auto or int8)")
     p.add_argument("--diarize", action="store_true", help="also benchmark speaker diarization")
+    p.add_argument("--diarize-device", default=os.environ.get("PB_STT_DIARIZE_DEVICE") or None,
+                   choices=["auto", "cuda", "cpu"],
+                   help="where pyannote runs (default: $PB_STT_DIARIZE_DEVICE, else same as --device)")
     p.add_argument("--hf-token", default=os.environ.get("PB_STT_HF_TOKEN"),
                    help="Hugging Face token for diarization (default: $PB_STT_HF_TOKEN)")
     p.add_argument("--reference", type=Path, default=None,
@@ -136,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"benchmarking {model} on {args.device} ...", file=sys.stderr)
         row = asyncio.run(bench_model(
             args.audio, model, args.device, args.compute, args.diarize, args.hf_token,
-            engine_name=args.engine,
+            engine_name=args.engine, diarize_device=args.diarize_device,
         ))
         if reference and row.get("status") == "ok":
             row["wer"] = round(word_error_rate(reference, row["text"]), 3)

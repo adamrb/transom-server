@@ -47,6 +47,7 @@ class LocalWhisperEngine(DiarizationMixin):
         beam_size: int = 5,
         cpu_threads: int = 0,
         condition_on_previous_text: bool | None = None,
+        diarization_device: str | None = None,
     ):
         self.model_name = model
         self.device = device
@@ -56,6 +57,7 @@ class LocalWhisperEngine(DiarizationMixin):
         self.max_duration_s = max_duration_s
         self.diarization = diarization
         self.diarization_model = diarization_model
+        self.diarization_device = diarization_device
         self.hf_token = hf_token
         self.num_speakers = num_speakers
         self.min_speakers = min_speakers

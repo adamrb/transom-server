@@ -65,6 +65,7 @@ class ParakeetEngine(DiarizationMixin):
         min_silence_ms: float = 600.0,
         batch_size: int = 4,
         cpu_threads: int = 0,
+        diarization_device: str | None = None,
     ):
         self.model_name = model
         self.device = device
@@ -73,6 +74,7 @@ class ParakeetEngine(DiarizationMixin):
         self.max_duration_s = max_duration_s
         self.diarization = diarization
         self.diarization_model = diarization_model
+        self.diarization_device = diarization_device
         self.hf_token = hf_token
         self.num_speakers = num_speakers
         self.min_speakers = min_speakers

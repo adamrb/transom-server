@@ -26,6 +26,7 @@ def build_engine(settings) -> "TranscriptionEngine | None":
             max_speakers=settings.stt_max_speakers,
             beam_size=settings.stt_beam_size,
             condition_on_previous_text=settings.stt_condition_on_previous,
+            diarization_device=settings.stt_diarize_device,
         )
     if settings.stt_engine == "parakeet":
         from .parakeet import ParakeetEngine
@@ -44,6 +45,7 @@ def build_engine(settings) -> "TranscriptionEngine | None":
             max_speakers=settings.stt_max_speakers,
             max_segment_s=settings.stt_parakeet_segment_s,
             min_silence_ms=settings.stt_parakeet_silence_ms,
+            diarization_device=settings.stt_diarize_device,
         )
     if settings.stt_engine == "openai":
         if not settings.transcribe_base_url:

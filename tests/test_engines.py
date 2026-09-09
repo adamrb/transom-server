@@ -338,6 +338,50 @@ def test_fit_hotwords_trims_at_term_boundary_keeping_the_front():
     assert engine._fit_hotwords(Model(), None) is None
 
 
+def _spawn_diar_worker_env(monkeypatch, engine) -> dict:
+    """Run _ensure_diar_worker with a fake Popen; return the env it was given."""
+    import subprocess
+    seen = {}
+
+    class FakeProc:
+        def __init__(self):
+            class Out:
+                def readline(self_inner): return "READY\n"
+            self.stdout = Out()
+        def kill(self): pass
+
+    def fake_popen(cmd, env=None, **kwargs):
+        seen["env"] = env
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    engine._ensure_diar_worker()
+    engine._diar_proc = None
+    return seen["env"]
+
+
+def test_diarization_worker_follows_engine_device_by_default(monkeypatch):
+    env = _spawn_diar_worker_env(monkeypatch, LocalWhisperEngine(diarization=True, device="cuda"))
+    assert env["PB_STT_DEVICE"] == "cuda"
+
+
+def test_diarization_worker_takes_its_own_device(monkeypatch):
+    env = _spawn_diar_worker_env(
+        monkeypatch, LocalWhisperEngine(diarization=True, device="cuda", diarization_device="cpu"))
+    assert env["PB_STT_DEVICE"] == "cpu"
+    env = _spawn_diar_worker_env(
+        monkeypatch, ParakeetEngine(diarization=True, device="auto", diarization_device="cpu"))
+    assert env["PB_STT_DEVICE"] == "cpu"
+
+
+def test_build_engine_passes_diarize_device():
+    s = _settings(PB_STT_ENGINE="local", PB_STT_DEVICE="cuda", PB_STT_DIARIZE_DEVICE="CPU",
+                  PB_STT_DIARIZE="true", PB_STT_HF_TOKEN="x", PB_TRANSCRIBE_ENABLED="true")
+    assert build_engine(s).diarization_device == "cpu"
+    s = _settings(PB_STT_ENGINE="local", PB_STT_DIARIZE_DEVICE="", PB_TRANSCRIBE_ENABLED="true")
+    assert build_engine(s).diarization_device is None
+
+
 # ── parakeet engine ──────────────────────────────────────────────────────────
 
 

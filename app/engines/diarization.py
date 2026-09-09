@@ -13,7 +13,8 @@ engines MUST call ``_ensure_diar_worker()`` before loading their model.
 
 An engine using the mixin provides these attributes: ``diarization``,
 ``diarization_model``, ``hf_token``, ``device``, ``num_speakers``,
-``min_speakers``, ``max_speakers`` and initializes ``_diar_proc = None``.
+``min_speakers``, ``max_speakers``, optionally ``diarization_device`` (None =
+follow ``device``) and initializes ``_diar_proc = None``.
 """
 
 import logging
@@ -46,7 +47,13 @@ class DiarizationMixin:
     num_speakers: int | None
     min_speakers: int | None
     max_speakers: int | None
+    diarization_device: str | None = None
     _diar_proc = None
+
+    def _diar_device(self) -> str:
+        """Device pyannote runs on: the explicit diarization device when set,
+        else the engine's own (cpu => the worker stays off the GPU too)."""
+        return (getattr(self, "diarization_device", None) or self.device or "auto")
 
     # -- worker process -----------------------------------------------------
 
@@ -70,7 +77,7 @@ class DiarizationMixin:
         # system 9.5.x the parent's CTranslate2 pulled in.
         env["LD_LIBRARY_PATH"] = ":".join([*nvidia_libs, env.get("LD_LIBRARY_PATH", "")])
         env["PB_STT_HF_TOKEN"] = self.hf_token or ""
-        env["PB_STT_DEVICE"] = self.device or "auto"  # cpu => the worker stays off the GPU too
+        env["PB_STT_DEVICE"] = self._diar_device()
         # Speaker-count hints for the pipeline (empty = automatic).
         env["PB_STT_NUM_SPEAKERS"] = str(self.num_speakers) if self.num_speakers else ""
         env["PB_STT_MIN_SPEAKERS"] = str(self.min_speakers) if self.min_speakers else ""
@@ -80,7 +87,8 @@ class DiarizationMixin:
         pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         env["PYTHONPATH"] = os.pathsep.join([pkg_root, env.get("PYTHONPATH", "")])
 
-        log.info("starting diarization worker (pyannote): %s", self.diarization_model)
+        log.info("starting diarization worker (pyannote): %s on %s",
+                 self.diarization_model, self._diar_device())
         proc = subprocess.Popen(
             [sys.executable, "-u", "-m", "app.engines.diarize_worker",
              "--serve", self.diarization_model],

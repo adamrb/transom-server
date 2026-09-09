@@ -129,6 +129,12 @@ class Settings:
     # only accepted the 3.1 terms on Hugging Face.
     stt_diarize: bool = field(default_factory=lambda: _env_bool("PB_STT_DIARIZE", False))
     stt_diarize_model: str = field(default_factory=lambda: _env("PB_STT_DIARIZE_MODEL", "pyannote/speaker-diarization-community-1"))
+    # Where pyannote runs: auto | cuda | cpu. Unset = same as PB_STT_DEVICE. Set
+    # cpu to keep the GPU for the recognizer alone when the card is small or
+    # shared (whisper large-v3-turbo in float32 plus pyannote no longer fit in
+    # 6 GB next to another GPU job; an OOM there loses the speaker labels).
+    stt_diarize_device: str | None = field(
+        default_factory=lambda: (_env("PB_STT_DIARIZE_DEVICE") or "").strip().lower() or None)
     stt_hf_token: str | None = field(default_factory=lambda: _env("PB_STT_HF_TOKEN"))
     # Optional speaker-count hints passed straight to the pyannote pipeline.
     # community-1's automatic clustering tends to UNDER-count on short clips or
@@ -142,6 +148,24 @@ class Settings:
         int(_env("PB_STT_MIN_SPEAKERS")) if _env("PB_STT_MIN_SPEAKERS") else None))
     stt_max_speakers: int | None = field(default_factory=lambda: (
         int(_env("PB_STT_MAX_SPEAKERS")) if _env("PB_STT_MAX_SPEAKERS") else None))
+
+    # -- LLM cleanup pass (any engine) --
+    # After recognition, an LLM fixes misheard names/terms/acronyms/numbers using
+    # the custom vocabulary as a glossary plus PB_CLEANUP_CONTEXT (free text about
+    # whose recordings these are), and optionally strips fillers. Uses the summary
+    # endpoint unless PB_CLEANUP_BASE_URL/MODEL/API_KEY are given. One call per
+    # PB_CLEANUP_MAX_CHARS of transcript; best-effort, never fails a transcription.
+    cleanup_enabled: bool = field(default_factory=lambda: _env_bool("PB_CLEANUP_ENABLED", False))
+    cleanup_base_url: str | None = field(
+        default_factory=lambda: _env("PB_CLEANUP_BASE_URL") or _env("PB_SUMMARY_BASE_URL"))
+    cleanup_api_key: str | None = field(
+        default_factory=lambda: _env("PB_CLEANUP_API_KEY") or _env("PB_SUMMARY_API_KEY"))
+    cleanup_model: str | None = field(
+        default_factory=lambda: _env("PB_CLEANUP_MODEL") or _env("PB_SUMMARY_MODEL"))
+    cleanup_context: str | None = field(default_factory=lambda: _env("PB_CLEANUP_CONTEXT") or None)
+    cleanup_fillers: bool = field(default_factory=lambda: _env_bool("PB_CLEANUP_FILLERS", True))
+    cleanup_max_chars: int = field(default_factory=lambda: int(_env("PB_CLEANUP_MAX_CHARS", "30000")))
+    cleanup_timeout_s: int = field(default_factory=lambda: int(_env("PB_CLEANUP_TIMEOUT_S", "300")))
 
     # -- external (openai) engine --
     transcribe_base_url: str | None = field(default_factory=lambda: _env("PB_TRANSCRIBE_BASE_URL"))
@@ -234,6 +258,11 @@ class Settings:
             warnings.append("PB_STT_ENGINE=openai but PB_TRANSCRIBE_BASE_URL is not set — uploads stored, not transcribed.")
         if self.stt_diarize and not self.stt_hf_token:
             warnings.append("PB_STT_DIARIZE is on but PB_STT_HF_TOKEN is not set — diarization will likely fail to load.")
+        if self.cleanup_enabled and not (self.cleanup_base_url and self.cleanup_model):
+            warnings.append(
+                "PB_CLEANUP_ENABLED is on but no chat endpoint is configured "
+                "(PB_CLEANUP_BASE_URL/PB_CLEANUP_MODEL or the PB_SUMMARY_* equivalents) — cleanup disabled."
+            )
         if self.summary_enabled and not (self.summary_base_url and self.summary_model):
             warnings.append(
                 "PB_SUMMARY_ENABLED is on but PB_SUMMARY_BASE_URL/PB_SUMMARY_MODEL are missing — summaries disabled."
