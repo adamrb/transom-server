@@ -72,8 +72,9 @@ class Settings:
     )
 
     # Transcription. PB_STT_ENGINE selects the backend:
-    #   local  — built-in faster-whisper (GPU/CPU), optional diarization (default)
-    #   openai — external OpenAI-compatible /v1/audio/transcriptions endpoint
+    #   local    — built-in faster-whisper (GPU/CPU), optional diarization (default)
+    #   parakeet — built-in NVIDIA Parakeet (onnx-asr, GPU/CPU), optional diarization
+    #   openai   — external OpenAI-compatible /v1/audio/transcriptions endpoint
     transcribe_enabled: bool = field(default_factory=lambda: _env_bool("PB_TRANSCRIBE_ENABLED", True))
     # Default: local. Pre-engine deployments that configured an external
     # endpoint (PB_TRANSCRIBE_BASE_URL) but no PB_STT_ENGINE keep using it.
@@ -101,6 +102,25 @@ class Settings:
     )
     # Plaud hardware records up to ~5 h per file; reject anything longer.
     stt_max_duration_s: int = field(default_factory=lambda: int(_env("PB_STT_MAX_DURATION_S", "18000")))
+
+    # -- built-in (parakeet) engine --
+    # Any onnx-asr model name (nemo-parakeet-tdt-0.6b-v3 covers 25 European
+    # languages and, on a real meeting, got more names right than the
+    # English-only -v2) or a Hugging Face repo id holding an onnx-asr export.
+    # Downloads land in HF_HOME like the whisper models. Optional quantization
+    # ("int8") shrinks the download and speeds up CPU decoding.
+    stt_parakeet_model: str = field(
+        default_factory=lambda: _env("PB_STT_PARAKEET_MODEL", "nemo-parakeet-tdt-0.6b-v3"))
+    stt_parakeet_quantization: str | None = field(
+        default_factory=lambda: _env("PB_STT_PARAKEET_QUANT") or None)
+    # Parakeet decodes speech in VAD-cut chunks; these bound how long a chunk may
+    # run and how much silence ends one. Longer chunks give the model more
+    # context for punctuation and casing (it capitalizes the first word of
+    # every chunk), shorter ones give finer timestamps.
+    stt_parakeet_segment_s: float = field(
+        default_factory=lambda: float(_env("PB_STT_PARAKEET_SEGMENT_S", "30")))
+    stt_parakeet_silence_ms: float = field(
+        default_factory=lambda: float(_env("PB_STT_PARAKEET_SILENCE_MS", "600")))
     # Speaker diarization (multi-speaker labeling); needs requirements-diarization.txt
     # and a Hugging Face token that accepted the diarization model's terms.
     # Default model is pyannote community-1 (pyannote.audio 4.x): stronger

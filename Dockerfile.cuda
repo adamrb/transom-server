@@ -42,6 +42,20 @@ COPY requirements.txt requirements-stt.txt requirements-diarization.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-stt.txt \
     -r requirements-diarization.txt
 
+# Parakeet on the GPU: replace the CPU-only onnxruntime (a faster-whisper
+# dependency, same import name) with the CUDA build. onnxruntime-gpu 1.27+ is
+# built against CUDA 13, which dropped Maxwell/Pascal and needs a 580+ driver;
+# 1.21–1.26 are CUDA 12.8 builds that run on this image's CUDA 12.6 stack.
+# The != exclusions mirror onnx-asr's own [gpu] extra (releases it knows to
+# be broken with its models); keep them in step with that package.
+# At runtime the engine preloads the cuDNN 9.10 / cuBLAS 12.6 wheels torch
+# installed above (ort.preload_dlls) instead of the system copies. Note the
+# PyPI onnxruntime-gpu kernels start at Pascal (sm_60): on a Maxwell card
+# (GTX 900 series) the engine detects cudaErrorNoKernelImageForDevice on its
+# warm-up pass and runs Parakeet on the CPU, leaving the GPU to pyannote.
+RUN pip uninstall -y onnxruntime && \
+    pip install --no-cache-dir "onnxruntime-gpu>=1.21,<1.27,!=1.24.1,!=1.25.*,!=1.26.0"
+
 # Optional custom wheels (e.g. CTranslate2 built for pre-Pascal GPUs)
 COPY wheels-local/ /tmp/wheels-local/
 RUN if ls /tmp/wheels-local/*.whl >/dev/null 2>&1; then \

@@ -43,13 +43,22 @@ def word_error_rate(reference: str, hypothesis: str) -> float:
 
 
 async def bench_model(audio: Path, model: str, device: str, compute: str,
-                      diarize: bool, hf_token: str | None) -> dict:
-    from .engines.local_whisper import LocalWhisperEngine
+                      diarize: bool, hf_token: str | None, engine_name: str = "local") -> dict:
+    if engine_name == "parakeet":
+        from .engines.parakeet import ParakeetEngine
 
-    engine = LocalWhisperEngine(
-        model=model, device=device, compute_type=compute,
-        diarization=diarize, hf_token=hf_token,
-    )
+        # onnx-asr quantization names ("int8") ride in the --compute slot.
+        engine = ParakeetEngine(
+            model=model, device=device, quantization=None if compute == "auto" else compute,
+            diarization=diarize, hf_token=hf_token,
+        )
+    else:
+        from .engines.local_whisper import LocalWhisperEngine
+
+        engine = LocalWhisperEngine(
+            model=model, device=device, compute_type=compute,
+            diarization=diarize, hf_token=hf_token,
+        )
     row: dict = {"model": model, "device": device, "compute": compute}
     try:
         result = await engine.transcribe(audio)
@@ -91,13 +100,17 @@ def print_table(rows: list[dict], has_wer: bool) -> None:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("audio", type=Path, help="audio file to transcribe (mp3/wav/...)")
-    p.add_argument("--models", default="tiny,base,small",
-                   help="comma-separated faster-whisper model names "
-                        "(tiny, base, small, medium, large-v3, distil-large-v3, "
-                        "or any CTranslate2 model repo id)")
+    p.add_argument("--models", default=None,
+                   help="comma-separated model names: faster-whisper (tiny, base, small, "
+                        "medium, large-v3, distil-large-v3, or any CTranslate2 repo id; "
+                        "default tiny,base,small) or, with --engine parakeet, onnx-asr names "
+                        "(nemo-parakeet-tdt-0.6b-v3, nemo-parakeet-tdt-0.6b-v2, ...; default v3)")
+    p.add_argument("--engine", default="local", choices=["local", "parakeet"],
+                   help="which built-in engine the models belong to (default: local = faster-whisper)")
     p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     p.add_argument("--compute", default="auto",
-                   help="compute type: auto, int8, int8_float16, float16, float32")
+                   help="compute type: auto, int8, int8_float16, float16, float32 "
+                        "(parakeet: auto or int8)")
     p.add_argument("--diarize", action="store_true", help="also benchmark speaker diarization")
     p.add_argument("--hf-token", default=os.environ.get("PB_STT_HF_TOKEN"),
                    help="Hugging Face token for diarization (default: $PB_STT_HF_TOKEN)")
@@ -111,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     reference = args.reference.read_text() if args.reference else None
 
+    if args.models is None:
+        args.models = "nemo-parakeet-tdt-0.6b-v3" if args.engine == "parakeet" else "tiny,base,small"
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     if not models:
         print("no models given (--models)", file=sys.stderr)
@@ -120,7 +135,8 @@ def main(argv: list[str] | None = None) -> int:
     for model in models:
         print(f"benchmarking {model} on {args.device} ...", file=sys.stderr)
         row = asyncio.run(bench_model(
-            args.audio, model, args.device, args.compute, args.diarize, args.hf_token
+            args.audio, model, args.device, args.compute, args.diarize, args.hf_token,
+            engine_name=args.engine,
         ))
         if reference and row.get("status") == "ok":
             row["wer"] = round(word_error_rate(reference, row["text"]), 3)

@@ -27,6 +27,24 @@ def build_engine(settings) -> "TranscriptionEngine | None":
             beam_size=settings.stt_beam_size,
             condition_on_previous_text=settings.stt_condition_on_previous,
         )
+    if settings.stt_engine == "parakeet":
+        from .parakeet import ParakeetEngine
+
+        return ParakeetEngine(
+            model=settings.stt_parakeet_model,
+            device=settings.stt_device,
+            quantization=settings.stt_parakeet_quantization,
+            language=settings.transcribe_language,
+            max_duration_s=settings.stt_max_duration_s,
+            diarization=settings.stt_diarize,
+            diarization_model=settings.stt_diarize_model,
+            hf_token=settings.stt_hf_token,
+            num_speakers=settings.stt_num_speakers,
+            min_speakers=settings.stt_min_speakers,
+            max_speakers=settings.stt_max_speakers,
+            max_segment_s=settings.stt_parakeet_segment_s,
+            min_silence_ms=settings.stt_parakeet_silence_ms,
+        )
     if settings.stt_engine == "openai":
         if not settings.transcribe_base_url:
             return None
@@ -39,7 +57,9 @@ def build_engine(settings) -> "TranscriptionEngine | None":
             language=settings.transcribe_language,
             timeout_s=settings.transcribe_timeout_s,
         )
-    raise ValueError(f"unknown PB_STT_ENGINE: {settings.stt_engine!r} (use 'local' or 'openai')")
+    raise ValueError(
+        f"unknown PB_STT_ENGINE: {settings.stt_engine!r} (use 'local', 'parakeet' or 'openai')"
+    )
 
 
 __all__ = [

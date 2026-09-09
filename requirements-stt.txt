@@ -1,1 +1,6 @@
 faster-whisper>=1.1
+# NVIDIA Parakeet (PB_STT_ENGINE=parakeet) via onnx-asr. [cpu] pins the
+# onnxruntime versions its model exports need (faster-whisper alone accepts
+# older ones); the CUDA image swaps in onnxruntime-gpu afterwards (see
+# Dockerfile.cuda). [hub] adds the Hugging Face download.
+onnx-asr[cpu,hub]>=0.12
