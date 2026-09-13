@@ -132,6 +132,8 @@ class Settings:
         float(_env("PB_STT_CONSENSUS_ATTEN_DB", "12")) if (_env("PB_STT_CONSENSUS_ATTEN_DB", "12") or "").strip()
         not in ("", "0", "off", "none") else None))
     consensus_window_s: float = field(default_factory=lambda: float(_env("PB_CONSENSUS_WINDOW_S", "40")))
+    # Windows are reconciled concurrently, this many LLM calls in flight.
+    consensus_concurrency: int = field(default_factory=lambda: int(_env("PB_CONSENSUS_CONCURRENCY", "4")))
     # Where the consensus parakeet runs: cpu (default; leaves a small GPU to
     # whisper + pyannote) or cuda (a 24 GB+ card decodes it in seconds).
     stt_consensus_parakeet_device: str = field(

@@ -28,6 +28,7 @@ systems only needs local context.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -164,9 +165,15 @@ async def consensus_segments(
     context: str | None = None,
     window_s: float = 40.0,
     model: str | None = None,
+    concurrency: int = 4,
 ) -> ConsensusResult:
     """Merge ``alternates`` into ``segments`` in place (text only; timestamps
-    and speakers untouched). Never raises."""
+    and speakers untouched). Never raises.
+
+    Windows are independent (each edits its own primary segments), so up to
+    ``concurrency`` of them are in flight at once: on a six-minute noisy
+    recording the ten or so calls at ~12 s each took three minutes in series.
+    A failed call costs its window only; the first error is recorded."""
     result = ConsensusResult(model=model, systems=[a.name for a in alternates if a.segments])
     alternates = [a for a in alternates if a.segments]
     if not segments or not alternates:
@@ -174,11 +181,13 @@ async def consensus_segments(
     t0 = time.monotonic()
     ctx = ("Context about the speakers (trusted): " + context.strip()) if context else ""
     system = SYSTEM_PROMPT.format(context=ctx)
-    for idxs in windows(segments, window_s):
+    gate = asyncio.Semaphore(max(1, concurrency))
+
+    async def run_window(idxs: list[int]) -> dict | None:
         start, end = _span(segments, idxs)
         alt_segs = [(a, overlapping(a, start, end)) for a in alternates]
         if not any(segs for _, segs in alt_segs):
-            continue  # nothing to weigh against
+            return None  # nothing to weigh against
         vocabulary: set[str] = set()
         for i in idxs:
             vocabulary.update(_words(segments[i].text))
@@ -186,27 +195,42 @@ async def consensus_segments(
             for s in segs:
                 vocabulary.update(_words(s.text))
         user = user_message(render_primary(segments, idxs), [render_alternate(a, segs) for a, segs in alt_segs])
-        try:
-            reply = await complete(system, user)
-        except Exception as exc:
-            log.warning("consensus call failed for %.0f-%.0fs: %s", start, end, exc)
-            result.error = f"{type(exc).__name__}: {exc}"
-            break
-        result.calls += 1
+        async with gate:
+            try:
+                reply = await complete(system, user)
+            except Exception as exc:
+                log.warning("consensus call failed for %.0f-%.0fs: %s", start, end, exc)
+                return {"error": f"{type(exc).__name__}: {exc}"}
         try:
             edits = parse_reply(reply, set(idxs))
         except Exception as exc:  # a malformed reply costs this window only
             log.warning("consensus reply for %.0f-%.0fs unreadable: %s", start, end, exc)
-            result.rejected += 1
-            continue
+            return {"calls": 1, "rejected": 1}
+        accepted: list[tuple[int, str, str]] = []
+        rejected = 0
         for i, new in edits.items():
             old = segments[i].text or ""
             if not acceptable(old, new, drop_fillers=True) or not new.strip() or not heard(new, vocabulary):
-                result.rejected += 1
+                rejected += 1
                 continue
+            accepted.append((i, old, new.strip()))
+        return {"calls": 1, "rejected": rejected, "accepted": accepted}
+
+    outcomes = await asyncio.gather(*(run_window(idxs) for idxs in windows(segments, window_s)))
+    # Apply in audio order so the change log reads top to bottom whatever
+    # order the calls came back in.
+    for out in outcomes:
+        if not out:
+            continue
+        if "error" in out:
+            result.error = result.error or out["error"]
+            continue
+        result.calls += out["calls"]
+        result.rejected += out["rejected"]
+        for i, old, new in out.get("accepted", []):
             if len(result.changes) < CHANGES_KEPT:
                 result.changes.append({"i": i, "from": old})
-            segments[i].text = new.strip()
+            segments[i].text = new
             result.changed += 1
     result.seconds = time.monotonic() - t0
     return result

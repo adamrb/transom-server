@@ -121,10 +121,59 @@ def test_consensus_without_alternates_is_a_noop():
 
 def test_consensus_call_failure_is_recorded_not_raised():
     segs = [_seg(0, 10, "x"), _seg(50, 60, "y")]
-    alts = [Alternate("b", [_seg(0, 60, "x y")])]
-    result, calls = _run(segs, alts, [RuntimeError("endpoint returned 504")])
-    assert result.error and "504" in result.error and result.calls == 0 and len(calls) == 1
-    assert [s.text for s in segs] == ["x", "y"]
+    alts = [Alternate("b", [_seg(0, 60, "x y!")])]
+    # The first window's call fails; the second window is still reconciled.
+    result, calls = _run(segs, alts, [RuntimeError("endpoint returned 504"), json.dumps({"1": "y!"})], concurrency=1)
+    assert result.error and "504" in result.error and result.calls == 1 and len(calls) == 2
+    assert [s.text for s in segs] == ["x", "y!"]
+
+
+def test_consensus_windows_run_concurrently_and_apply_in_order():
+    """Four windows, a completer that only answers once all four calls are in
+    flight: with concurrency 4 the pass finishes; the change log is in audio
+    order regardless of which reply lands first."""
+    segs = [_seg(i * 100, i * 100 + 10, f"seg {i}") for i in range(4)]
+    alts = [Alternate("b", [_seg(i * 100, i * 100 + 10, f"seg {i} fixed") for i in range(4)])]
+    in_flight = 0
+    all_started = asyncio.Event()
+
+    async def complete(system, user):
+        nonlocal in_flight
+        in_flight += 1
+        if in_flight == 4:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=2.0)
+        idx = int(user.split("[")[1].split("]")[0])
+        await asyncio.sleep(0.01 * (4 - idx))  # later windows answer first
+        return json.dumps({str(idx): f"seg {idx} fixed"})
+
+    result = asyncio.run(consensus_segments(segs, alts, complete, concurrency=4))
+    assert result.changed == 4 and result.calls == 4 and result.error is None
+    assert [c["i"] for c in result.changes] == [0, 1, 2, 3]
+    assert [s.text for s in segs] == [f"seg {i} fixed" for i in range(4)]
+
+
+def test_consensus_concurrency_one_is_sequential_and_errors_cost_their_window_only():
+    segs = [_seg(0, 10, "a"), _seg(100, 110, "b"), _seg(200, 210, "c")]
+    alts = [Alternate("b", [_seg(0, 10, "a!"), _seg(100, 110, "b!"), _seg(200, 210, "c!")])]
+    active = 0
+    peak = 0
+
+    async def complete(system, user):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        idx = int(user.split("[")[1].split("]")[0])
+        if idx == 1:
+            raise RuntimeError("504 for the middle window")
+        return json.dumps({str(idx): {0: "a!", 2: "c!"}[idx]})
+
+    result = asyncio.run(consensus_segments(segs, alts, complete, concurrency=1))
+    assert peak == 1
+    assert result.changed == 2 and result.calls == 2 and "504" in result.error
+    assert [s.text for s in segs] == ["a!", "b", "c!"]
 
 
 def test_consensus_unreadable_reply_costs_only_its_window(monkeypatch):

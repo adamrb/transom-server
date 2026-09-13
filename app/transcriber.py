@@ -483,6 +483,7 @@ class Transcriber:
             result = await consensus_segments(
                 segments, alternates, self._completer(),
                 context=s.cleanup_context, window_s=s.consensus_window_s, model=s.cleanup_model,
+                concurrency=s.consensus_concurrency,
             )
         except Exception as exc:
             log.warning("consensus pass crashed, keeping primary text: %s", exc)
