@@ -15,11 +15,13 @@ Design notes:
 
 import asyncio
 import logging
+import tempfile
 import time
 from pathlib import Path
 
 from .base import EngineError, EngineResult, ProgressCallback, Segment, render_text
 from .diarization import DiarizationMixin, probe_duration
+from .enhance import Enhancer
 
 log = logging.getLogger("plaud-bridge.engine.local")
 
@@ -48,6 +50,8 @@ class LocalWhisperEngine(DiarizationMixin):
         cpu_threads: int = 0,
         condition_on_previous_text: bool | None = None,
         diarization_device: str | None = None,
+        enhancer: Enhancer | None = None,
+        enhance_diarize: bool = True,
     ):
         self.model_name = model
         self.device = device
@@ -65,6 +69,9 @@ class LocalWhisperEngine(DiarizationMixin):
         self.beam_size = beam_size
         self.cpu_threads = cpu_threads
         self.condition_on_previous_text = condition_on_previous_text
+        # Noisy-recording path (see enhance.py): None or mode "off" = never.
+        self.enhancer = enhancer
+        self.enhance_diarize = enhance_diarize
         self._model = None
         self._diar_proc = None
         self._lock = asyncio.Lock()
@@ -150,13 +157,31 @@ class LocalWhisperEngine(DiarizationMixin):
 
         model = self._load_model()
         hotwords = self._fit_hotwords(model, hotwords)
+        # Noisy recording? Then speech is located on a DeepFilterNet-cleaned
+        # copy and whisper decodes those regions of the original (its own VAD
+        # would drop most of the speech). The temp dir holds the cleaned copy
+        # for diarization and goes away with the transcription.
+        with tempfile.TemporaryDirectory(prefix="pb-enhance-") as tmp:
+            plan = (
+                self.enhancer.plan(audio_path, Path(tmp), max_duration_s=self.max_duration_s)
+                if self.enhancer else None
+            )
+            if plan is not None and progress:
+                progress("transcribing", 0.0)
+            return self._decode(model, audio_path, hotwords, progress, plan)
+
+    def _decode(self, model, audio_path: Path, hotwords: str | None, progress: ProgressCallback | None, plan):
+        # PB_STT_VAD=false means "decode everything": then the cleaned copy only
+        # serves diarization and whisper still sees the whole recording.
+        clips = plan.clip_timestamps if plan is not None and plan.regions and self.vad_filter else None
         t0 = time.monotonic()
         try:
             seg_iter, info = model.transcribe(
                 str(audio_path),
                 language=self.language,
                 beam_size=self.beam_size,
-                vad_filter=self.vad_filter,
+                vad_filter=self.vad_filter and clips is None,
+                clip_timestamps=clips if clips is not None else "0",
                 # Word timestamps let diarization split a whisper segment that
                 # spans a speaker change at the actual word boundary, instead of
                 # collapsing the whole segment to the dominant speaker.
@@ -212,8 +237,10 @@ class LocalWhisperEngine(DiarizationMixin):
             if progress:
                 progress("diarizing", None)  # pyannote gives no partial results
             t1 = time.monotonic()
+            # pyannote separates speakers better on the cleaned copy.
+            diar_path = plan.enhanced_path if plan is not None and self.enhance_diarize else audio_path
             try:
-                self._apply_diarization(audio_path, segments, words)
+                self._apply_diarization(diar_path, segments, words)
             except Exception as exc:
                 # A transcript without speaker labels beats losing it entirely.
                 log.warning("diarization failed, returning unlabeled transcript: %s", exc)
@@ -229,6 +256,8 @@ class LocalWhisperEngine(DiarizationMixin):
             "diarize_seconds": round(diarize_s, 2) or None,
             "rtf": round(transcribe_s / info.duration, 3) if info.duration else None,
         }
+        if plan is not None:
+            stats.update(plan.stats())
         return EngineResult(
             text=render_text(segments, fallback=plain),
             segments=segments,

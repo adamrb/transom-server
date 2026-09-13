@@ -16,6 +16,17 @@ WORKDIR /srv/plaud-bridge
 COPY requirements.txt requirements-stt.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-stt.txt
 
+# DeepFilterNet 3 standalone binary (static, CPU): denoises a copy of noisy
+# recordings so the speech can be located when the raw noise floor hides it
+# from the VAD (see app/engines/enhance.py). Pinned release + checksum.
+ARG DEEP_FILTER_URL=https://github.com/Rikorose/DeepFilterNet/releases/download/v0.5.6/deep-filter-0.5.6-x86_64-unknown-linux-musl
+ARG DEEP_FILTER_SHA256=70775e251eee44c0f2451a1e833326cf8bcbbe304d3e7cd12851e6fce72ef7da
+RUN python3 -c "import hashlib, sys, urllib.request; \
+    data = urllib.request.urlopen('${DEEP_FILTER_URL}').read(); \
+    assert hashlib.sha256(data).hexdigest() == '${DEEP_FILTER_SHA256}', 'deep-filter checksum mismatch'; \
+    open('/usr/local/bin/deep-filter', 'wb').write(data)" \
+    && chmod 0755 /usr/local/bin/deep-filter
+
 COPY app ./app
 COPY --from=web /app/static ./app/static
 # Optional: drop a built APK + manifest.json here (or bake via CI) and a fresh

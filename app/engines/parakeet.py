@@ -30,11 +30,13 @@ Design notes:
 
 import asyncio
 import logging
+import tempfile
 import time
 from pathlib import Path
 
 from .base import EngineError, EngineResult, ProgressCallback, Segment, render_text
 from .diarization import DiarizationMixin, probe_duration
+from .enhance import Enhancer
 
 log = logging.getLogger("plaud-bridge.engine.parakeet")
 
@@ -66,6 +68,8 @@ class ParakeetEngine(DiarizationMixin):
         batch_size: int = 4,
         cpu_threads: int = 0,
         diarization_device: str | None = None,
+        enhancer: Enhancer | None = None,
+        enhance_diarize: bool = True,
     ):
         self.model_name = model
         self.device = device
@@ -83,6 +87,9 @@ class ParakeetEngine(DiarizationMixin):
         self.min_silence_ms = min_silence_ms
         self.batch_size = batch_size
         self.cpu_threads = cpu_threads
+        # Noisy-recording path (see enhance.py): None or mode "off" = never.
+        self.enhancer = enhancer
+        self.enhance_diarize = enhance_diarize
         self._model = None
         self._vad = None
         self._diar_proc = None
@@ -227,11 +234,14 @@ class ParakeetEngine(DiarizationMixin):
             raise EngineError(f"no audio decoded from {audio_path.name}")
         return np.concatenate(chunks).astype(np.float32, copy=False)
 
-    def _recognize(self, wav):
+    def _recognize(self, wav, enhanced=None):
         """Iterate onnx-asr timestamped chunk results over the whole waveform:
-        VAD-cut at silences, decoded in batches, yielded in audio order."""
+        VAD-cut at silences, decoded in batches, yielded in audio order. With
+        ``enhanced`` (the DeepFilterNet copy of ``wav``, same length) the
+        silences are found on that copy and the cuts applied to ``wav``."""
+        vad = self._vad if enhanced is None else _ProxyVad(self._vad, enhanced)
         recognizer = self._model.with_vad(
-            self._vad,
+            vad,
             batch_size=self.batch_size,
             max_speech_duration_s=self.max_segment_s,
             min_silence_duration_ms=self.min_silence_ms,
@@ -293,9 +303,20 @@ class ParakeetEngine(DiarizationMixin):
             self._language_noted = True
 
         self._load_model()
+        # Noisy recording? Speech is then located on a DeepFilterNet-cleaned
+        # copy (kept in the temp dir for diarization) and parakeet decodes those
+        # regions of the original; see enhance.py for why not the copy itself.
+        with tempfile.TemporaryDirectory(prefix="pb-enhance-") as tmp:
+            plan = (
+                self.enhancer.plan(audio_path, Path(tmp), max_duration_s=self.max_duration_s)
+                if self.enhancer else None
+            )
+            return self._decode(audio_path, progress, plan)
+
+    def _decode(self, audio_path: Path, progress: ProgressCallback | None, plan) -> EngineResult:
         t0 = time.monotonic()
         try:
-            wav = self._decode_waveform(audio_path)
+            wav = plan.original if plan is not None else self._decode_waveform(audio_path)
         except EngineError:
             raise
         except Exception as exc:
@@ -313,7 +334,8 @@ class ParakeetEngine(DiarizationMixin):
         words: list[tuple[float, float, str, int]] = []
         last_report = 0.0
         try:
-            for result in self._recognize(wav):  # generator: inference happens during this loop
+            enhanced = plan.enhanced if plan is not None else None
+            for result in self._recognize(wav, enhanced):  # generator: inference happens during this loop
                 text = (result.text or "").strip()
                 if not text:
                     continue
@@ -340,8 +362,10 @@ class ParakeetEngine(DiarizationMixin):
             if progress:
                 progress("diarizing", None)  # pyannote gives no partial results
             t1 = time.monotonic()
+            # pyannote separates speakers better on the cleaned copy.
+            diar_path = plan.enhanced_path if plan is not None and self.enhance_diarize else audio_path
             try:
-                self._apply_diarization(audio_path, segments, words)
+                self._apply_diarization(diar_path, segments, words)
             except Exception as exc:
                 # A transcript without speaker labels beats losing it entirely.
                 log.warning("diarization failed, returning unlabeled transcript: %s", exc)
@@ -357,6 +381,8 @@ class ParakeetEngine(DiarizationMixin):
             "diarize_seconds": round(diarize_s, 2) or None,
             "rtf": round(transcribe_s / duration, 3) if duration else None,
         }
+        if plan is not None:
+            stats.update(plan.stats())
         return EngineResult(
             text=render_text(segments, fallback=plain),
             segments=segments,
@@ -367,3 +393,41 @@ class ParakeetEngine(DiarizationMixin):
             model=self.model_name,
             stats={k: v for k, v in stats.items() if v is not None},
         )
+
+
+class _ProxyVad:
+    """onnx-asr ``Vad`` that segments one waveform (the enhanced copy) and
+    applies the cuts to another (the original) — the noisy-recording path.
+    Both are the same length; region ends are clamped in case the enhancer's
+    resampling left them a few samples apart."""
+
+    def __init__(self, inner, enhanced):
+        self._inner = inner
+        self._enhanced = enhanced
+
+    def recognize_batch(self, asr, waveforms, waveforms_len, sample_rate, asr_kwargs, batch_size=8, **kwargs):
+        from itertools import islice
+
+        import numpy as np
+        from onnx_asr.utils import pad_list
+        from onnx_asr.vad import TimestampedSegmentResult
+
+        enh = self._enhanced.astype(np.float32, copy=False)[None, :]
+        enh_len = np.array([enh.shape[1]], dtype=np.int64)
+
+        def recognize(waveform, length, segment):
+            length = int(length)
+            while batch := list(islice(segment, int(batch_size))):
+                batch = [(max(0, s), min(e, length)) for s, e in batch]
+                batch = [(s, e) for s, e in batch if e > s]
+                if not batch:
+                    continue
+                results = asr.recognize_batch(*pad_list([waveform[s:e] for s, e in batch]), **asr_kwargs)
+                for res, (s, e) in zip(results, batch, strict=True):
+                    yield TimestampedSegmentResult(
+                        s / sample_rate, e / sample_rate, res.text, res.timestamps, res.tokens, res.logprobs
+                    )
+
+        # One enhanced copy => the proxy serves a batch of one waveform.
+        segments = self._inner.segment_batch(enh, enh_len, sample_rate, **kwargs)
+        return (recognize(w, n, seg) for w, n, seg in zip(waveforms, waveforms_len, segments))

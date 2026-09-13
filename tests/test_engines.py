@@ -406,7 +406,7 @@ def _parakeet_with_fakes(monkeypatch, chunks, duration_s=60.0, **kwargs):
 
     monkeypatch.setattr(engine, "_load_model", fake_load)
     monkeypatch.setattr(engine, "_decode_waveform", lambda path: [0.0] * int(duration_s * 16_000))
-    monkeypatch.setattr(engine, "_recognize", lambda wav: iter(chunks))
+    monkeypatch.setattr(engine, "_recognize", lambda wav, enhanced=None: iter(chunks))
     monkeypatch.setattr("app.engines.parakeet.probe_duration", lambda path: duration_s)
     return engine
 
@@ -522,7 +522,7 @@ def test_parakeet_recognizer_error_becomes_engine_error(monkeypatch):
         yield  # pragma: no cover - makes this a generator
 
     engine = _parakeet_with_fakes(monkeypatch, [], duration_s=5.0)
-    monkeypatch.setattr(engine, "_recognize", lambda wav: failing())
+    monkeypatch.setattr(engine, "_recognize", lambda wav, enhanced=None: failing())
     with pytest.raises(EngineError, match="parakeet transcription failed: onnxruntime exploded"):
         asyncio.run(engine.transcribe(Path("a.mp3")))
 

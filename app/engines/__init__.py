@@ -8,6 +8,15 @@ def build_engine(settings) -> "TranscriptionEngine | None":
     or misconfigured (the worker then stores uploads without transcribing)."""
     if not settings.transcribe_enabled:
         return None
+    enhancer = None
+    if settings.stt_engine in ("local", "parakeet") and settings.stt_enhance in ("auto", "always"):
+        from .enhance import Enhancer
+
+        enhancer = Enhancer(
+            mode=settings.stt_enhance,
+            spread_db=settings.stt_enhance_spread_db,
+            binary=settings.stt_enhance_bin,
+        )
     if settings.stt_engine == "local":
         from .local_whisper import LocalWhisperEngine
 
@@ -27,6 +36,8 @@ def build_engine(settings) -> "TranscriptionEngine | None":
             beam_size=settings.stt_beam_size,
             condition_on_previous_text=settings.stt_condition_on_previous,
             diarization_device=settings.stt_diarize_device,
+            enhancer=enhancer,
+            enhance_diarize=settings.stt_enhance_diarize,
         )
     if settings.stt_engine == "parakeet":
         from .parakeet import ParakeetEngine
@@ -46,6 +57,8 @@ def build_engine(settings) -> "TranscriptionEngine | None":
             max_segment_s=settings.stt_parakeet_segment_s,
             min_silence_ms=settings.stt_parakeet_silence_ms,
             diarization_device=settings.stt_diarize_device,
+            enhancer=enhancer,
+            enhance_diarize=settings.stt_enhance_diarize,
         )
     if settings.stt_engine == "openai":
         if not settings.transcribe_base_url:

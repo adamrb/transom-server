@@ -102,6 +102,21 @@ class Settings:
     )
     # Plaud hardware records up to ~5 h per file; reject anything longer.
     stt_max_duration_s: int = field(default_factory=lambda: int(_env("PB_STT_MAX_DURATION_S", "18000")))
+    # Noisy recordings (car, restaurant, wind): the VAD gate mistakes speech
+    # over a loud noise floor for noise and the recognizer skips it. When a
+    # recording measures noisy — the spread between its loud and quiet frames
+    # is under PB_STT_ENHANCE_SPREAD_DB (quiet-room speech spans 25–45 dB; a
+    # car recording measured 8) — DeepFilterNet cleans a copy, speech is
+    # located on the clean copy and the recognizer is pointed at those regions
+    # of the ORIGINAL audio (the clean copy transcribes worse; see
+    # engines/enhance.py). auto | always | off. Needs the `deep-filter`
+    # binary (bundled in the docker images; PB_STT_ENHANCE_BIN points at it
+    # elsewhere). Diarization runs on the clean copy too when
+    # PB_STT_ENHANCE_DIARIZE is on.
+    stt_enhance: str = field(default_factory=lambda: _env("PB_STT_ENHANCE", "auto").strip().lower())
+    stt_enhance_spread_db: float = field(default_factory=lambda: float(_env("PB_STT_ENHANCE_SPREAD_DB", "15")))
+    stt_enhance_bin: str | None = field(default_factory=lambda: _env("PB_STT_ENHANCE_BIN") or None)
+    stt_enhance_diarize: bool = field(default_factory=lambda: _env_bool("PB_STT_ENHANCE_DIARIZE", True))
 
     # -- built-in (parakeet) engine --
     # Any onnx-asr model name (nemo-parakeet-tdt-0.6b-v3 covers 25 European
@@ -258,6 +273,16 @@ class Settings:
             warnings.append("PB_STT_ENGINE=openai but PB_TRANSCRIBE_BASE_URL is not set — uploads stored, not transcribed.")
         if self.stt_diarize and not self.stt_hf_token:
             warnings.append("PB_STT_DIARIZE is on but PB_STT_HF_TOKEN is not set — diarization will likely fail to load.")
+        if self.stt_enhance not in ("auto", "always", "off"):
+            warnings.append(f"PB_STT_ENHANCE={self.stt_enhance!r} is not auto | always | off — treated as off.")
+        elif self.transcribe_enabled and self.stt_enhance != "off" and self.stt_engine in ("local", "parakeet"):
+            from .engines.enhance import find_binary
+
+            if find_binary(self.stt_enhance_bin) is None:
+                warnings.append(
+                    f"PB_STT_ENHANCE={self.stt_enhance} but the deep-filter binary was not found — "
+                    "noisy recordings will be transcribed without enhancement (set PB_STT_ENHANCE_BIN)."
+                )
         if self.cleanup_enabled and not (self.cleanup_base_url and self.cleanup_model):
             warnings.append(
                 "PB_CLEANUP_ENABLED is on but no chat endpoint is configured "
