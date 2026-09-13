@@ -118,8 +118,15 @@ def find_binary(configured: str | None = None) -> str | None:
     return shutil.which(candidate)
 
 
-def enhance(wav: np.ndarray, work_dir: Path, binary: str, timeout_s: float | None = None) -> np.ndarray:
+def enhance(wav: np.ndarray, work_dir: Path, binary: str, timeout_s: float | None = None,
+            atten_db: float | None = None) -> np.ndarray:
     """Run DeepFilterNet over ``wav`` and return the enhanced 16 kHz waveform.
+
+    ``atten_db`` caps the noise reduction (deep-filter ``-a``): the enhanced
+    signal is mixed with the noisy one so the noise drops by at most that many
+    dB. The consensus pass decodes such a partially cleaned copy as a second
+    opinion — it hears some words the raw audio hides while damaging the
+    speech far less than the full reduction does.
 
     ``work_dir`` holds the intermediate WAVs (the binary works on files); the
     caller owns and removes it. The binary resamples to 48 kHz internally and
@@ -129,13 +136,17 @@ def enhance(wav: np.ndarray, work_dir: Path, binary: str, timeout_s: float | Non
     samples it still leaves unflushed at the tail are zero-padded back."""
     work_dir.mkdir(parents=True, exist_ok=True)
     src = work_dir / "input.wav"
-    out_dir = work_dir / "out"
+    out_dir = work_dir / ("out" if atten_db is None else f"out-a{atten_db:g}")
     out_dir.mkdir(exist_ok=True)
-    write_wav(src, wav)
+    if not src.is_file():
+        write_wav(src, wav)
     t0 = time.monotonic()
+    args = [binary, "-D"]
+    if atten_db is not None:
+        args += ["-a", f"{atten_db:g}"]
     try:
         proc = subprocess.run(
-            [binary, "-D", "-o", str(out_dir), str(src)],
+            args + ["-o", str(out_dir), str(src)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout_s,
         )
     except subprocess.TimeoutExpired as exc:
@@ -298,6 +309,7 @@ class Enhancer:
             return EnhancePlan(
                 original=wav, enhanced=enhanced, enhanced_path=enhanced_path, regions=regions,
                 noise_spread_db=round(spread, 1), seconds=round(time.monotonic() - t0, 2),
+                work_dir=work_dir, binary=binary, timeout_s=self.timeout_s,
             )
         except Exception as exc:
             log.warning("enhancement skipped for %s: %s", audio_path.name, exc)
@@ -306,13 +318,27 @@ class Enhancer:
 
 class EnhancePlan:
     def __init__(self, original: np.ndarray, enhanced: np.ndarray, enhanced_path: Path,
-                 regions: list[tuple[float, float]], noise_spread_db: float, seconds: float):
+                 regions: list[tuple[float, float]], noise_spread_db: float, seconds: float,
+                 work_dir: Path | None = None, binary: str | None = None, timeout_s: float | None = None):
         self.original = original
         self.enhanced = enhanced
         self.enhanced_path = enhanced_path
         self.regions = regions
         self.noise_spread_db = noise_spread_db
         self.seconds = seconds
+        self.work_dir = work_dir
+        self.binary = binary
+        self.timeout_s = timeout_s
+
+    def partial_copy(self, atten_db: float) -> Path:
+        """A copy of the original with the noise reduced by at most
+        ``atten_db`` (see ``enhance``), written next to the enhanced one."""
+        if self.work_dir is None or self.binary is None:
+            raise EngineError("enhancement plan has no work dir to write a partial copy")
+        wav = enhance(self.original, self.work_dir, self.binary, self.timeout_s, atten_db=atten_db)
+        path = self.work_dir / f"partial-a{atten_db:g}.wav"
+        write_wav(path, wav)
+        return path
 
     @property
     def clip_timestamps(self) -> list[float]:

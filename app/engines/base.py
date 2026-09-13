@@ -34,6 +34,15 @@ class Segment:
 
 
 @dataclass
+class Alternate:
+    """A second, independent transcription of the same audio (another model,
+    or the same model on differently prepared audio) for the consensus pass
+    to weigh against the primary segments. Never rendered on its own."""
+    name: str
+    segments: list[Segment] = field(default_factory=list)
+
+
+@dataclass
 class EngineResult:
     text: str
     segments: list[Segment] = field(default_factory=list)
@@ -42,6 +51,7 @@ class EngineResult:
     model: str | None = None
     # Engine-reported performance stats (benchmarking + status UI)
     stats: dict = field(default_factory=dict)
+    alternates: list[Alternate] = field(default_factory=list)
 
 
 class TranscriptionEngine(Protocol):

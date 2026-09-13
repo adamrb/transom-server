@@ -16,6 +16,7 @@ from pathlib import Path
 import httpx
 
 from .cleanup import CleanupResult, cleanup_segments, split_text
+from .consensus import ConsensusResult, consensus_segments
 from .config import Settings
 from .db import Store, utcnow_iso
 from .engines import EngineError, Segment, TranscriptionEngine, build_engine, render_text
@@ -236,6 +237,16 @@ class Transcriber:
             self.store.update(rec_id, status="failed", error=str(exc)[:1000], stage=None, progress=None)
             return
 
+        # Noisy recording with second opinions: reconcile the recognizers'
+        # readings first (raw recognizer text, before any corrections).
+        consensus: ConsensusResult | None = None
+        if result.alternates and result.segments:
+            self._set_progress(rec_id, "merging", None)
+            consensus = await self._consensus(result.segments, result.alternates)
+            if consensus.changed:
+                result.text = render_text(
+                    result.segments, fallback=" ".join(s.text for s in result.segments if s.text)
+                )
         # Known mis-hearings -> the right spelling, in the segments and the
         # rendered text (kept consistent by re-rendering from the segments).
         if vocab and correct_segments(result.segments, vocab):
@@ -280,6 +291,8 @@ class Transcriber:
             "text": result.text,
             "segments": [s.as_dict() for s in result.segments],
         }
+        if consensus is not None:
+            transcript["consensus"] = consensus.as_dict()
         if cleanup is not None:
             transcript["cleanup"] = cleanup.as_dict()
         # Recorder button presses -> highlighted passages. The marks may also
@@ -433,12 +446,10 @@ class Transcriber:
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
         tmp.replace(path)
 
-    async def _cleanup(self, segments, vocab: list[VocabEntry]) -> CleanupResult:
-        """One chat completion per PB_CLEANUP_MAX_CHARS of transcript, editing
-        `segments` in place. Never raises: the pass is optional polish."""
+    def _completer(self):
+        """One chat completion against the cleanup endpoint (shared by the
+        consensus and cleanup passes)."""
         s = self.settings
-        if not (s.cleanup_base_url and s.cleanup_model):
-            return CleanupResult(error="cleanup endpoint not configured")
         headers = {}
         if s.cleanup_api_key:
             headers["Authorization"] = f"Bearer {s.cleanup_api_key}"
@@ -459,6 +470,35 @@ class Transcriber:
             if resp.status_code != 200:
                 raise RuntimeError(f"cleanup endpoint returned {resp.status_code}: {resp.text[:200]}")
             return resp.json()["choices"][0]["message"]["content"] or ""
+
+        return complete
+
+    async def _consensus(self, segments, alternates) -> ConsensusResult:
+        """Reconcile the engine's second opinions into `segments` (see
+        consensus.py). Never raises: the pass is optional polish."""
+        s = self.settings
+        if not (s.cleanup_base_url and s.cleanup_model):
+            return ConsensusResult(error="cleanup endpoint not configured")
+        try:
+            result = await consensus_segments(
+                segments, alternates, self._completer(),
+                context=s.cleanup_context, window_s=s.consensus_window_s, model=s.cleanup_model,
+            )
+        except Exception as exc:
+            log.warning("consensus pass crashed, keeping primary text: %s", exc)
+            return ConsensusResult(model=s.cleanup_model, error=f"{type(exc).__name__}: {exc}")
+        log.info("consensus: %d segment(s) changed, %d rejected, %d call(s) over %d system(s) in %.1fs%s",
+                 result.changed, result.rejected, result.calls, len(result.systems), result.seconds,
+                 f" ({result.error})" if result.error else "")
+        return result
+
+    async def _cleanup(self, segments, vocab: list[VocabEntry]) -> CleanupResult:
+        """One chat completion per PB_CLEANUP_MAX_CHARS of transcript, editing
+        `segments` in place. Never raises: the pass is optional polish."""
+        s = self.settings
+        if not (s.cleanup_base_url and s.cleanup_model):
+            return CleanupResult(error="cleanup endpoint not configured")
+        complete = self._completer()
 
         try:
             result = await cleanup_segments(

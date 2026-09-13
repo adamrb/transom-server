@@ -117,6 +117,21 @@ class Settings:
     stt_enhance_spread_db: float = field(default_factory=lambda: float(_env("PB_STT_ENHANCE_SPREAD_DB", "15")))
     stt_enhance_bin: str | None = field(default_factory=lambda: _env("PB_STT_ENHANCE_BIN") or None)
     stt_enhance_diarize: bool = field(default_factory=lambda: _env_bool("PB_STT_ENHANCE_DIARIZE", True))
+    # Consensus on noisy recordings (local engine): after the primary decode,
+    # parakeet transcribes the raw audio on the CPU and whisper decodes a copy
+    # with the noise reduced by at most PB_STT_CONSENSUS_ATTEN_DB; the cleanup
+    # LLM endpoint then reconciles the readings segment by segment (see
+    # consensus.py). auto = when the recording measured noisy; off = never.
+    stt_consensus: str = field(default_factory=lambda: _env("PB_STT_CONSENSUS", "auto").strip().lower())
+    # ("off" disables either second opinion; PB_STT_CONSENSUS=off disables the pass)
+    stt_consensus_parakeet_model: str | None = field(
+        default_factory=lambda: (
+            None if (_env("PB_STT_CONSENSUS_PARAKEET_MODEL", "nemo-parakeet-tdt-0.6b-v2") or "").lower()
+            in ("off", "none") else _env("PB_STT_CONSENSUS_PARAKEET_MODEL", "nemo-parakeet-tdt-0.6b-v2")))
+    stt_consensus_atten_db: float | None = field(default_factory=lambda: (
+        float(_env("PB_STT_CONSENSUS_ATTEN_DB", "12")) if (_env("PB_STT_CONSENSUS_ATTEN_DB", "12") or "").strip()
+        not in ("", "0", "off", "none") else None))
+    consensus_window_s: float = field(default_factory=lambda: float(_env("PB_CONSENSUS_WINDOW_S", "40")))
 
     # -- built-in (parakeet) engine --
     # Any onnx-asr model name (nemo-parakeet-tdt-0.6b-v3 covers 25 European
@@ -273,6 +288,14 @@ class Settings:
             warnings.append("PB_STT_ENGINE=openai but PB_TRANSCRIBE_BASE_URL is not set — uploads stored, not transcribed.")
         if self.stt_diarize and not self.stt_hf_token:
             warnings.append("PB_STT_DIARIZE is on but PB_STT_HF_TOKEN is not set — diarization will likely fail to load.")
+        if self.stt_consensus not in ("auto", "off"):
+            warnings.append(f"PB_STT_CONSENSUS={self.stt_consensus!r} is not auto | off — treated as off.")
+        elif (self.transcribe_enabled and self.stt_consensus == "auto" and self.stt_engine == "local"
+              and self.stt_enhance != "off" and not (self.cleanup_base_url and self.cleanup_model)):
+            warnings.append(
+                "PB_STT_CONSENSUS=auto needs the cleanup LLM endpoint (PB_CLEANUP_BASE_URL / "
+                "PB_CLEANUP_MODEL, or the summary endpoint) — noisy recordings get no consensus pass."
+            )
         if self.stt_enhance not in ("auto", "always", "off"):
             warnings.append(f"PB_STT_ENHANCE={self.stt_enhance!r} is not auto | always | off — treated as off.")
         elif self.transcribe_enabled and self.stt_enhance != "off" and self.stt_engine in ("local", "parakeet"):

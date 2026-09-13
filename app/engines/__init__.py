@@ -38,6 +38,10 @@ def build_engine(settings) -> "TranscriptionEngine | None":
             diarization_device=settings.stt_diarize_device,
             enhancer=enhancer,
             enhance_diarize=settings.stt_enhance_diarize,
+            consensus=(enhancer is not None and settings.stt_consensus == "auto"
+                       and bool(settings.cleanup_base_url and settings.cleanup_model)),
+            consensus_parakeet_model=settings.stt_consensus_parakeet_model,
+            consensus_atten_db=settings.stt_consensus_atten_db,
         )
     if settings.stt_engine == "parakeet":
         from .parakeet import ParakeetEngine

@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from .base import EngineError, EngineResult, ProgressCallback, Segment, render_text
+from .base import Alternate, EngineError, EngineResult, ProgressCallback, Segment, render_text
 from .diarization import DiarizationMixin, probe_duration
 from .enhance import Enhancer
 
@@ -52,6 +52,9 @@ class LocalWhisperEngine(DiarizationMixin):
         diarization_device: str | None = None,
         enhancer: Enhancer | None = None,
         enhance_diarize: bool = True,
+        consensus: bool = False,
+        consensus_parakeet_model: str | None = "nemo-parakeet-tdt-0.6b-v2",
+        consensus_atten_db: float | None = 12.0,
     ):
         self.model_name = model
         self.device = device
@@ -72,6 +75,13 @@ class LocalWhisperEngine(DiarizationMixin):
         # Noisy-recording path (see enhance.py): None or mode "off" = never.
         self.enhancer = enhancer
         self.enhance_diarize = enhance_diarize
+        # Second opinions for the consensus pass on noisy recordings (see
+        # consensus.py): parakeet on the raw audio, and this model again on a
+        # partially denoised copy. Either may be turned off with None.
+        self.consensus = consensus
+        self.consensus_parakeet_model = consensus_parakeet_model
+        self.consensus_atten_db = consensus_atten_db
+        self._alt_parakeet = None
         self._model = None
         self._diar_proc = None
         self._lock = asyncio.Lock()
@@ -232,6 +242,15 @@ class LocalWhisperEngine(DiarizationMixin):
             raise EngineError(f"whisper transcription failed: {exc}") from exc
         transcribe_s = time.monotonic() - t0
 
+        alternates: list[Alternate] = []
+        alternates_s = 0.0
+        if self.consensus and plan is not None and segments:
+            if progress:
+                progress("transcribing", 0.99)
+            t1 = time.monotonic()
+            alternates = self._alternates(model, audio_path, clips, hotwords, plan)
+            alternates_s = time.monotonic() - t1
+
         diarize_s = 0.0
         if self.diarization and segments:
             if progress:
@@ -258,6 +277,9 @@ class LocalWhisperEngine(DiarizationMixin):
         }
         if plan is not None:
             stats.update(plan.stats())
+        if alternates:
+            stats["alternates"] = [a.name for a in alternates]
+            stats["alternates_seconds"] = round(alternates_s, 2)
         return EngineResult(
             text=render_text(segments, fallback=plain),
             segments=segments,
@@ -265,4 +287,49 @@ class LocalWhisperEngine(DiarizationMixin):
             duration=round(info.duration, 2) if info.duration else None,
             model=self.model_name,
             stats={k: v for k, v in stats.items() if v is not None},
+            alternates=alternates,
         )
+
+    # -- second opinions for the consensus pass ------------------------------
+
+    def _alternates(self, model, audio_path: Path, clips, hotwords: str | None, plan) -> list[Alternate]:
+        """Independent transcriptions of the same speech for consensus.py to
+        weigh against the primary: each failure is logged and skipped."""
+        out: list[Alternate] = []
+        if self.consensus_atten_db is not None:
+            try:
+                partial = plan.partial_copy(self.consensus_atten_db)
+                seg_iter, _info = model.transcribe(
+                    str(partial), language=self.language, beam_size=self.beam_size,
+                    vad_filter=False, clip_timestamps=clips if clips is not None else "0",
+                    hotwords=hotwords or None, condition_on_previous_text=False,
+                )
+                segs = [Segment(start=round(s.start, 2), end=round(s.end, 2), text=s.text.strip()) for s in seg_iter]
+                out.append(Alternate(name=f"whisper {self.model_name} on a partially denoised copy "
+                                          f"(noise -{self.consensus_atten_db:g} dB)", segments=segs))
+            except Exception as exc:
+                log.warning("consensus alternate (partial denoise) failed: %s", exc)
+        if self.consensus_parakeet_model:
+            try:
+                engine = self._parakeet()
+                result = engine._decode(audio_path, None, plan)
+                out.append(Alternate(name=f"parakeet {self.consensus_parakeet_model} on the raw audio",
+                                     segments=result.segments))
+            except Exception as exc:
+                log.warning("consensus alternate (parakeet) failed: %s", exc)
+        return out
+
+    def _parakeet(self):
+        """A CPU parakeet recognizer, loaded once and kept warm. On the CPU
+        deliberately: the GPU holds whisper (and pyannote), and on a 6 GB
+        card another 2.4 GB model does not fit beside them."""
+        if self._alt_parakeet is None:
+            from .parakeet import ParakeetEngine
+
+            engine = ParakeetEngine(
+                model=self.consensus_parakeet_model, device="cpu", diarization=False,
+                max_duration_s=self.max_duration_s, language=None,
+            )
+            engine._load_model()
+            self._alt_parakeet = engine
+        return self._alt_parakeet
