@@ -13,6 +13,7 @@ Endpoints (all under /api/v1, Bearer-token auth except /health):
   GET  /recordings/{id}/transcript      transcript JSON (409 while pending)
   PATCH /recordings/{id}/speakers       rename speakers ("Speaker 1" -> "Alex")
   POST /recordings/{id}/retranscribe    reset a recording for the worker
+  POST /audio/transcriptions            OpenAI-compatible STT with this server's engine (also /v1/audio/transcriptions)
   GET  /routes                          list AI routing routes
   POST /routes                          create a route
   PUT  /routes/{id}                     update a route
@@ -219,7 +220,7 @@ def _token_ok(request: Request) -> bool:
 async def auth_middleware(request: Request, call_next):
     """Reject unauthenticated API requests before any body parsing happens."""
     path = request.url.path
-    if (path.startswith("/api/") and not _is_public(path, request.method)
+    if ((path.startswith("/api/") or path.startswith("/v1/")) and not _is_public(path, request.method)
             and not _token_ok(request) and not _result_callback_ok(request)):
         link = _audio_link_request(request)
         if link is not None and not link[1]:
@@ -846,6 +847,92 @@ async def retranscribe(rec_id: str):
     )
     transcriber.wake.set()
     return {"id": rec_id, "status": "pending"}
+
+
+# ── OpenAI-compatible transcription (worker mode) ───────────────────────────
+#
+# Another plaud-bridge (or anything speaking the OpenAI audio API) can send a
+# file here and get this server's engine — enhancement, consensus alternates
+# and speaker diarization included — as verbose_json. This is how a GPU box
+# elsewhere becomes the transcription worker for the server that holds the
+# recordings: point that server's PB_STT_ENGINE=openai at this URL.
+
+_TRANSCRIBE_FORMATS = ("json", "verbose_json", "text")
+
+
+async def _transcribe_upload(file: UploadFile, language: str | None, prompt: str | None, response_format: str):
+    if transcriber is None or transcriber.engine is None:
+        raise HTTPException(status_code=503, detail="transcription is disabled on this server")
+    if response_format not in _TRANSCRIBE_FORMATS:
+        raise HTTPException(status_code=400, detail=f"response_format must be one of {', '.join(_TRANSCRIBE_FORMATS)}")
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    suffix = Path(file.filename or "audio").suffix[:8] or ".bin"
+    tmp = tempfile.NamedTemporaryFile(prefix="pb-stt-", suffix=suffix, delete=False)
+    size = 0
+    try:
+        while chunk := await file.read(1024 * 1024):
+            size += len(chunk)
+            if size > max_bytes:
+                raise HTTPException(status_code=413, detail=f"file exceeds {settings.max_upload_mb} MB")
+            tmp.write(chunk)
+        tmp.close()
+        if size == 0:
+            raise HTTPException(status_code=400, detail="empty file")
+        engine = transcriber.engine
+        # The engine decodes in its configured language (PB_TRANSCRIBE_LANGUAGE
+        # or auto-detect); a different per-request `language` is noted, not
+        # honoured — the models are loaded once with one configuration.
+        if language and getattr(engine, "language", None) not in (None, language):
+            log.info("transcription API: language=%s requested, engine is configured for %s",
+                     language, getattr(engine, "language", None))
+        try:
+            result = await engine.transcribe(Path(tmp.name), hotwords=prompt or None, progress=None)
+        except Exception as exc:
+            log.warning("transcription API request failed: %s", exc)
+            raise HTTPException(status_code=502, detail=f"transcription failed: {str(exc)[:300]}")
+        consensus = None
+        if result.alternates and result.segments:
+            consensus = await transcriber._consensus(result.segments, result.alternates)
+            if consensus.changed:
+                result.text = render_text_public(result.segments)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+    if response_format == "text":
+        return Response(result.text, media_type="text/plain")
+    if response_format == "json":
+        return {"text": result.text}
+    body = {
+        "task": "transcribe",
+        "language": result.language,
+        "duration": result.duration,
+        "text": result.text,
+        "segments": [
+            {"id": i, "start": s.start, "end": s.end, "text": s.text, **({"speaker": s.speaker} if s.speaker else {})}
+            for i, s in enumerate(result.segments)
+        ],
+        "stats": result.stats,
+    }
+    if consensus is not None:
+        body["consensus"] = consensus.as_dict()
+    return body
+
+
+def render_text_public(segments) -> str:
+    from .engines import render_text
+
+    return render_text(segments, fallback=" ".join(s.text for s in segments if s.text))
+
+
+@app.post("/api/v1/audio/transcriptions", dependencies=[Depends(require_auth)])
+@app.post("/v1/audio/transcriptions", dependencies=[Depends(require_auth)])
+async def transcribe_audio(
+    file: UploadFile,
+    model: str = Form("whisper-1", max_length=200),
+    language: str | None = Form(None, max_length=16),
+    prompt: str | None = Form(None, max_length=4000),
+    response_format: str = Form("json", max_length=32),
+):
+    return await _transcribe_upload(file, language, prompt, response_format)
 
 
 @app.delete("/api/v1/recordings/{rec_id}", dependencies=[Depends(require_auth)])

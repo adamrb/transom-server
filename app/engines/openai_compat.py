@@ -61,8 +61,12 @@ class OpenAICompatEngine:
         raise EngineError("unreachable")
 
     def _parse(self, body: dict, elapsed: float) -> EngineResult:
+        # A plaud-bridge worker (its own /v1/audio/transcriptions) labels
+        # segments with speakers and reports what it did (enhancement,
+        # consensus); plain whisper servers send neither and that is fine.
         segments = [
-            Segment(start=s.get("start"), end=s.get("end"), text=(s.get("text") or "").strip())
+            Segment(start=s.get("start"), end=s.get("end"), text=(s.get("text") or "").strip(),
+                    speaker=(str(s["speaker"]) if s.get("speaker") else None))
             for s in body.get("segments") or []
         ]
         duration = body.get("duration")
@@ -73,6 +77,12 @@ class OpenAICompatEngine:
         }
         if duration:
             stats["rtf"] = round(elapsed / duration, 3)
+        remote = body.get("stats")
+        if isinstance(remote, dict) and remote:
+            stats["remote"] = remote
+        consensus = body.get("consensus")
+        if isinstance(consensus, dict) and consensus:
+            stats["remote_consensus"] = consensus
         return EngineResult(
             text=render_text(segments, fallback=body.get("text", "")),
             segments=segments,

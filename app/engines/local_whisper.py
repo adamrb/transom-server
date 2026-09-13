@@ -15,6 +15,7 @@ Design notes:
 
 import asyncio
 import logging
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -55,6 +56,8 @@ class LocalWhisperEngine(DiarizationMixin):
         consensus: bool = False,
         consensus_parakeet_model: str | None = "nemo-parakeet-tdt-0.6b-v2",
         consensus_atten_db: float | None = 12.0,
+        idle_unload_s: int = 0,
+        min_free_vram_mb: int = 0,
     ):
         self.model_name = model
         self.device = device
@@ -82,6 +85,15 @@ class LocalWhisperEngine(DiarizationMixin):
         self.consensus_parakeet_model = consensus_parakeet_model
         self.consensus_atten_db = consensus_atten_db
         self._alt_parakeet = None
+        # Shared-GPU worker mode: unload the recognizers after idle_unload_s
+        # seconds without work (the diarization worker stays: it cannot be
+        # respawned once this process holds a CUDA context, see _load_model),
+        # and load on the CPU instead of a GPU with under min_free_vram_mb free.
+        self.idle_unload_s = idle_unload_s
+        self.min_free_vram_mb = min_free_vram_mb
+        self._idle_task: asyncio.Task | None = None
+        self._last_used = 0.0
+        self.device_used: str | None = None
         self._model = None
         self._diar_proc = None
         self._lock = asyncio.Lock()
@@ -97,6 +109,18 @@ class LocalWhisperEngine(DiarizationMixin):
         # longer spawn a child cleanly (fork segfaults, posix_spawn/vfork
         # deadlocks against the driver's threads), so the child must be forked
         # off while we are still CUDA-free, then kept alive.
+        # Shared-GPU guard, decided BEFORE anything allocates: a card with less
+        # than min_free_vram_mb free gets neither whisper nor (when it would
+        # have followed whisper's device) the pyannote worker.
+        device, compute = self.device, self.compute_type
+        if device in ("auto", "cuda") and self.min_free_vram_mb:
+            free = gpu_free_mb()
+            if free is not None and free < self.min_free_vram_mb:
+                log.warning("GPU has %d MB free, under PB_STT_MIN_FREE_VRAM_MB=%d: loading whisper on the CPU",
+                            free, self.min_free_vram_mb)
+                device, compute = "cpu", "auto" if self.compute_type in ("float16", "int8_float16") else self.compute_type
+                if not self.diarization_device and self._diar_proc is None:
+                    self.diarization_device = "cpu"
         self._ensure_diar_worker()
         try:
             from faster_whisper import WhisperModel
@@ -106,17 +130,50 @@ class LocalWhisperEngine(DiarizationMixin):
                 "or use the CUDA/CPU docker image"
             ) from exc
         t0 = time.monotonic()
-        log.info("loading whisper model %r (device=%s, compute=%s)",
-                 self.model_name, self.device, self.compute_type)
+        log.info("loading whisper model %r (device=%s, compute=%s)", self.model_name, device, compute)
         self._model = WhisperModel(
             self.model_name,
-            device=self.device,
-            compute_type=self.compute_type,
+            device=device,
+            compute_type=compute,
             cpu_threads=self.cpu_threads,
         )
+        self.device_used = device
         self.load_seconds = time.monotonic() - t0
         log.info("model loaded in %.1fs", self.load_seconds)
         return self._model
+
+    # -- shared-GPU housekeeping --------------------------------------------
+
+    def unload(self) -> None:
+        """Drop the recognizers (whisper, the consensus parakeet) so their GPU
+        memory goes back to the card. Models reload on the next request. The
+        diarization worker is kept (see _load_model)."""
+        if self._model is None and self._alt_parakeet is None:
+            return
+        log.info("unloading whisper%s after %ds idle",
+                 " and parakeet" if self._alt_parakeet is not None else "", self.idle_unload_s)
+        self._model = None
+        self._alt_parakeet = None
+        import gc
+
+        gc.collect()
+
+    def _touch(self) -> None:
+        """Note activity and (re)arm the idle unload timer."""
+        self._last_used = time.monotonic()
+        if not self.idle_unload_s:
+            return
+        if self._idle_task is None or self._idle_task.done():
+            self._idle_task = asyncio.get_running_loop().create_task(self._idle_watch())
+
+    async def _idle_watch(self) -> None:
+        while True:
+            await asyncio.sleep(max(1.0, self.idle_unload_s - (time.monotonic() - self._last_used)))
+            if time.monotonic() - self._last_used >= self.idle_unload_s:
+                async with self._lock:
+                    if time.monotonic() - self._last_used >= self.idle_unload_s:
+                        self.unload()
+                        return
 
     # Diarization worker management and speaker assignment live in
     # DiarizationMixin (shared with the parakeet engine).
@@ -127,7 +184,11 @@ class LocalWhisperEngine(DiarizationMixin):
         self, audio_path: Path, hotwords: str | None = None, progress: ProgressCallback | None = None
     ) -> EngineResult:
         async with self._lock:
-            return await asyncio.to_thread(self._transcribe_sync, audio_path, hotwords, progress)
+            self._touch()
+            try:
+                return await asyncio.to_thread(self._transcribe_sync, audio_path, hotwords, progress)
+            finally:
+                self._touch()
 
     def _probe_duration(self, audio_path: Path) -> float | None:
         """Container-header duration probe (cheap; no decode). Used to reject
@@ -269,7 +330,7 @@ class LocalWhisperEngine(DiarizationMixin):
         stats = {
             "engine": self.name,
             "model": self.model_name,
-            "device": self.device,
+            "device": self.device_used or self.device,
             "compute_type": self.compute_type,
             "transcribe_seconds": round(transcribe_s, 2),
             "diarize_seconds": round(diarize_s, 2) or None,
@@ -333,3 +394,27 @@ class LocalWhisperEngine(DiarizationMixin):
             engine._load_model()
             self._alt_parakeet = engine
         return self._alt_parakeet
+
+
+def gpu_free_mb() -> int | None:
+    """Free memory on the GPU whisper will use per nvidia-smi — the first
+    entry of CUDA_VISIBLE_DEVICES (index or UUID) when set, else GPU 0 — or
+    None when there is no usable nvidia-smi (no GPU, CPU image)."""
+    import os
+
+    visible = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").split(",")[0].strip()
+    target = visible if visible and visible.lower() not in ("all",) else "0"
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", f"--id={target}", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    first = out.stdout.strip().splitlines()[:1]
+    try:
+        return int(first[0].strip()) if first else None
+    except ValueError:
+        return None

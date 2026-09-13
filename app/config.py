@@ -204,6 +204,19 @@ class Settings:
     transcribe_language: str | None = field(default_factory=lambda: _env("PB_TRANSCRIBE_LANGUAGE"))
     transcribe_timeout_s: int = field(default_factory=lambda: int(_env("PB_TRANSCRIBE_TIMEOUT_S", "1800")))
     transcribe_max_attempts: int = field(default_factory=lambda: int(_env("PB_TRANSCRIBE_MAX_ATTEMPTS", "3")))
+    # When the primary engine fails (a remote worker behind a tunnel that is
+    # down, out of GPU memory, timing out), transcribe with this engine
+    # instead: "local" | "parakeet" | "openai" | "" (no fallback). The
+    # fallback engine is built from the same settings, so a local fallback
+    # for a remote primary needs the local model settings configured too.
+    stt_fallback_engine: str = field(default_factory=lambda: (_env("PB_STT_FALLBACK_ENGINE") or "").strip().lower())
+    # Worker mode on a shared GPU: drop the loaded models after this many idle
+    # seconds (0 = keep them warm forever) so the memory goes back to whatever
+    # else the card is doing (a training run); and refuse to load onto the GPU
+    # when it has less than this much memory free, decoding on the CPU instead
+    # for that load (0 = never check).
+    stt_idle_unload_s: int = field(default_factory=lambda: int(_env("PB_STT_IDLE_UNLOAD_S", "0")))
+    stt_min_free_vram_mb: int = field(default_factory=lambda: int(_env("PB_STT_MIN_FREE_VRAM_MB", "0")))
 
     # Optional LLM summarization of each transcript (any OpenAI-compatible chat
     # endpoint). Defaults to off; base URL should include the /v1 suffix.
@@ -284,6 +297,12 @@ class Settings:
             warnings.append(
                 "PB_PLAUD_CLIENT_ID / PB_PLAUD_SECRET_KEY not set — /plaud/user-token will be unavailable."
             )
+        if self.stt_fallback_engine and self.stt_fallback_engine not in ("local", "parakeet", "openai"):
+            warnings.append(f"PB_STT_FALLBACK_ENGINE={self.stt_fallback_engine!r} is not local | parakeet | openai — ignored.")
+        elif self.stt_fallback_engine and self.stt_fallback_engine == self.stt_engine:
+            warnings.append("PB_STT_FALLBACK_ENGINE is the same as PB_STT_ENGINE — no fallback.")
+        elif self.stt_fallback_engine == "openai" and not self.transcribe_base_url:
+            warnings.append("PB_STT_FALLBACK_ENGINE=openai but PB_TRANSCRIBE_BASE_URL is not set — no fallback.")
         if self.transcribe_enabled and self.stt_engine == "openai" and not self.transcribe_base_url:
             warnings.append("PB_STT_ENGINE=openai but PB_TRANSCRIBE_BASE_URL is not set — uploads stored, not transcribed.")
         if self.stt_diarize and not self.stt_hf_token:
