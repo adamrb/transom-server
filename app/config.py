@@ -132,6 +132,10 @@ class Settings:
         float(_env("PB_STT_CONSENSUS_ATTEN_DB", "12")) if (_env("PB_STT_CONSENSUS_ATTEN_DB", "12") or "").strip()
         not in ("", "0", "off", "none") else None))
     consensus_window_s: float = field(default_factory=lambda: float(_env("PB_CONSENSUS_WINDOW_S", "40")))
+    # Where the consensus parakeet runs: cpu (default; leaves a small GPU to
+    # whisper + pyannote) or cuda (a 24 GB+ card decodes it in seconds).
+    stt_consensus_parakeet_device: str = field(
+        default_factory=lambda: _env("PB_STT_CONSENSUS_PARAKEET_DEVICE", "cpu").strip().lower())
 
     # -- built-in (parakeet) engine --
     # Any onnx-asr model name (nemo-parakeet-tdt-0.6b-v3 covers 25 European

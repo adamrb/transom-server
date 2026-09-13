@@ -91,6 +91,7 @@ def _build_one(settings) -> "TranscriptionEngine | None":
                        and bool(settings.cleanup_base_url and settings.cleanup_model)),
             consensus_parakeet_model=settings.stt_consensus_parakeet_model,
             consensus_atten_db=settings.stt_consensus_atten_db,
+            consensus_parakeet_device=settings.stt_consensus_parakeet_device,
             idle_unload_s=settings.stt_idle_unload_s,
             min_free_vram_mb=settings.stt_min_free_vram_mb,
         )

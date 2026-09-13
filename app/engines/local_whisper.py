@@ -56,6 +56,7 @@ class LocalWhisperEngine(DiarizationMixin):
         consensus: bool = False,
         consensus_parakeet_model: str | None = "nemo-parakeet-tdt-0.6b-v2",
         consensus_atten_db: float | None = 12.0,
+        consensus_parakeet_device: str = "cpu",
         idle_unload_s: int = 0,
         min_free_vram_mb: int = 0,
     ):
@@ -84,6 +85,7 @@ class LocalWhisperEngine(DiarizationMixin):
         self.consensus = consensus
         self.consensus_parakeet_model = consensus_parakeet_model
         self.consensus_atten_db = consensus_atten_db
+        self.consensus_parakeet_device = consensus_parakeet_device
         self._alt_parakeet = None
         # Shared-GPU worker mode: unload the recognizers after idle_unload_s
         # seconds without work (the diarization worker stays: it cannot be
@@ -381,14 +383,24 @@ class LocalWhisperEngine(DiarizationMixin):
         return out
 
     def _parakeet(self):
-        """A CPU parakeet recognizer, loaded once and kept warm. On the CPU
-        deliberately: the GPU holds whisper (and pyannote), and on a 6 GB
-        card another 2.4 GB model does not fit beside them."""
+        """The consensus parakeet recognizer, loaded once and kept warm. On
+        the CPU by default: the GPU holds whisper (and pyannote), and on a
+        6 GB card another 2.4 GB model does not fit beside them. A big card
+        (PB_STT_CONSENSUS_PARAKEET_DEVICE=cuda) runs it in seconds instead."""
         if self._alt_parakeet is None:
             from .parakeet import ParakeetEngine
 
+            device = self.consensus_parakeet_device
+            if device in ("auto", "cuda"):
+                # Same guard as whisper's: a card that was too full for whisper
+                # (or is under the threshold now) does not get parakeet either.
+                free = gpu_free_mb() if self.min_free_vram_mb else None
+                if self.device_used == "cpu" or (free is not None and free < self.min_free_vram_mb):
+                    log.warning("consensus parakeet requested on %s but the GPU is short (%s MB free): using the CPU",
+                                device, free if free is not None else "?")
+                    device = "cpu"
             engine = ParakeetEngine(
-                model=self.consensus_parakeet_model, device="cpu", diarization=False,
+                model=self.consensus_parakeet_model, device=device, diarization=False,
                 max_duration_s=self.max_duration_s, language=None,
             )
             engine._load_model()

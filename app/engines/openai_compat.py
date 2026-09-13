@@ -1,6 +1,7 @@
 """External engine: any OpenAI-compatible /v1/audio/transcriptions endpoint
 (speaches, faster-whisper-server, whisper.cpp server, hosted APIs)."""
 
+import json
 import logging
 import mimetypes
 import time
@@ -53,7 +54,20 @@ class OpenAICompatEngine:
                         files={"file": (audio_path.name, fh, mime)},
                     )
                 if resp.status_code == 200:
-                    return self._parse(resp.json(), time.monotonic() - t0)
+                    # A plaud-bridge worker streams keepalive whitespace before
+                    # the JSON and reports a late failure as {"error": ...}.
+                    text = resp.text.strip()
+                    if not text:
+                        raise EngineError("endpoint returned an empty body")
+                    try:
+                        body = json.loads(text)
+                    except ValueError as exc:
+                        raise EngineError(f"endpoint returned unreadable JSON: {resp.text[:200]!r}") from exc
+                    if not isinstance(body, dict):
+                        raise EngineError(f"endpoint returned unexpected JSON: {text[:200]!r}")
+                    if isinstance(body, dict) and "error" in body and "text" not in body:
+                        raise EngineError(f"endpoint reported: {str(body['error'])[:300]}")
+                    return self._parse(body, time.monotonic() - t0)
                 # Some servers reject verbose_json; retry once with plain json.
                 if response_format == "verbose_json" and resp.status_code in (400, 422):
                     continue

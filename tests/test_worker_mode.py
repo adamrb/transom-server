@@ -2,6 +2,7 @@
 engine, remote result parsing, and shared-GPU housekeeping."""
 
 import asyncio
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -305,3 +306,133 @@ def test_gpu_free_mb_queries_the_visible_device(monkeypatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-c8523d25-d1d0-d4ce-1010-0d35a09b07fb")
     lw.gpu_free_mb()
     assert "--id=GPU-c8523d25-d1d0-d4ce-1010-0d35a09b07fb" in seen[-1]
+
+
+def test_transcription_endpoint_streams_heartbeats_and_late_errors(client, monkeypatch):
+    """A slow engine gets keepalive whitespace ahead of the JSON; a failure
+    after the first byte arrives as an error object, which the openai engine
+    turns into an EngineError."""
+    monkeypatch.setattr(main, "TRANSCRIBE_HEARTBEAT_S", 0.05)
+
+    class _Slow(_Engine):
+        async def transcribe(self, audio_path, hotwords=None, progress=None):
+            await asyncio.sleep(0.2)
+            return await super().transcribe(audio_path, hotwords, progress)
+
+    monkeypatch.setattr(main.transcriber, "engine", _Slow(result=_result()))
+    r = client.post("/v1/audio/transcriptions", headers=AUTH, files={"file": ("a.mp3", b"x", "audio/mpeg")},
+                    data={"response_format": "verbose_json"})
+    assert r.status_code == 200
+    assert r.text.startswith(" ") and r.json()["duration"] == 4.0  # heartbeats, then valid JSON
+
+    class _SlowFail(_Engine):
+        async def transcribe(self, audio_path, hotwords=None, progress=None):
+            await asyncio.sleep(0.2)
+            raise EngineError("worker exploded")
+
+    monkeypatch.setattr(main.transcriber, "engine", _SlowFail())
+    r = client.post("/v1/audio/transcriptions", headers=AUTH, files={"file": ("a.mp3", b"x", "audio/mpeg")},
+                    data={"response_format": "verbose_json"})
+    assert r.status_code == 200 and "worker exploded" in r.json()["error"]
+
+    import httpx
+    engine = OpenAICompatEngine(base_url="http://w/v1")
+    resp = httpx.Response(200, text='  {"error": "transcription failed: worker exploded"}')
+    body = json.loads(resp.text.strip())
+    assert "error" in body and "text" not in body  # what the engine refuses
+
+
+def test_openai_engine_accepts_heartbeat_prefixed_json(monkeypatch):
+    import httpx
+
+    engine = OpenAICompatEngine(base_url="http://w/v1", model="whisper-1")
+
+    def handler(request):
+        return httpx.Response(200, text='   \n {"text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}')
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    result = asyncio.run(engine.transcribe(Path(__file__)))
+    assert result.text == "hi" and result.segments[0].end == 1
+
+    def failing(request):
+        return httpx.Response(200, text=' {"error": "transcription failed: boom"}')
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(failing), **kw))
+    with pytest.raises(EngineError, match="boom"):
+        asyncio.run(engine.transcribe(Path(__file__)))
+
+
+def test_consensus_parakeet_device_is_configurable(monkeypatch):
+    monkeypatch.setenv("PB_TRANSCRIBE_ENABLED", "true")
+    monkeypatch.setenv("PB_STT_ENGINE", "local")
+    monkeypatch.setenv("PB_STT_CONSENSUS_PARAKEET_DEVICE", "cuda")
+    assert build_engine(Settings()).consensus_parakeet_device == "cuda"
+    monkeypatch.delenv("PB_STT_CONSENSUS_PARAKEET_DEVICE")
+    assert build_engine(Settings()).consensus_parakeet_device == "cpu"
+
+
+def test_openai_engine_rejects_empty_or_non_object_bodies(monkeypatch):
+    import httpx
+
+    engine = OpenAICompatEngine(base_url="http://w/v1")
+    real = httpx.AsyncClient
+    for text in ("   ", "", "[1, 2]"):
+        monkeypatch.setattr(httpx, "AsyncClient",
+                            lambda **kw: real(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=text)), **kw))
+        with pytest.raises(EngineError):
+            asyncio.run(engine.transcribe(Path(__file__)))
+
+
+def test_consensus_parakeet_respects_vram_guard(monkeypatch):
+    import app.engines.local_whisper as lw
+
+    built = []
+
+    class _PK:
+        def __init__(self, **kw):
+            built.append(kw["device"])
+
+        def _load_model(self):
+            pass
+
+    monkeypatch.setattr("app.engines.parakeet.ParakeetEngine", _PK)
+    monkeypatch.setattr(lw, "gpu_free_mb", lambda: 2000)
+    e = LocalWhisperEngine(model="tiny", consensus_parakeet_device="cuda", min_free_vram_mb=8000)
+    e._parakeet()
+    assert built == ["cpu"]
+    monkeypatch.setattr(lw, "gpu_free_mb", lambda: 30000)
+    e2 = LocalWhisperEngine(model="tiny", consensus_parakeet_device="cuda", min_free_vram_mb=8000)
+    e2._parakeet()
+    assert built[-1] == "cuda"
+    # Whisper itself ended up on the CPU: parakeet follows regardless of free memory.
+    e3 = LocalWhisperEngine(model="tiny", consensus_parakeet_device="cuda", min_free_vram_mb=8000)
+    e3.device_used = "cpu"
+    e3._parakeet()
+    assert built[-1] == "cpu"
+
+
+def test_transcription_stream_keeps_running_task_alive(tmp_path):
+    """A client that disconnects mid-stream must not cancel the inference
+    task; the upload is removed once the task finishes on its own."""
+    path = tmp_path / "up.mp3"
+    path.write_bytes(b"x")
+    finished = asyncio.Event()
+
+    async def work():
+        await finished.wait()
+        return {"text": "late"}
+
+    async def run():
+        task = asyncio.create_task(work())
+        gen = main._transcribe_stream(task, path, "json")
+        assert await gen.__anext__() == b" "
+        await gen.aclose()  # the client went away
+        await asyncio.sleep(0)
+        assert not task.cancelled() and path.exists()
+        finished.set()
+        await task
+        await asyncio.sleep(0)
+        assert not path.exists()
+
+    asyncio.run(run())

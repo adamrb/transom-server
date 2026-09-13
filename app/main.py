@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Body, Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import settings
@@ -858,9 +858,17 @@ async def retranscribe(rec_id: str):
 # recordings: point that server's PB_STT_ENGINE=openai at this URL.
 
 _TRANSCRIBE_FORMATS = ("json", "verbose_json", "text")
+# Proxies in front of the worker (Cloudflare's tunnel edge: 100 s) close a
+# response that has sent nothing for that long, and a transcription with
+# enhancement, alternates and consensus takes minutes. The reply is therefore
+# streamed: a whitespace byte every HEARTBEAT_S while the work runs, then the
+# body. Leading whitespace is legal in JSON (and harmless in text), so any
+# client that reads the whole body still parses it.
+TRANSCRIBE_HEARTBEAT_S = 15.0
 
 
 async def _transcribe_upload(file: UploadFile, language: str | None, prompt: str | None, response_format: str):
+    """Validate and spool the upload, then stream the transcription reply."""
     if transcriber is None or transcriber.engine is None:
         raise HTTPException(status_code=503, detail="transcription is disabled on this server")
     if response_format not in _TRANSCRIBE_FORMATS:
@@ -878,29 +886,79 @@ async def _transcribe_upload(file: UploadFile, language: str | None, prompt: str
         tmp.close()
         if size == 0:
             raise HTTPException(status_code=400, detail="empty file")
-        engine = transcriber.engine
-        # The engine decodes in its configured language (PB_TRANSCRIBE_LANGUAGE
-        # or auto-detect); a different per-request `language` is noted, not
-        # honoured — the models are loaded once with one configuration.
-        if language and getattr(engine, "language", None) not in (None, language):
-            log.info("transcription API: language=%s requested, engine is configured for %s",
-                     language, getattr(engine, "language", None))
-        try:
-            result = await engine.transcribe(Path(tmp.name), hotwords=prompt or None, progress=None)
-        except Exception as exc:
-            log.warning("transcription API request failed: %s", exc)
-            raise HTTPException(status_code=502, detail=f"transcription failed: {str(exc)[:300]}")
-        consensus = None
-        if result.alternates and result.segments:
-            consensus = await transcriber._consensus(result.segments, result.alternates)
-            if consensus.changed:
-                result.text = render_text_public(result.segments)
-    finally:
+    except BaseException:  # a rejected, failed or aborted spool leaves no file behind
+        tmp.close()
         Path(tmp.name).unlink(missing_ok=True)
+        raise
+    if language and getattr(transcriber.engine, "language", None) not in (None, language):
+        log.info("transcription API: language=%s requested, engine is configured for %s",
+                 language, getattr(transcriber.engine, "language", None))
+    media = {"json": "application/json", "verbose_json": "application/json", "text": "text/plain; charset=utf-8"}
+    path = Path(tmp.name)
+    task = asyncio.create_task(_transcribe_file(path, prompt))
+    # Quick outcomes (a short clip, an engine that fails at once) get a plain
+    # response with a real status code; only work that outlasts the first
+    # heartbeat interval switches to the streamed, always-200 form.
+    done, _ = await asyncio.wait({task}, timeout=TRANSCRIBE_HEARTBEAT_S)
+    if done:
+        try:
+            body = task.result()
+        except HTTPException as exc:
+            path.unlink(missing_ok=True)
+            log.warning("transcription API request failed: %s", exc.detail)
+            raise
+        path.unlink(missing_ok=True)
+        return Response(_render_transcription(body, response_format), media_type=media[response_format])
+    return StreamingResponse(_transcribe_stream(task, path, response_format), media_type=media[response_format])
+
+
+def _render_transcription(body: dict, response_format: str) -> bytes:
     if response_format == "text":
-        return Response(result.text, media_type="text/plain")
+        return body["text"].encode()
     if response_format == "json":
-        return {"text": result.text}
+        return json.dumps({"text": body["text"]}).encode()
+    return json.dumps(body).encode()
+
+
+async def _transcribe_stream(task: "asyncio.Task[dict]", path: Path, response_format: str):
+    """Heartbeats while the engine works, then the body. Errors after the
+    first byte cannot change the status code any more, so they are reported
+    as a JSON object with an ``error`` key (text format: an empty body)."""
+    try:
+        while True:
+            yield b" "
+            done, _ = await asyncio.wait({task}, timeout=TRANSCRIBE_HEARTBEAT_S)
+            if done:
+                break
+        try:
+            body = task.result()
+        except HTTPException as exc:
+            log.warning("transcription API request failed: %s", exc.detail)
+            yield b"" if response_format == "text" else json.dumps({"error": exc.detail}).encode()
+            return
+        yield _render_transcription(body, response_format)
+    finally:
+        # A client that went away does not stop the work: the inference
+        # thread keeps the engine lock and the models until it finishes, so
+        # cancelling here would let the next request start on top of it.
+        # The upload is removed once the task is really done.
+        if task.done():
+            path.unlink(missing_ok=True)
+        else:
+            task.add_done_callback(lambda _t: path.unlink(missing_ok=True))
+
+
+async def _transcribe_file(path: Path, prompt: str | None) -> dict:
+    engine = transcriber.engine
+    try:
+        result = await engine.transcribe(path, hotwords=prompt or None, progress=None)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"transcription failed: {str(exc)[:300]}")
+    consensus = None
+    if result.alternates and result.segments:
+        consensus = await transcriber._consensus(result.segments, result.alternates)
+        if consensus.changed:
+            result.text = render_text_public(result.segments)
     body = {
         "task": "transcribe",
         "language": result.language,
