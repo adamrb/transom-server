@@ -1,0 +1,6 @@
+# Qwen3-ASR engine (PB_STT_ENGINE=qwen3): transformers-native Qwen3-ASR-1.7B-hf
+# plus the Qwen3-ForcedAligner for word timestamps. CUDA image only — a 2B
+# speech LLM wants a real GPU. transformers>=5.13 added the model; torch stays
+# the pinned 2.8 from requirements-diarization.txt (verified working).
+transformers>=5.13,<6
+accelerate>=1.0

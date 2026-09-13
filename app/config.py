@@ -74,6 +74,7 @@ class Settings:
     # Transcription. PB_STT_ENGINE selects the backend:
     #   local    — built-in faster-whisper (GPU/CPU), optional diarization (default)
     #   parakeet — built-in NVIDIA Parakeet (onnx-asr, GPU/CPU), optional diarization
+    #   qwen3    — built-in Qwen3-ASR-1.7B (transformers, GPU; CUDA image), optional diarization
     #   openai   — external OpenAI-compatible /v1/audio/transcriptions endpoint
     transcribe_enabled: bool = field(default_factory=lambda: _env_bool("PB_TRANSCRIBE_ENABLED", True))
     # Default: local. Pre-engine deployments that configured an external
@@ -138,6 +139,20 @@ class Settings:
     # whisper + pyannote) or cuda (a 24 GB+ card decodes it in seconds).
     stt_consensus_parakeet_device: str = field(
         default_factory=lambda: _env("PB_STT_CONSENSUS_PARAKEET_DEVICE", "cpu").strip().lower())
+
+    # -- built-in (qwen3) engine: Qwen3-ASR-1.7B via transformers (CUDA image) --
+    # Best single model on a noisy car recording in a Sep 2026 shootout and level
+    # with whisper on clean speech; takes the vocabulary as a context prompt.
+    # The forced aligner supplies word timestamps for speaker assignment ("off"
+    # = segment-level speakers). Chunks of at most PB_STT_QWEN_CHUNK_S seconds,
+    # PB_STT_QWEN_BATCH decoded at once. Consensus on noisy recordings uses
+    # whisper (PB_STT_MODEL) and parakeet as the second opinions.
+    stt_qwen_model: str = field(default_factory=lambda: _env("PB_STT_QWEN_MODEL", "Qwen/Qwen3-ASR-1.7B-hf"))
+    stt_qwen_aligner: str | None = field(default_factory=lambda: (
+        None if (_env("PB_STT_QWEN_ALIGNER", "Qwen/Qwen3-ForcedAligner-0.6B-hf") or "").lower() in ("off", "none")
+        else _env("PB_STT_QWEN_ALIGNER", "Qwen/Qwen3-ForcedAligner-0.6B-hf")))
+    stt_qwen_chunk_s: float = field(default_factory=lambda: float(_env("PB_STT_QWEN_CHUNK_S", "30")))
+    stt_qwen_batch: int = field(default_factory=lambda: int(_env("PB_STT_QWEN_BATCH", "4")))
 
     # -- built-in (parakeet) engine --
     # Any onnx-asr model name (nemo-parakeet-tdt-0.6b-v3 covers 25 European
@@ -303,8 +318,8 @@ class Settings:
             warnings.append(
                 "PB_PLAUD_CLIENT_ID / PB_PLAUD_SECRET_KEY not set — /plaud/user-token will be unavailable."
             )
-        if self.stt_fallback_engine and self.stt_fallback_engine not in ("local", "parakeet", "openai"):
-            warnings.append(f"PB_STT_FALLBACK_ENGINE={self.stt_fallback_engine!r} is not local | parakeet | openai — ignored.")
+        if self.stt_fallback_engine and self.stt_fallback_engine not in ("local", "parakeet", "qwen3", "openai"):
+            warnings.append(f"PB_STT_FALLBACK_ENGINE={self.stt_fallback_engine!r} is not local | parakeet | qwen3 | openai — ignored.")
         elif self.stt_fallback_engine and self.stt_fallback_engine == self.stt_engine:
             warnings.append("PB_STT_FALLBACK_ENGINE is the same as PB_STT_ENGINE — no fallback.")
         elif self.stt_fallback_engine == "openai" and not self.transcribe_base_url:
@@ -315,7 +330,7 @@ class Settings:
             warnings.append("PB_STT_DIARIZE is on but PB_STT_HF_TOKEN is not set — diarization will likely fail to load.")
         if self.stt_consensus not in ("auto", "off"):
             warnings.append(f"PB_STT_CONSENSUS={self.stt_consensus!r} is not auto | off — treated as off.")
-        elif (self.transcribe_enabled and self.stt_consensus == "auto" and self.stt_engine == "local"
+        elif (self.transcribe_enabled and self.stt_consensus == "auto" and self.stt_engine in ("local", "qwen3")
               and self.stt_enhance != "off" and not (self.cleanup_base_url and self.cleanup_model)):
             warnings.append(
                 "PB_STT_CONSENSUS=auto needs the cleanup LLM endpoint (PB_CLEANUP_BASE_URL / "

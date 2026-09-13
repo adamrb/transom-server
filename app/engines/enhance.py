@@ -214,6 +214,44 @@ def speech_regions(
     return [(round(s, 3), round(e, 3)) for s, e in merged]
 
 
+def speech_chunks(
+    wav: np.ndarray,
+    max_s: float = 30.0,
+    threshold: float = 0.5,
+    min_silence_ms: int = 400,
+    speech_pad_ms: int = 200,
+) -> list[tuple[float, float]]:
+    """Silero speech chunks of ``wav`` merged into decode units of at most
+    ``max_s`` seconds, cut at silences — for recognizers that take one
+    utterance at a time (Qwen3-ASR). Run it on the DeepFilterNet copy of a
+    noisy recording and apply the cuts to the original. Empty when nothing
+    speech-like was found."""
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+    opts = VadOptions(threshold=threshold, min_silence_duration_ms=min_silence_ms, speech_pad_ms=speech_pad_ms)
+    chunks = get_speech_timestamps(wav, opts)
+    out: list[list[float]] = []
+    for c in chunks:
+        start, end = c["start"] / SAMPLE_RATE, c["end"] / SAMPLE_RATE
+        if out and end - out[-1][0] <= max_s:
+            out[-1][1] = end
+        else:
+            if out and out[-1][1] - out[-1][0] > max_s:  # one long speech stretch: split it
+                s0, e0 = out.pop()
+                while e0 - s0 > max_s:
+                    out.append([s0, s0 + max_s])
+                    s0 += max_s
+                out.append([s0, e0])
+            out.append([start, end])
+    if out and out[-1][1] - out[-1][0] > max_s:
+        s0, e0 = out.pop()
+        while e0 - s0 > max_s:
+            out.append([s0, s0 + max_s])
+            s0 += max_s
+        out.append([s0, e0])
+    return [(round(s, 3), round(e, 3)) for s, e in out if e > s]
+
+
 def cut_regions(wav: np.ndarray, regions: list[tuple[float, float]]) -> np.ndarray:
     """Concatenate the ``regions`` (seconds) of ``wav`` — the recognizer input
     when a model has no clip-timestamp API of its own."""

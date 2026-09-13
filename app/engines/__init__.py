@@ -46,7 +46,7 @@ def build_engine(settings) -> "TranscriptionEngine | None":
     and wrapped so a failing primary hands the recording to the fallback."""
     primary = _build_one(settings)
     fb = settings.stt_fallback_engine
-    if primary is None or not fb or fb == settings.stt_engine or fb not in ("local", "parakeet", "openai"):
+    if primary is None or not fb or fb == settings.stt_engine or fb not in ("local", "parakeet", "qwen3", "openai"):
         return primary
     fallback = _build_one(replace(settings, stt_engine=fb))
     if fallback is None:
@@ -58,7 +58,7 @@ def _build_one(settings) -> "TranscriptionEngine | None":
     if not settings.transcribe_enabled:
         return None
     enhancer = None
-    if settings.stt_engine in ("local", "parakeet") and settings.stt_enhance in ("auto", "always"):
+    if settings.stt_engine in ("local", "parakeet", "qwen3") and settings.stt_enhance in ("auto", "always"):
         from .enhance import Enhancer
 
         enhancer = Enhancer(
@@ -92,6 +92,47 @@ def _build_one(settings) -> "TranscriptionEngine | None":
             consensus_parakeet_model=settings.stt_consensus_parakeet_model,
             consensus_atten_db=settings.stt_consensus_atten_db,
             consensus_parakeet_device=settings.stt_consensus_parakeet_device,
+            idle_unload_s=settings.stt_idle_unload_s,
+            min_free_vram_mb=settings.stt_min_free_vram_mb,
+        )
+    if settings.stt_engine == "qwen3":
+        from .qwen3_asr import Qwen3AsrEngine
+
+        consensus = (enhancer is not None and settings.stt_consensus == "auto"
+                     and bool(settings.cleanup_base_url and settings.cleanup_model))
+        helper = None
+        if consensus:
+            from .local_whisper import LocalWhisperEngine
+
+            # whisper + parakeet as the second opinions; no diarization, no
+            # consensus of its own, and the same GPU housekeeping thresholds.
+            helper = LocalWhisperEngine(
+                model=settings.stt_model, device=settings.stt_device, compute_type=settings.stt_compute,
+                language=settings.transcribe_language, vad_filter=True, max_duration_s=settings.stt_max_duration_s,
+                beam_size=settings.stt_beam_size, condition_on_previous_text=False,
+                consensus_parakeet_model=settings.stt_consensus_parakeet_model,
+                consensus_parakeet_device=settings.stt_consensus_parakeet_device,
+                min_free_vram_mb=settings.stt_min_free_vram_mb,
+            )
+        return Qwen3AsrEngine(
+            model=settings.stt_qwen_model,
+            aligner=settings.stt_qwen_aligner,
+            device=settings.stt_device,
+            language=settings.transcribe_language,
+            max_duration_s=settings.stt_max_duration_s,
+            diarization=settings.stt_diarize,
+            diarization_model=settings.stt_diarize_model,
+            hf_token=settings.stt_hf_token,
+            num_speakers=settings.stt_num_speakers,
+            min_speakers=settings.stt_min_speakers,
+            max_speakers=settings.stt_max_speakers,
+            diarization_device=settings.stt_diarize_device,
+            enhancer=enhancer,
+            enhance_diarize=settings.stt_enhance_diarize,
+            consensus=consensus,
+            alternates_engine=helper,
+            chunk_s=settings.stt_qwen_chunk_s,
+            batch_size=settings.stt_qwen_batch,
             idle_unload_s=settings.stt_idle_unload_s,
             min_free_vram_mb=settings.stt_min_free_vram_mb,
         )
@@ -129,7 +170,7 @@ def _build_one(settings) -> "TranscriptionEngine | None":
             timeout_s=settings.transcribe_timeout_s,
         )
     raise ValueError(
-        f"unknown PB_STT_ENGINE: {settings.stt_engine!r} (use 'local', 'parakeet' or 'openai')"
+        f"unknown PB_STT_ENGINE: {settings.stt_engine!r} (use 'local', 'parakeet', 'qwen3' or 'openai')"
     )
 
 

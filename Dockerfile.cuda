@@ -38,9 +38,9 @@ WORKDIR /srv/plaud-bridge
 RUN python3.12 -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 
-COPY requirements.txt requirements-stt.txt requirements-diarization.txt ./
+COPY requirements.txt requirements-stt.txt requirements-diarization.txt requirements-qwen.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-stt.txt \
-    -r requirements-diarization.txt
+    -r requirements-diarization.txt -r requirements-qwen.txt
 
 # Parakeet on the GPU: replace the CPU-only onnxruntime (a faster-whisper
 # dependency, same import name) with the CUDA build. onnxruntime-gpu 1.27+ is
