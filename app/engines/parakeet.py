@@ -35,7 +35,7 @@ import time
 from pathlib import Path
 
 from .base import EngineError, EngineResult, ProgressCallback, Segment, render_text
-from .diarization import DiarizationMixin, probe_duration
+from .diarization import DiarizationMixin, mark_cuda_used, probe_duration
 from .enhance import Enhancer
 
 log = logging.getLogger("plaud-bridge.engine.parakeet")
@@ -202,6 +202,8 @@ class ParakeetEngine(DiarizationMixin):
         except Exception as exc:
             raise EngineError(f"could not load parakeet model {self.model_name!r}: {exc}") from exc
         self.device_used = self._detect_device(model, providers)
+        if self.device_used == "cuda":
+            mark_cuda_used()
         self._model, self._vad = model, vad
         self.load_seconds = time.monotonic() - t0
         log.info("parakeet model loaded in %.1fs on %s", self.load_seconds, self.device_used)

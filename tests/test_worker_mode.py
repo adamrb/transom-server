@@ -244,6 +244,8 @@ def test_no_idle_unload_by_default(tmp_path, monkeypatch):
 
 def test_low_vram_loads_whisper_on_cpu(monkeypatch):
     import app.engines.local_whisper as lw
+    import app.engines.diarization as dz
+    monkeypatch.setattr(dz, "_CUDA_USED", False)  # process-wide flag: other tests may have set it
 
     created = []
 
@@ -447,6 +449,8 @@ def test_transcription_stream_keeps_running_task_alive(tmp_path):
 
 
 def test_whisper_reloads_on_gpu_when_room_returns(monkeypatch):
+    import app.engines.diarization as dz
+    monkeypatch.setattr(dz, "_CUDA_USED", False)
     """Loaded on the CPU because the card was full; when the guard sees room
     at the next request the model (and a guard-forced CPU pyannote worker)
     are reloaded on the GPU."""
@@ -484,6 +488,8 @@ def test_whisper_reloads_on_gpu_when_room_returns(monkeypatch):
 
 def test_qwen3_reloads_on_gpu_when_room_returns(monkeypatch):
     from app.engines.qwen3_asr import Qwen3AsrEngine
+    import app.engines.diarization as dz
+    monkeypatch.setattr(dz, "_CUDA_USED", False)
 
     engine = Qwen3AsrEngine(model="m", aligner=None, device="cuda", min_free_vram_mb=8000, diarization=True)
     picks = ["cpu"]
@@ -518,6 +524,8 @@ def test_qwen3_reloads_on_gpu_when_room_returns(monkeypatch):
 
 
 def test_diarization_worker_is_not_respawned_after_cuda_use(monkeypatch):
+    import app.engines.diarization as dz
+    monkeypatch.setattr(dz, "_CUDA_USED", False)
     """CPU (card full) → GPU (room) → idle unload → CPU again → room again:
     the worker may be respawned on the first GPU return only; once CUDA has
     been used in the process the existing worker is kept."""
@@ -564,6 +572,8 @@ def test_diarization_worker_is_not_respawned_after_cuda_use(monkeypatch):
 
 def test_qwen3_never_respawns_worker_after_cuda(monkeypatch):
     from app.engines.qwen3_asr import Qwen3AsrEngine
+    import app.engines.diarization as dz
+    monkeypatch.setattr(dz, "_CUDA_USED", False)
     import sys, types
 
     engine = Qwen3AsrEngine(model="m", aligner=None, device="cuda", min_free_vram_mb=8000, diarization=True)
@@ -602,3 +612,43 @@ def test_qwen3_never_respawns_worker_after_cuda(monkeypatch):
     assert loads[-1] == "cpu" and len(spawned) == 2 and engine._diar_device_forced is False
     picks[0] = "cuda"; engine._load_model()                           # room again: no respawn
     assert loads[-1] == "cuda" and len(spawned) == 2 and closed == [True]
+
+
+def test_cuda_use_by_a_helper_blocks_worker_respawn(monkeypatch):
+    """Qwen on the CPU, but its consensus whisper helper took CUDA: the
+    process-wide flag stops Qwen from closing and respawning the worker."""
+    from app.engines.qwen3_asr import Qwen3AsrEngine
+    import app.engines.diarization as dz
+    import sys, types
+
+    monkeypatch.setattr(dz, "_CUDA_USED", False)
+    engine = Qwen3AsrEngine(model="m", aligner=None, device="cuda", min_free_vram_mb=8000, diarization=True)
+    picks = ["cpu"]
+    monkeypatch.setattr(engine, "_pick_device", lambda: picks[0])
+    spawned, closed = [], []
+
+    def spawn():
+        if engine._diar_proc is None:
+            spawned.append(engine.diarization_device); engine._diar_proc = object()
+
+    monkeypatch.setattr(engine, "_ensure_diar_worker", spawn)
+    monkeypatch.setattr(engine, "close", lambda: closed.append(True))
+
+    class _Proc:
+        @staticmethod
+        def from_pretrained(name):
+            return object()
+
+    class _Model:
+        @staticmethod
+        def from_pretrained(name, dtype=None, device_map=None):
+            return types.SimpleNamespace(eval=lambda: "model")
+
+    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(AutoModelForMultimodalLM=_Model, AutoProcessor=_Proc))
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(bfloat16="bf16", float32="f32", cuda=types.SimpleNamespace(is_available=lambda: True, empty_cache=lambda: None)))
+    engine._load_model()
+    assert spawned == ["cpu"] and engine._diar_device_forced is True
+    dz.mark_cuda_used()          # the whisper helper loaded on the GPU meanwhile
+    picks[0] = "cuda"
+    engine._load_model()          # Qwen moves to the GPU but the worker stays
+    assert closed == [] and spawned == ["cpu"] and engine.device_used == "cuda"

@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 
 from .base import Alternate, EngineError, EngineResult, ProgressCallback, Segment, render_text
-from .diarization import DiarizationMixin, probe_duration
+from .diarization import DiarizationMixin, cuda_used, mark_cuda_used, probe_duration
 from .enhance import Enhancer, decode_waveform, speech_chunks
 
 log = logging.getLogger("plaud-bridge.engine.qwen3")
@@ -106,10 +106,6 @@ class Qwen3AsrEngine(DiarizationMixin):
         self._last_used = 0.0
         self.device_used: str | None = None
         self._diar_device_forced = False  # pyannote sent to the CPU by the VRAM guard, not by config
-        # Once any model has run on the GPU in this process, the pyannote worker
-        # can no longer be respawned (see DiarizationMixin): keep whichever one
-        # exists from then on, even after an idle unload / CPU round trip.
-        self._cuda_used = False
         self._model = None
         self._processor = None
         self._aligner = None
@@ -148,7 +144,7 @@ class Qwen3AsrEngine(DiarizationMixin):
                 # diarization worker can be respawned on the GPU as well.
                 log.info("GPU has room again: reloading Qwen3-ASR on it")
                 self.unload()
-                if self._diar_device_forced and not self._cuda_used:
+                if self._diar_device_forced and not cuda_used():
                     self.close()
                     self.diarization_device = None
                     self._diar_device_forced = False
@@ -157,7 +153,7 @@ class Qwen3AsrEngine(DiarizationMixin):
         # Decide the device before the diarization worker spawns so pyannote
         # follows whisper-engine rules: a short card sends both to the CPU.
         device = self._pick_device()
-        if device == "cpu" and not self.diarization_device and self._diar_proc is None and not self._cuda_used:
+        if device == "cpu" and not self.diarization_device and self._diar_proc is None and not cuda_used():
             self.diarization_device = "cpu"
             self._diar_device_forced = True
         self._ensure_diar_worker()
@@ -179,7 +175,8 @@ class Qwen3AsrEngine(DiarizationMixin):
             self._aligner = AutoModelForTokenClassification.from_pretrained(
                 self.aligner_name, dtype=dtype, device_map=device).eval()
         self.device_used = device
-        self._cuda_used = self._cuda_used or device == "cuda"
+        if device == "cuda":
+            mark_cuda_used()
         self.load_seconds = time.monotonic() - t0
         log.info("Qwen3-ASR loaded in %.1fs", self.load_seconds)
         return self._model

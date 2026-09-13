@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from .base import Alternate, EngineError, EngineResult, ProgressCallback, Segment, render_text
-from .diarization import DiarizationMixin, probe_duration
+from .diarization import DiarizationMixin, cuda_used, mark_cuda_used, probe_duration
 from .enhance import Enhancer
 
 log = logging.getLogger("plaud-bridge.engine.local")
@@ -97,10 +97,6 @@ class LocalWhisperEngine(DiarizationMixin):
         self._last_used = 0.0
         self.device_used: str | None = None
         self._diar_device_forced = False  # pyannote sent to the CPU by the VRAM guard, not by config
-        # Once any model has run on the GPU in this process, the pyannote worker
-        # can no longer be respawned (see DiarizationMixin): keep whichever one
-        # exists from then on, even after an idle unload / CPU round trip.
-        self._cuda_used = False
         self._model = None
         self._diar_proc = None
         self._lock = asyncio.Lock()
@@ -118,7 +114,7 @@ class LocalWhisperEngine(DiarizationMixin):
                     # CPU), so the pyannote worker may be respawned too.
                     log.info("GPU has %d MB free again: reloading whisper on it", free)
                     self.unload()
-                    if self._diar_device_forced and not self._cuda_used:
+                    if self._diar_device_forced and not cuda_used():
                         self.close()
                         self.diarization_device = None
                         self._diar_device_forced = False
@@ -141,7 +137,7 @@ class LocalWhisperEngine(DiarizationMixin):
                 log.warning("GPU has %d MB free, under PB_STT_MIN_FREE_VRAM_MB=%d: loading whisper on the CPU",
                             free, self.min_free_vram_mb)
                 device, compute = "cpu", "auto" if self.compute_type in ("float16", "int8_float16") else self.compute_type
-                if not self.diarization_device and self._diar_proc is None and not self._cuda_used:
+                if not self.diarization_device and self._diar_proc is None and not cuda_used():
                     self.diarization_device = "cpu"
                     self._diar_device_forced = True
         self._ensure_diar_worker()
@@ -161,7 +157,8 @@ class LocalWhisperEngine(DiarizationMixin):
             cpu_threads=self.cpu_threads,
         )
         self.device_used = device
-        self._cuda_used = self._cuda_used or device in ("cuda", "auto")
+        if device in ("cuda", "auto"):
+            mark_cuda_used()
         self.load_seconds = time.monotonic() - t0
         log.info("model loaded in %.1fs", self.load_seconds)
         return self._model
