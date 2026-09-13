@@ -23,7 +23,7 @@ from app.config import Settings
 from app.engines import FallbackEngine, build_engine
 from app.engines.base import Alternate, EngineError, EngineResult, Segment
 from app.engines.local_whisper import LocalWhisperEngine
-from app.engines.openai_compat import OpenAICompatEngine
+from app.engines.openai_compat import OpenAICompatEngine, sse_payload
 
 AUTH = {"Authorization": "Bearer test-token-1"}
 
@@ -322,8 +322,10 @@ def test_transcription_endpoint_streams_heartbeats_and_late_errors(client, monke
     monkeypatch.setattr(main.transcriber, "engine", _Slow(result=_result()))
     r = client.post("/v1/audio/transcriptions", headers=AUTH, files={"file": ("a.mp3", b"x", "audio/mpeg")},
                     data={"response_format": "verbose_json"})
-    assert r.status_code == 200
-    assert r.text.startswith(" ") and r.json()["duration"] == 4.0  # heartbeats, then valid JSON
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream")
+    assert r.text.startswith(": keepalive\n\n")
+    from app.engines.openai_compat import sse_payload
+    assert json.loads(sse_payload(r.text))["duration"] == 4.0
 
     class _SlowFail(_Engine):
         async def transcribe(self, audio_path, hotwords=None, progress=None):
@@ -333,22 +335,28 @@ def test_transcription_endpoint_streams_heartbeats_and_late_errors(client, monke
     monkeypatch.setattr(main.transcriber, "engine", _SlowFail())
     r = client.post("/v1/audio/transcriptions", headers=AUTH, files={"file": ("a.mp3", b"x", "audio/mpeg")},
                     data={"response_format": "verbose_json"})
-    assert r.status_code == 200 and "worker exploded" in r.json()["error"]
+    assert r.status_code == 200 and "worker exploded" in json.loads(sse_payload(r.text))["error"]
+    # text / json formats ride the same event shape.
+    monkeypatch.setattr(main.transcriber, "engine", _Slow(result=_result()))
+    r = client.post("/v1/audio/transcriptions", headers=AUTH, files={"file": ("a.mp3", b"x", "audio/mpeg")},
+                    data={"response_format": "text"})
+    assert json.loads(sse_payload(r.text))["text"] == _result().text
 
+
+def test_openai_engine_reads_sse_answers(monkeypatch):
     import httpx
-    engine = OpenAICompatEngine(base_url="http://w/v1")
-    resp = httpx.Response(200, text='  {"error": "transcription failed: worker exploded"}')
-    body = json.loads(resp.text.strip())
-    assert "error" in body and "text" not in body  # what the engine refuses
+    from app.engines.openai_compat import sse_payload
 
-
-def test_openai_engine_accepts_heartbeat_prefixed_json(monkeypatch):
-    import httpx
+    assert sse_payload(": keepalive\n\n: keepalive\n\ndata: {\"a\": 1}\n\n") == '{"a": 1}'
+    assert sse_payload("data: one\ndata: two\n\n") == "one\ntwo"
+    assert sse_payload(": only comments\n\n") == ""
 
     engine = OpenAICompatEngine(base_url="http://w/v1", model="whisper-1")
+    sse = {"content-type": "text/event-stream"}
 
     def handler(request):
-        return httpx.Response(200, text='   \n {"text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}')
+        return httpx.Response(200, headers=sse,
+                              text=': keepalive\n\n: keepalive\n\ndata: {"text": "hi", "segments": [{"start": 0, "end": 1, "text": "hi"}]}\n\n')
 
     real = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
@@ -356,7 +364,7 @@ def test_openai_engine_accepts_heartbeat_prefixed_json(monkeypatch):
     assert result.text == "hi" and result.segments[0].end == 1
 
     def failing(request):
-        return httpx.Response(200, text=' {"error": "transcription failed: boom"}')
+        return httpx.Response(200, headers=sse, text=': keepalive\n\ndata: {"error": "transcription failed: boom"}\n\n')
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(failing), **kw))
     with pytest.raises(EngineError, match="boom"):
@@ -426,7 +434,7 @@ def test_transcription_stream_keeps_running_task_alive(tmp_path):
     async def run():
         task = asyncio.create_task(work())
         gen = main._transcribe_stream(task, path, "json")
-        assert await gen.__anext__() == b" "
+        assert await gen.__anext__() == b": keepalive\n\n"
         await gen.aclose()  # the client went away
         await asyncio.sleep(0)
         assert not task.cancelled() and path.exists()

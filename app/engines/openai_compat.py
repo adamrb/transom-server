@@ -14,6 +14,23 @@ from .base import EngineError, EngineResult, Segment, render_text
 log = logging.getLogger("plaud-bridge.engine.openai")
 
 
+def sse_payload(text: str) -> str:
+    """The data of the last event in an SSE body (comment lines skipped;
+    multi-line data joined as the spec says). Empty when there is none."""
+    events: list[list[str]] = [[]]
+    for line in text.splitlines():
+        if not line.strip():
+            if events[-1]:
+                events.append([])
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            events[-1].append(line[5:].lstrip())
+    data = [e for e in events if e]
+    return "\n".join(data[-1]) if data else ""
+
+
 class OpenAICompatEngine:
     name = "openai"
 
@@ -54,11 +71,14 @@ class OpenAICompatEngine:
                         files={"file": (audio_path.name, fh, mime)},
                     )
                 if resp.status_code == 200:
-                    # A plaud-bridge worker streams keepalive whitespace before
-                    # the JSON and reports a late failure as {"error": ...}.
+                    # A plaud-bridge worker answers long jobs as Server-Sent
+                    # Events (keepalive comments, then one data event with the
+                    # JSON) and reports a late failure as {"error": ...}.
                     text = resp.text.strip()
                     if not text:
                         raise EngineError("endpoint returned an empty body")
+                    if resp.headers.get("content-type", "").startswith("text/event-stream"):
+                        text = sse_payload(text)
                     try:
                         body = json.loads(text)
                     except ValueError as exc:

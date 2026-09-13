@@ -860,11 +860,17 @@ async def retranscribe(rec_id: str):
 _TRANSCRIBE_FORMATS = ("json", "verbose_json", "text")
 # Proxies in front of the worker (Cloudflare's tunnel edge: 100 s) close a
 # response that has sent nothing for that long, and a transcription with
-# enhancement, alternates and consensus takes minutes. The reply is therefore
-# streamed: a whitespace byte every HEARTBEAT_S while the work runs, then the
-# body. Leading whitespace is legal in JSON (and harmless in text), so any
-# client that reads the whole body still parses it.
+# enhancement, alternates and consensus takes minutes. Work that outlasts the
+# first heartbeat interval is therefore answered as a Server-Sent Events
+# stream: a ": keepalive" comment every TRANSCRIBE_HEARTBEAT_S, then one
+# "data:" event carrying the JSON body. SSE specifically, because Cloudflare
+# buffers (and compresses) ordinary JSON/text responses until they complete —
+# measured: whitespace heartbeats in an application/json body all arrived
+# together after the tunnel had already timed the stream out — while
+# text/event-stream is passed through unbuffered. Quick outcomes still get a
+# plain response with a real status code.
 TRANSCRIBE_HEARTBEAT_S = 15.0
+_SSE_HEADERS = {"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"}
 
 
 async def _transcribe_upload(file: UploadFile, language: str | None, prompt: str | None, response_format: str):
@@ -909,7 +915,8 @@ async def _transcribe_upload(file: UploadFile, language: str | None, prompt: str
             raise
         path.unlink(missing_ok=True)
         return Response(_render_transcription(body, response_format), media_type=media[response_format])
-    return StreamingResponse(_transcribe_stream(task, path, response_format), media_type=media[response_format])
+    return StreamingResponse(_transcribe_stream(task, path, response_format), media_type="text/event-stream",
+                             headers=_SSE_HEADERS)
 
 
 def _render_transcription(body: dict, response_format: str) -> bytes:
@@ -920,13 +927,18 @@ def _render_transcription(body: dict, response_format: str) -> bytes:
     return json.dumps(body).encode()
 
 
+def _sse_event(payload: dict) -> bytes:
+    return b"data: " + json.dumps(payload).encode() + b"\n\n"
+
+
 async def _transcribe_stream(task: "asyncio.Task[dict]", path: Path, response_format: str):
-    """Heartbeats while the engine works, then the body. Errors after the
-    first byte cannot change the status code any more, so they are reported
-    as a JSON object with an ``error`` key (text format: an empty body)."""
+    """SSE: keepalive comments while the engine works, then one data event.
+    Its payload is the JSON body for verbose_json, {"text": ...} for json and
+    text (SSE cannot carry a bare text body), or {"error": ...} — errors after
+    the first byte cannot change the status code any more."""
     try:
         while True:
-            yield b" "
+            yield b": keepalive\n\n"
             done, _ = await asyncio.wait({task}, timeout=TRANSCRIBE_HEARTBEAT_S)
             if done:
                 break
@@ -934,9 +946,9 @@ async def _transcribe_stream(task: "asyncio.Task[dict]", path: Path, response_fo
             body = task.result()
         except HTTPException as exc:
             log.warning("transcription API request failed: %s", exc.detail)
-            yield b"" if response_format == "text" else json.dumps({"error": exc.detail}).encode()
+            yield _sse_event({"error": exc.detail})
             return
-        yield _render_transcription(body, response_format)
+        yield _sse_event(body if response_format == "verbose_json" else {"text": body["text"]})
     finally:
         # A client that went away does not stop the work: the inference
         # thread keeps the engine lock and the models until it finishes, so
