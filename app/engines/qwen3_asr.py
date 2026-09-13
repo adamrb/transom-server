@@ -46,6 +46,8 @@ DEFAULT_MODEL = "Qwen/Qwen3-ASR-1.7B-hf"
 DEFAULT_ALIGNER = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 PROGRESS_INTERVAL_S = 2.0
 # Language codes → the names the aligner wants.
+# Cohere Transcribe's 14 languages (model card); other recordings skip it.
+COHERE_LANGUAGES = {"en", "fr", "de", "it", "es", "pt", "el", "nl", "pl", "zh", "ja", "ko", "vi", "ar"}
 LANGUAGE_NAMES = {
     "en": "English", "zh": "Chinese", "yue": "Cantonese", "fr": "French", "de": "German", "it": "Italian",
     "ja": "Japanese", "ko": "Korean", "pt": "Portuguese", "ru": "Russian", "es": "Spanish",
@@ -73,6 +75,7 @@ class Qwen3AsrEngine(DiarizationMixin):
         enhance_diarize: bool = True,
         consensus: bool = False,
         alternates_engine=None,
+        consensus_cohere_model: str | None = None,
         chunk_s: float = 30.0,
         batch_size: int = 4,
         max_new_tokens: int = 512,
@@ -97,6 +100,12 @@ class Qwen3AsrEngine(DiarizationMixin):
         # whisper + parakeet second opinions when a recording measured noisy.
         self.consensus = consensus
         self.alternates_engine = alternates_engine
+        # Cohere Transcribe (a dedicated conformer ASR, one pass, ~15x faster
+        # than this model) as a third second opinion; None = off. Gated on
+        # Hugging Face: the token's account must have accepted its terms.
+        self.consensus_cohere_model = consensus_cohere_model or None
+        self._cohere = None
+        self._cohere_processor = None
         self.chunk_s = chunk_s
         self.batch_size = max(1, batch_size)
         self.max_new_tokens = max_new_tokens
@@ -165,15 +174,16 @@ class Qwen3AsrEngine(DiarizationMixin):
         t0 = time.monotonic()
         dtype = torch.bfloat16 if device == "cuda" else torch.float32
         log.info("loading Qwen3-ASR %r (device=%s, dtype=%s)", self.model_name, device, str(dtype).split(".")[-1])
-        self._processor = AutoProcessor.from_pretrained(self.model_name)
-        self._model = AutoModelForMultimodalLM.from_pretrained(self.model_name, dtype=dtype, device_map=device).eval()
+        tok = {"token": self.hf_token} if self.hf_token else {}
+        self._processor = AutoProcessor.from_pretrained(self.model_name, **tok)
+        self._model = AutoModelForMultimodalLM.from_pretrained(self.model_name, dtype=dtype, device_map=device, **tok).eval()
         if self.aligner_name:
             from transformers import AutoModelForTokenClassification
 
             log.info("loading forced aligner %r", self.aligner_name)
-            self._aligner_processor = AutoProcessor.from_pretrained(self.aligner_name)
+            self._aligner_processor = AutoProcessor.from_pretrained(self.aligner_name, **tok)
             self._aligner = AutoModelForTokenClassification.from_pretrained(
-                self.aligner_name, dtype=dtype, device_map=device).eval()
+                self.aligner_name, dtype=dtype, device_map=device, **tok).eval()
         self.device_used = device
         if device == "cuda":
             mark_cuda_used()
@@ -188,6 +198,7 @@ class Qwen3AsrEngine(DiarizationMixin):
             return
         log.info("unloading Qwen3-ASR (%s)", f"after {self.idle_unload_s}s idle" if self.idle_unload_s else "reload")
         self._model = self._processor = self._aligner = self._aligner_processor = None
+        self._cohere = self._cohere_processor = None
         alt = self.alternates_engine
         if alt is not None:
             alt.unload()
@@ -367,13 +378,19 @@ class Qwen3AsrEngine(DiarizationMixin):
             raise EngineError(f"Qwen3-ASR transcription failed: {exc}") from exc
         transcribe_s = time.monotonic() - t0
 
+        language = None
+        if languages:
+            top = max(set(languages), key=languages.count)
+            language = next((code for code, name in LANGUAGE_NAMES.items() if name == top), top)
+        language = language or self.language
+
         alternates: list[Alternate] = []
         alternates_s = 0.0
         if self.consensus and plan is not None and segments and self.alternates_engine is not None:
             if progress:
                 progress("transcribing", 0.99)
             t1 = time.monotonic()
-            alternates = self._alternates(audio_path, hotwords, plan)
+            alternates = self._alternates(audio_path, hotwords, plan, language)
             alternates_s = time.monotonic() - t1
 
         diarize_s = 0.0
@@ -389,10 +406,6 @@ class Qwen3AsrEngine(DiarizationMixin):
             diarize_s = time.monotonic() - t1
 
         plain = " ".join(s.text for s in segments if s.text)
-        language = None
-        if languages:
-            top = max(set(languages), key=languages.count)
-            language = next((code for code, name in LANGUAGE_NAMES.items() if name == top), top)
         stats = {
             "engine": self.name,
             "model": self.model_name,
@@ -411,7 +424,7 @@ class Qwen3AsrEngine(DiarizationMixin):
         return EngineResult(
             text=render_text(segments, fallback=plain),
             segments=segments,
-            language=language or self.language,
+            language=language,
             duration=round(duration, 2) if duration else None,
             model=self.model_name,
             stats={k: v for k, v in stats.items() if v is not None},
@@ -420,7 +433,7 @@ class Qwen3AsrEngine(DiarizationMixin):
 
     # -- second opinions for the consensus pass ------------------------------
 
-    def _alternates(self, audio_path: Path, hotwords: str | None, plan) -> list[Alternate]:
+    def _alternates(self, audio_path: Path, hotwords: str | None, plan, language: str | None = None) -> list[Alternate]:
         """whisper on the raw audio over the same speech regions, and parakeet,
         both from the helper whisper engine; each failure is logged and skipped."""
         out: list[Alternate] = []
@@ -444,4 +457,63 @@ class Qwen3AsrEngine(DiarizationMixin):
                                      segments=result.segments))
             except Exception as exc:
                 log.warning("consensus alternate (parakeet) failed: %s", exc)
+        if self.consensus_cohere_model:
+            code = (language or "").lower().split("-")[0]
+            if code not in COHERE_LANGUAGES:
+                log.info("consensus alternate (cohere) skipped: language %r not supported", language)
+            else:
+                try:
+                    out.append(Alternate(
+                        name=f"Cohere Transcribe ({self.consensus_cohere_model}) on the raw audio",
+                        segments=self._cohere_segments(plan.original, speech_chunks(plan.enhanced, self.chunk_s), code)))
+                except Exception as exc:
+                    log.warning("consensus alternate (cohere) failed: %s", exc)
         return out
+
+    def _load_cohere(self):
+        if self._cohere is None:
+            import torch
+            from transformers import AutoProcessor, CohereAsrForConditionalGeneration
+
+            device = self.device_used or "cpu"
+            dtype = torch.bfloat16 if device == "cuda" else torch.float32
+            log.info("loading Cohere Transcribe %r (device=%s)", self.consensus_cohere_model, device)
+            tok = {"token": self.hf_token} if self.hf_token else {}  # a gated repository
+            self._cohere_processor = AutoProcessor.from_pretrained(self.consensus_cohere_model, **tok)
+            self._cohere = CohereAsrForConditionalGeneration.from_pretrained(
+                self.consensus_cohere_model, dtype=dtype, device_map=device, **tok).eval()
+            if device == "cuda":
+                mark_cuda_used()
+        return self._cohere
+
+    def _cohere_segments(self, wav, chunks: list[tuple[float, float]], lang: str) -> list[Segment]:
+        """Cohere Transcribe over the same silence-cut chunks as the primary,
+        so its segments carry timestamps the consensus pass can line up;
+        ``lang`` is the primary's (detected or forced) language code."""
+        import torch
+
+        model = self._load_cohere()
+        proc = self._cohere_processor
+        segments: list[Segment] = []
+        for i in range(0, len(chunks), self.batch_size):
+            batch = chunks[i:i + self.batch_size]
+            clips = [wav[int(s * SAMPLE_RATE):int(e * SAMPLE_RATE)] for s, e in batch]
+            inputs = proc(clips, sampling_rate=SAMPLE_RATE, return_tensors="pt", language=lang)
+            idx = inputs.pop("audio_chunk_index", None)
+            inputs = inputs.to(model.device, dtype=model.dtype)
+            with torch.inference_mode():
+                out = model.generate(**inputs, max_new_tokens=self.max_new_tokens)
+            texts = proc.batch_decode(out, skip_special_tokens=True)
+            if idx is not None and len(texts) != len(batch):
+                # A clip longer than the extractor's window came back as
+                # several pieces: fold them back per input clip.
+                folded = [""] * len(batch)
+                for t, j in zip(texts, idx.tolist() if hasattr(idx, "tolist") else idx):
+                    k = j[0] if isinstance(j, (list, tuple)) else j
+                    folded[int(k)] = (folded[int(k)] + " " + t).strip()
+                texts = folded
+            for (s, e), text in zip(batch, texts):
+                text = (text or "").strip()
+                if text:
+                    segments.append(Segment(start=round(s, 2), end=round(e, 2), text=text))
+        return segments

@@ -4,3 +4,6 @@
 # the pinned 2.8 from requirements-diarization.txt (verified working).
 transformers>=5.13,<6
 accelerate>=1.0
+# Cohere Transcribe (consensus alternate for the qwen3 engine) tokenizer deps
+sentencepiece
+protobuf

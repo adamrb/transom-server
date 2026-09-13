@@ -131,6 +131,7 @@ def _build_one(settings) -> "TranscriptionEngine | None":
             enhance_diarize=settings.stt_enhance_diarize,
             consensus=consensus,
             alternates_engine=helper,
+            consensus_cohere_model=settings.stt_consensus_cohere_model if consensus else None,
             chunk_s=settings.stt_qwen_chunk_s,
             batch_size=settings.stt_qwen_batch,
             idle_unload_s=settings.stt_idle_unload_s,

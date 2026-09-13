@@ -250,3 +250,82 @@ def test_build_engine_qwen3(monkeypatch):
     monkeypatch.setenv("PB_STT_CONSENSUS", "off")
     engine = build_engine(Settings())
     assert engine.aligner_name is None and engine.consensus is False and engine.alternates_engine is None
+
+
+def test_qwen3_cohere_alternate_uses_same_chunks(monkeypatch, tmp_path):
+    """Cohere decodes the primary's silence-cut chunks so its segments carry
+    the chunk times; batches fold multi-piece outputs back per clip."""
+    import sys, types
+    from app.engines.qwen3_asr import Qwen3AsrEngine
+
+    engine = Qwen3AsrEngine(model="m", aligner=None, consensus=True, consensus_cohere_model="Cohere/x", batch_size=2)
+    engine.device_used = "cuda"
+
+    class _Inputs(dict):
+        def to(self, *a, **k):
+            return self
+
+    class _Proc:
+        def __call__(self, clips, sampling_rate, return_tensors, language):
+            assert language == "en" and sampling_rate == SR
+            d = _Inputs(input_features=len(clips))
+            d["audio_chunk_index"] = [[i] for i in range(len(clips))]
+            return d
+
+        def batch_decode(self, out, skip_special_tokens=True):
+            return [f"cohere {i}" for i in range(out)]
+
+    class _Model:
+        device, dtype = "cuda", "bf16"
+
+        def generate(self, input_features, max_new_tokens):
+            return input_features  # count stands in for the generated ids
+
+    engine._cohere, engine._cohere_processor = _Model(), _Proc()
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(inference_mode=lambda: _Ctx()))
+    wav = np.zeros(SR * 60, dtype=np.float32)
+    segs = engine._cohere_segments(wav, [(0.0, 10.0), (12.0, 30.0), (31.0, 55.0)], "en")
+    assert [(s.start, s.end, s.text) for s in segs] == [(0.0, 10.0, "cohere 0"), (12.0, 30.0, "cohere 1"), (31.0, 55.0, "cohere 0")]
+
+
+def test_build_engine_qwen3_cohere_setting(monkeypatch):
+    from app.config import Settings
+    from app.engines import build_engine
+
+    monkeypatch.setenv("PB_TRANSCRIBE_ENABLED", "true")
+    monkeypatch.setenv("PB_STT_ENGINE", "qwen3")
+    monkeypatch.setenv("PB_STT_ENHANCE", "auto")
+    monkeypatch.setenv("PB_STT_CONSENSUS", "auto")
+    monkeypatch.setenv("PB_CLEANUP_BASE_URL", "http://llm/v1")
+    monkeypatch.setenv("PB_CLEANUP_MODEL", "m")
+    assert build_engine(Settings()).consensus_cohere_model == "CohereLabs/cohere-transcribe-03-2026"
+    monkeypatch.setenv("PB_STT_CONSENSUS_COHERE_MODEL", "off")
+    assert build_engine(Settings()).consensus_cohere_model is None
+    monkeypatch.delenv("PB_STT_CONSENSUS_COHERE_MODEL")
+    monkeypatch.setenv("PB_STT_CONSENSUS", "off")
+    assert build_engine(Settings()).consensus_cohere_model is None
+
+
+def test_qwen3_cohere_skipped_for_unsupported_language(monkeypatch, tmp_path):
+    from app.engines.qwen3_asr import Qwen3AsrEngine
+
+    class _Helper:
+        model_name, language, beam_size, consensus_parakeet_model = "w", None, 5, None
+
+        def _load_model(self):
+            raise RuntimeError("whisper unavailable in this test")
+
+    engine = Qwen3AsrEngine(model="m", aligner=None, consensus=True, alternates_engine=_Helper(),
+                            consensus_cohere_model="Cohere/x")
+    called = []
+    monkeypatch.setattr(engine, "_cohere_segments", lambda wav, chunks, lang: called.append(lang) or [])
+    monkeypatch.setattr("app.engines.qwen3_asr.speech_chunks", lambda w, s: [(0.0, 1.0)])
+    wav = np.zeros(SR, dtype=np.float32)
+    plan = EnhancePlan(original=wav, enhanced=wav, enhanced_path=tmp_path / "e.wav", regions=[(0.0, 1.0)],
+                       noise_spread_db=8.0, seconds=1.0)
+    engine._alternates(Path("a.mp3"), None, plan, "sv")   # Swedish: Qwen knows it, Cohere does not
+    assert called == []
+    engine._alternates(Path("a.mp3"), None, plan, "de")
+    assert called == ["de"]
+    engine._alternates(Path("a.mp3"), None, plan, None)   # nothing detected, nothing forced: skipped
+    assert called == ["de"]

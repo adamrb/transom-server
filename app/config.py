@@ -153,6 +153,12 @@ class Settings:
         else _env("PB_STT_QWEN_ALIGNER", "Qwen/Qwen3-ForcedAligner-0.6B-hf")))
     stt_qwen_chunk_s: float = field(default_factory=lambda: float(_env("PB_STT_QWEN_CHUNK_S", "30")))
     stt_qwen_batch: int = field(default_factory=lambda: int(_env("PB_STT_QWEN_BATCH", "4")))
+    # Third consensus voice for the qwen3 engine: Cohere Transcribe (gated on
+    # Hugging Face — PB_STT_HF_TOKEN's account must have accepted its terms;
+    # "off" to skip). Fast, one pass, and on a car recording as good as Qwen3.
+    stt_consensus_cohere_model: str | None = field(default_factory=lambda: (
+        None if (_env("PB_STT_CONSENSUS_COHERE_MODEL", "CohereLabs/cohere-transcribe-03-2026") or "").lower()
+        in ("off", "none") else _env("PB_STT_CONSENSUS_COHERE_MODEL", "CohereLabs/cohere-transcribe-03-2026")))
 
     # -- built-in (parakeet) engine --
     # Any onnx-asr model name (nemo-parakeet-tdt-0.6b-v3 covers 25 European
