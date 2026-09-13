@@ -39,6 +39,21 @@ def probe_duration(audio_path: Path) -> float | None:
     return None
 
 
+# Process-wide: has ANY engine (whisper, parakeet, Qwen3, a consensus helper)
+# initialized CUDA in this process? From then on the pyannote worker cannot be
+# respawned (see the module docstring), whatever an individual engine did.
+_CUDA_USED = False
+
+
+def mark_cuda_used() -> None:
+    global _CUDA_USED
+    _CUDA_USED = True
+
+
+def cuda_used() -> bool:
+    return _CUDA_USED
+
+
 class DiarizationMixin:
     diarization: bool
     diarization_model: str

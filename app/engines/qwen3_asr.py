@@ -105,6 +105,11 @@ class Qwen3AsrEngine(DiarizationMixin):
         self._idle_task: asyncio.Task | None = None
         self._last_used = 0.0
         self.device_used: str | None = None
+        self._diar_device_forced = False  # pyannote sent to the CPU by the VRAM guard, not by config
+        # Once any model has run on the GPU in this process, the pyannote worker
+        # can no longer be respawned (see DiarizationMixin): keep whichever one
+        # exists from then on, even after an idle unload / CPU round trip.
+        self._cuda_used = False
         self._model = None
         self._processor = None
         self._aligner = None
@@ -136,12 +141,25 @@ class Qwen3AsrEngine(DiarizationMixin):
 
     def _load_model(self):
         if self._model is not None:
-            return self._model
+            if self.device_used == "cpu" and self._pick_device() == "cuda":
+                # Loaded on the CPU while the card was full (a training run);
+                # it has room now, so start over on the GPU. This process has
+                # never held a CUDA context (everything ran on the CPU), so the
+                # diarization worker can be respawned on the GPU as well.
+                log.info("GPU has room again: reloading Qwen3-ASR on it")
+                self.unload()
+                if self._diar_device_forced and not self._cuda_used:
+                    self.close()
+                    self.diarization_device = None
+                    self._diar_device_forced = False
+            else:
+                return self._model
         # Decide the device before the diarization worker spawns so pyannote
         # follows whisper-engine rules: a short card sends both to the CPU.
         device = self._pick_device()
-        if device == "cpu" and not self.diarization_device:
+        if device == "cpu" and not self.diarization_device and self._diar_proc is None and not self._cuda_used:
             self.diarization_device = "cpu"
+            self._diar_device_forced = True
         self._ensure_diar_worker()
         try:
             import torch
@@ -161,6 +179,7 @@ class Qwen3AsrEngine(DiarizationMixin):
             self._aligner = AutoModelForTokenClassification.from_pretrained(
                 self.aligner_name, dtype=dtype, device_map=device).eval()
         self.device_used = device
+        self._cuda_used = self._cuda_used or device == "cuda"
         self.load_seconds = time.monotonic() - t0
         log.info("Qwen3-ASR loaded in %.1fs", self.load_seconds)
         return self._model
@@ -170,7 +189,7 @@ class Qwen3AsrEngine(DiarizationMixin):
     def unload(self) -> None:
         if self._model is None:
             return
-        log.info("unloading Qwen3-ASR after %ds idle", self.idle_unload_s)
+        log.info("unloading Qwen3-ASR (%s)", f"after {self.idle_unload_s}s idle" if self.idle_unload_s else "reload")
         self._model = self._processor = self._aligner = self._aligner_processor = None
         alt = self.alternates_engine
         if alt is not None:

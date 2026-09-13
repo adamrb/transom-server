@@ -444,3 +444,161 @@ def test_transcription_stream_keeps_running_task_alive(tmp_path):
         assert not path.exists()
 
     asyncio.run(run())
+
+
+def test_whisper_reloads_on_gpu_when_room_returns(monkeypatch):
+    """Loaded on the CPU because the card was full; when the guard sees room
+    at the next request the model (and a guard-forced CPU pyannote worker)
+    are reloaded on the GPU."""
+    import app.engines.local_whisper as lw
+    import sys, types
+
+    created = []
+
+    class _WM:
+        def __init__(self, name, device, compute_type, cpu_threads):
+            created.append(device)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=_WM))
+    monkeypatch.setattr(lw, "gpu_free_mb", lambda: 2000)
+    engine = LocalWhisperEngine(model="large-v3", device="cuda", compute_type="float16", min_free_vram_mb=8000,
+                                diarization=True)
+    spawned = []
+    monkeypatch.setattr(engine, "_ensure_diar_worker", lambda: spawned.append(engine.diarization_device))
+    closed = []
+    monkeypatch.setattr(engine, "close", lambda: closed.append(True))
+    engine._load_model()
+    assert created == ["cpu"] and engine.device_used == "cpu" and spawned == ["cpu"]
+    # Still full: nothing changes, same model object.
+    engine._load_model()
+    assert created == ["cpu"]
+    # Room again: reloaded on the GPU, pyannote respawned without the forced device.
+    monkeypatch.setattr(lw, "gpu_free_mb", lambda: 30000)
+    engine._load_model()
+    assert created == ["cpu", "cuda"] and engine.device_used == "cuda"
+    assert closed == [True] and spawned[-1] is None
+    # Warm on the GPU: no more churn.
+    engine._load_model()
+    assert created == ["cpu", "cuda"]
+
+
+def test_qwen3_reloads_on_gpu_when_room_returns(monkeypatch):
+    from app.engines.qwen3_asr import Qwen3AsrEngine
+
+    engine = Qwen3AsrEngine(model="m", aligner=None, device="cuda", min_free_vram_mb=8000, diarization=True)
+    picks = ["cpu"]
+    monkeypatch.setattr(engine, "_pick_device", lambda: picks[0])
+    spawned, closed, loads = [], [], []
+    monkeypatch.setattr(engine, "_ensure_diar_worker", lambda: spawned.append(engine.diarization_device))
+    monkeypatch.setattr(engine, "close", lambda: closed.append(True))
+
+    import sys, types
+
+    class _Proc:
+        @staticmethod
+        def from_pretrained(name):
+            return object()
+
+    class _Model:
+        @staticmethod
+        def from_pretrained(name, dtype=None, device_map=None):
+            loads.append(device_map)
+            return types.SimpleNamespace(eval=lambda: "model")
+
+    fake_tf = types.SimpleNamespace(AutoModelForMultimodalLM=_Model, AutoProcessor=_Proc)
+    monkeypatch.setitem(sys.modules, "transformers", fake_tf)
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(bfloat16="bf16", float32="f32"))
+    engine._load_model()
+    assert loads == ["cpu"] and spawned == ["cpu"] and engine.device_used == "cpu"
+    engine._load_model()
+    assert loads == ["cpu"]
+    picks[0] = "cuda"
+    engine._load_model()
+    assert loads == ["cpu", "cuda"] and engine.device_used == "cuda" and closed == [True] and spawned[-1] is None
+
+
+def test_diarization_worker_is_not_respawned_after_cuda_use(monkeypatch):
+    """CPU (card full) → GPU (room) → idle unload → CPU again → room again:
+    the worker may be respawned on the first GPU return only; once CUDA has
+    been used in the process the existing worker is kept."""
+    import app.engines.local_whisper as lw
+    import sys, types
+
+    created = []
+
+    class _WM:
+        def __init__(self, name, device, compute_type, cpu_threads):
+            created.append(device)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=_WM))
+    free = {"mb": 2000}
+    monkeypatch.setattr(lw, "gpu_free_mb", lambda: free["mb"])
+    engine = LocalWhisperEngine(model="large-v3", device="cuda", compute_type="float16", min_free_vram_mb=8000,
+                                diarization=True)
+    spawned, closed = [], []
+
+    def spawn():
+        if engine._diar_proc is None:
+            spawned.append(engine.diarization_device)
+            engine._diar_proc = object()
+
+    monkeypatch.setattr(engine, "_ensure_diar_worker", spawn)
+
+    def close():
+        closed.append(True)
+        engine._diar_proc = None
+
+    monkeypatch.setattr(engine, "close", close)
+    engine._load_model()                      # CPU, worker on CPU
+    free["mb"] = 30000
+    engine._load_model()                      # GPU; worker respawned (no CUDA used before)
+    assert created == ["cpu", "cuda"] and spawned == ["cpu", None] and closed == [True]
+    engine.unload()                           # idle
+    free["mb"] = 2000
+    engine._load_model()                      # card full again: CPU model, worker KEPT (CUDA was used)
+    assert created[-1] == "cpu" and len(spawned) == 2 and engine._diar_device_forced is False
+    free["mb"] = 30000
+    engine._load_model()                      # room again: GPU model, still no respawn
+    assert created[-1] == "cuda" and len(spawned) == 2 and closed == [True]
+
+
+def test_qwen3_never_respawns_worker_after_cuda(monkeypatch):
+    from app.engines.qwen3_asr import Qwen3AsrEngine
+    import sys, types
+
+    engine = Qwen3AsrEngine(model="m", aligner=None, device="cuda", min_free_vram_mb=8000, diarization=True)
+    picks = ["cpu"]
+    monkeypatch.setattr(engine, "_pick_device", lambda: picks[0])
+    spawned, closed, loads = [], [], []
+
+    def spawn():
+        if engine._diar_proc is None:
+            spawned.append(engine.diarization_device)
+            engine._diar_proc = object()
+
+    def close():
+        closed.append(True)
+        engine._diar_proc = None
+
+    monkeypatch.setattr(engine, "_ensure_diar_worker", spawn)
+    monkeypatch.setattr(engine, "close", close)
+
+    class _Proc:
+        @staticmethod
+        def from_pretrained(name):
+            return object()
+
+    class _Model:
+        @staticmethod
+        def from_pretrained(name, dtype=None, device_map=None):
+            loads.append(device_map)
+            return types.SimpleNamespace(eval=lambda: "model")
+
+    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(AutoModelForMultimodalLM=_Model, AutoProcessor=_Proc))
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(bfloat16="bf16", float32="f32", cuda=types.SimpleNamespace(is_available=lambda: True, empty_cache=lambda: None)))
+    engine._load_model(); picks[0] = "cuda"; engine._load_model()     # CPU then GPU: one respawn
+    assert loads == ["cpu", "cuda"] and spawned == ["cpu", None] and closed == [True]
+    engine.unload(); picks[0] = "cpu"; engine._load_model()           # full again: CPU model, worker kept
+    assert loads[-1] == "cpu" and len(spawned) == 2 and engine._diar_device_forced is False
+    picks[0] = "cuda"; engine._load_model()                           # room again: no respawn
+    assert loads[-1] == "cuda" and len(spawned) == 2 and closed == [True]
