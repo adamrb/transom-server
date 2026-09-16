@@ -1040,7 +1040,7 @@ class Runner:
                         stdout_bytes=out_state["bytes"], stderr_bytes=err_state["bytes"],
                         **extra)
         # Outcome for the bridge: a script's last stdout line is its own summary
-        # ("Saved note 0_Quick Add/....md"); failures carry the exit code and stderr tail.
+        # ("Saved note Inbox/....md"); failures carry the exit code and stderr tail.
         payload = variables.get("_payload") or {}
         if timed_out:
             self._terminal(job_id, payload, "failed", f"Timed out after {int(timeout)}s")

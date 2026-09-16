@@ -5,9 +5,9 @@ reasons and hand-offs. A list row has room for one line, so this folds the
 LATEST run and its deliveries into a small dict:
 
     {"state": "working" | "done" | "failed" | "unknown" | "skipped",
-     "line":  "Vault notes: Filed: Life/Topics/Dogs.md",
+     "line":  "Vault notes: Filed: Notes/Dogs.md",
      "items": [{"route_name": "Vault notes", "state": "done",
-                "summary": "Filed: Life/Topics/Dogs.md"}],
+                "summary": "Filed: Notes/Dogs.md"}],
      "run_id": "...", "run_at": "2026-09-09T15:28:33Z"}
 
 `None` when the router never ran for the recording. Pure: takes the run row

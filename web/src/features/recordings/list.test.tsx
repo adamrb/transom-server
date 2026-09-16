@@ -74,8 +74,8 @@ describe('recordings list', () => {
   it('shows what the automations did under a finished row, never under one still in flight', async () => {
     const summary = {
       state: 'done',
-      line: 'Vault notes: Filed: Life/Topics/Dogs.md',
-      items: [{ route_name: 'Vault notes', state: 'done', summary: 'Filed: Life/Topics/Dogs.md' }],
+      line: 'Vault notes: Filed: Notes/Dogs.md',
+      items: [{ route_name: 'Vault notes', state: 'done', summary: 'Filed: Notes/Dogs.md' }],
       run_id: 'run-1',
       run_at: '2026-09-08T00:30:00Z',
     };
@@ -97,7 +97,7 @@ describe('recordings list', () => {
     renderRecordings();
     const done = await screen.findByRole('button', { name: /Political Fight/ });
     const line = within(done).getByTestId('row-automations');
-    expect(line).toHaveTextContent('Vault notes: Filed: Life/Topics/Dogs.md');
+    expect(line).toHaveTextContent('Vault notes: Filed: Notes/Dogs.md');
     expect(within(line).getByText('Vault notes:')).toHaveClass('font-medium');
     expect(within(screen.getByRole('button', { name: /Transcribing 42%/ })).queryByTestId('row-automations')).toBeNull();
     expect(within(screen.getByRole('button', { name: /Broken hand-off/ })).getByTestId('row-automations')).toHaveClass('text-error');
@@ -183,7 +183,7 @@ describe('recordings list', () => {
     expect(urls.at(-1)?.searchParams.get('offset')).toBe('50');
     expect(screen.getAllByRole('button', { name: /^Row/ })).toHaveLength(51);
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
-  });
+  }, 15_000); // renders 100 rows; the 5 s default trips when other suites share the CPU
 
   it('moves between rows with the arrow keys and opens with Enter', async () => {
     captureList(() => ALL);

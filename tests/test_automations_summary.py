@@ -51,10 +51,10 @@ def test_no_run_is_none():
 
 
 def test_done_delivery_reads_route_and_agent_summary():
-    s = summarize_automations(run(), [d(result_status="done", result_summary="Filed:  Life/Topics/Dogs.md")])
+    s = summarize_automations(run(), [d(result_status="done", result_summary="Filed:  Notes/Dogs.md")])
     assert s["state"] == "done"
-    assert s["line"] == "Vault notes: Filed: Life/Topics/Dogs.md"
-    assert s["items"] == [{"route_name": "Vault notes", "state": "done", "summary": "Filed: Life/Topics/Dogs.md"}]
+    assert s["line"] == "Vault notes: Filed: Notes/Dogs.md"
+    assert s["items"] == [{"route_name": "Vault notes", "state": "done", "summary": "Filed: Notes/Dogs.md"}]
     assert s["run_id"] == "run-1" and s["run_at"] == "2026-09-09T15:28:33Z"
 
 

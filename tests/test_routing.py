@@ -826,8 +826,8 @@ def test_delivery_results_for_markdown_and_result_callback(tmp_path, monkeypatch
             assert client.post(f"/api/v1/deliveries/{d['id']}/result", headers={"Authorization": "Bearer wrong"},
                                json={"status": "done"}).status_code == 401
             r = client.post(f"/api/v1/deliveries/{d['id']}/result", headers={"Authorization": f"Bearer {tok}"},
-                            json={"status": "done", "summary": "  Saved note 0_Quick Add/T.md  ", "attempt": 1})
-            assert r.status_code == 200 and r.json()["result_summary"] == "Saved note 0_Quick Add/T.md"
+                            json={"status": "done", "summary": "  Saved note Inbox/T.md  ", "attempt": 1})
+            assert r.status_code == 200 and r.json()["result_summary"] == "Saved note Inbox/T.md"
             assert r.json()["status"] == "ok" and store.get_delivery(d["id"])["last_error"] is None   # done clears the lost hand-off
             assert client.post(f"/api/v1/deliveries/{d['id']}/retry", headers={"Authorization": f"Bearer {tok}"}).status_code == 409
             # done is terminal for the attempt: a late 'failed' cannot reopen it; a duplicate 'done' is a no-op
@@ -950,8 +950,8 @@ def test_lost_handoff_response_is_repaired_by_the_agents_callback(tmp_path, monk
             h = {"Authorization": f"Bearer {token}"}
             assert client.post(f"/api/v1/deliveries/{d['id']}/result", headers=h, json={"status": "queued", "summary": "Started"}).status_code == 200
             assert store.get_delivery(d["id"])["status"] == "ok"
-            r = client.post(f"/api/v1/deliveries/{d['id']}/result", headers=h, json={"status": "done", "summary": "Filed: Life/Topics/Garage.md"})
-            assert r.status_code == 200 and r.json()["status"] == "ok" and r.json()["result_summary"] == "Filed: Life/Topics/Garage.md"
+            r = client.post(f"/api/v1/deliveries/{d['id']}/result", headers=h, json={"status": "done", "summary": "Filed: Notes/Garage.md"})
+            assert r.status_code == 200 and r.json()["status"] == "ok" and r.json()["result_summary"] == "Filed: Notes/Garage.md"
             # a result-token holder sees outcome fields only, never the action snapshot (webhook auth headers)
             assert set(r.json()) == {"id", "status", "result_status", "result_summary", "result_at"}
             assert client.post(f"/api/v1/deliveries/{d['id']}/retry", headers={"Authorization": f"Bearer {tok}"}).status_code == 409

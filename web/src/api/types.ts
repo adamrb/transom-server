@@ -52,7 +52,7 @@ export const StageSchema = z.string().nullish();
 
 /**
  * One line per recording about its latest automations run: overall state, a ready-made line
- * ("Vault notes: Filed: Life/Topics/Dogs.md"), and one item per hand-off.
+ * ("Vault notes: Filed: Notes/Dogs.md"), and one item per hand-off.
  */
 export const AutomationsStateSchema = z.enum(['working', 'done', 'failed', 'unknown', 'skipped']);
 export type AutomationsState = z.infer<typeof AutomationsStateSchema>;

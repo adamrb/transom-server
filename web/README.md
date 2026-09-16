@@ -1,9 +1,9 @@
 # Plaud Bridge web dashboard
 
-React 18 + TypeScript (strict) + Vite + Tailwind v4, following Material 3. The
-design hand-off (`SPEC.md`, `RATIONALE.md`, the mockup) describes the look; the functional
-reference is the vanilla dashboard that lived at `app/static/index.html` on `main`. Everything it
-did must keep working, in user words, on desktop, on a phone and inside the Android app.
+React 18 + TypeScript (strict) + Vite + Tailwind v4, following Material 3. The design system
+lives in `src/components` and `src/theme`; the component gallery (below) is the visual reference.
+It replaced a vanilla dashboard, and the rule from that migration still holds: everything must
+keep working, in user words, on desktop, on a phone and inside the Android app's WebView.
 
 ## Commands
 
@@ -11,7 +11,7 @@ did must keep working, in user words, on desktop, on a phone and inside the Andr
 cd web
 npm ci                 # install from the lockfile
 npm run dev            # http://localhost:5173/static/  (/api is proxied to http://127.0.0.1:8090)
-npm run dev -- --host  # reachable from other machines (Neko, a phone)
+npm run dev -- --host  # reachable from other machines (a phone, a remote browser)
 npm run build          # tsc -b && vite build → ../app/static
 npm test               # vitest (jsdom + testing-library + msw)
 npm run lint           # eslint + prettier --check

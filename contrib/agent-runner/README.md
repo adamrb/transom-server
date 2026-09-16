@@ -259,5 +259,5 @@ section configured (`base_url` = the plaud-bridge server; no credential, the pay
 `delivery.result_token` authorizes exactly that delivery's result) the runner POSTs `{"status": "done"|"failed", "summary": "..."}`
 there when a job ends: for command actions the last non-empty stdout line is the
 summary (so scripts should print a one-line human-readable result, e.g.
-`Saved note 0_Quick Add/Title.md`), for ACP agents the agent's reply. The
+`Saved note Inbox/Title.md`), for ACP agents the agent's reply. The
 recording page in the app and dashboard shows this under Automations.

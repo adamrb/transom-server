@@ -755,7 +755,7 @@ class _ResultReceiver(BaseHTTPRequestHandler):
 
 class TestResultCallback(RunnerTestBase):
     actions = {
-        "obsidian-inbox": {"command": ["/bin/sh", "-c", "echo working; echo 'Saved note 0_Quick Add/T.md'"], "timeout_seconds": 10},
+        "obsidian-inbox": {"command": ["/bin/sh", "-c", "echo working; echo 'Saved note Inbox/T.md'"], "timeout_seconds": 10},
         "broken": {"command": ["/bin/sh", "-c", "echo oops >&2; exit 3"], "timeout_seconds": 10},
     }
 
@@ -788,7 +788,7 @@ class TestResultCallback(RunnerTestBase):
         reports = [x for x in _ResultReceiver.received if x["path"].endswith("/delivery-0001/result")]
         self.assertEqual([x["body"]["status"] for x in reports], ["queued", "done"])  # started, then finished
         self.assertTrue(all(x["auth"] == "Bearer tok-delivery-0001" for x in reports))
-        self.assertEqual(reports[-1]["body"], {"status": "done", "summary": "Saved note 0_Quick Add/T.md"})
+        self.assertEqual(reports[-1]["body"], {"status": "done", "summary": "Saved note Inbox/T.md"})
 
     def test_command_failure_reports_exit_code_and_stderr(self):
         _ResultReceiver.received.clear()
@@ -836,8 +836,8 @@ class TestResultCallback(RunnerTestBase):
 class TestSummaryFromReply(unittest.TestCase):
     def test_outcome_line_wins_else_whole_reply(self):
         f = agent_runner._summary_from_reply
-        self.assertEqual(f("I read the index.\nMerged into the garage page.\nFiled: Life/Topics/Garage.md\n"), "Filed: Life/Topics/Garage.md")
-        self.assertEqual(f("Created: 0_Quick Add/Test memo.md"), "Created: 0_Quick Add/Test memo.md")
+        self.assertEqual(f("I read the index.\nMerged into the garage page.\nFiled: Notes/Garage.md\n"), "Filed: Notes/Garage.md")
+        self.assertEqual(f("Created: Inbox/Test memo.md"), "Created: Inbox/Test memo.md")
         self.assertEqual(f("Nothing durable here.\nSkipped: test recording"), "Skipped: test recording")
         self.assertEqual(f("Just prose\nwithout an outcome line"), "Just prose without an outcome line")
         self.assertEqual(f("   \n"), "Agent finished with no reply")

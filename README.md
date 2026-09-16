@@ -1,6 +1,6 @@
 # Plaud Bridge Server
 
-Self-hosted sync target for [Plaud](https://www.plaud.ai) recorders (Note Pro / NotePin S), used together with the [Plaud Bridge Android app](https://github.com/CHANGEME/plaud-bridge-android). Your recordings sync from the device to your phone to your own server, get transcribed by any OpenAI-compatible speech-to-text endpoint you choose, and land as JSON + markdown files you can automate against. No Plaud subscription required.
+Self-hosted sync target for [Plaud](https://www.plaud.ai) recorders (Note Pro / NotePin S), used together with the [Plaud Bridge Android app](https://github.com/adamrb/plaud-bridge-android). Your recordings sync from the device to your phone to your own server, get transcribed by any OpenAI-compatible speech-to-text endpoint you choose, and land as JSON + markdown files you can automate against. No Plaud subscription required.
 
 ```
 Plaud device ──BLE/WiFi──> Android app ──HTTPS──> plaud-bridge-server
@@ -19,19 +19,22 @@ Only device authentication. The Plaud Embedded SDK requires a signed user token 
 
 You need a free account at [portal.plaud.ai](https://portal.plaud.ai): create an **Embedded SDK Application** and copy its Client ID and Secret Key. The free tier covers 50 connected devices; the (paid) Plaud transcription API is not used at all.
 
+**Supported recorders:** developed and tested against a Plaud Note Pro. The SDK also lists the NotePin S, which has not been tested by the maintainer; reports either way are welcome. Binding a recorder to this pipeline releases its pairing with the official Plaud app (see the app's FAQ).
+
 ## Quick start
 
 ```bash
-git clone https://github.com/CHANGEME/plaud-bridge-server.git
+git clone https://github.com/adamrb/plaud-bridge-server.git
 cd plaud-bridge-server
 cp .env.example .env
 # edit .env: Plaud credentials, an auth token (openssl rand -hex 32),
 # and your transcription engine settings
+mkdir -p data && sudo chown 1000:1000 data   # the container runs as UID 1000 and owns /data
 docker compose up -d --build
 curl http://localhost:8090/api/v1/health
 ```
 
-Everything runs in the container — transcription included. Release images are published to `ghcr.io` (`:latest` CPU, `-cuda:latest` GPU) with the matching Android APK baked in, so updating the whole stack (server *and* the app it serves to your phone) is `docker compose pull && docker compose up -d`; the app's built-in update check then offers the new APK.
+Everything runs in the container — transcription included. The compose file above builds from source, so updating is `git pull && docker compose up -d --build`. Tagged releases also publish images to `ghcr.io` (`:latest` CPU, `-cuda:latest` GPU); if you point `image:` at one of those instead of `build:`, updating becomes `docker compose pull && docker compose up -d`. Images built by this repo's release workflow carry the matching Android APK when the `APK_RELEASE_URL` repository variable is configured (see *Android app distribution*), so the server and the app it serves to your phone move together and the app's built-in update check offers the new APK.
 
 The container binds to `127.0.0.1:8090` by default. Expose it through a reverse proxy that terminates **HTTPS** — the app authenticates with a static bearer token, so plaintext HTTP on an untrusted network means credential theft. Set a request-body limit and rate limiting at the proxy too. Then install the Android app and point it at your server URL + auth token.
 
@@ -57,7 +60,7 @@ Four engines, selected with `PB_STT_ENGINE`:
 
 **Speaker diarization** (multi-speaker labeling — segments and transcripts get `Speaker 1:` / `Speaker 2:` turns): set `PB_STT_DIARIZE=true` with the CUDA image (or install `requirements-diarization.txt`) and provide `PB_STT_HF_TOKEN` for a Hugging Face account that has accepted the [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) terms (override the model with `PB_STT_DIARIZE_MODEL`, e.g. `pyannote/speaker-diarization-3.1`). Speakers are assigned per word using whisper word timestamps, so a whisper segment that spans a speaker change is split at the boundary. pyannote runs in a separate long-lived worker process (`app/engines/diarize_worker.py`) so its torch/cuDNN stack does not collide with CTranslate2's; both share the GPU unless `PB_STT_DIARIZE_DEVICE=cpu` keeps pyannote on the CPU (useful on a 6 GB or shared card: a large whisper model in float32 plus pyannote no longer fit, and an out-of-memory there costs the speaker labels). Speaker-count hints: pyannote's automatic clustering under-counts on short clips or similar voices, so set `PB_STT_NUM_SPEAKERS` (exact) or `PB_STT_MIN_SPEAKERS` / `PB_STT_MAX_SPEAKERS` (bounds) when you know the count; unset means automatic. Note for older NVIDIA cards (Maxwell/Pascal, e.g. GTX 900/1000 series): `requirements-diarization.txt` pins torch 2.8.0+cu126, the last build whose kernels run on those GPUs.
 
-**Custom vocabulary** — names and terms Whisper mishears (people, products, places) can be listed under Automations → Vocabulary in the dashboard (or via `GET/PUT /api/v1/vocabulary`). Terms are passed to the decoder as hotwords so it prefers those spellings (the `local` whisper engine only; `parakeet` has no prompt); an entry may also list the mis-hearings it usually produces (`Plaud Bridge = Plogged Bridge`) and those are corrected in every new transcript with any engine, whole words only. `contrib/vocab_from_obsidian.py --vault <path> --url <server>` imports names from an Obsidian vault (a `Life/_names.md` gazetteer, People frontmatter aliases, project/topic titles); run it by hand or from an agent whenever you like, it merges and never deletes. Add `--deep` to also mine people pages anywhere in the vault, frequently linked pages, products and acronyms, weighted by how often they are mentioned; the decoder prompt only fits roughly 60 to 80 names, so the heaviest terms are the ones it gets, while every entry with aliases still drives corrections.
+**Custom vocabulary** — names and terms Whisper mishears (people, products, places) can be listed under Settings → Vocabulary in the dashboard (or via `GET/PUT /api/v1/vocabulary`). Terms are passed to the decoder as hotwords so it prefers those spellings (the `local` whisper engine only; `parakeet` has no prompt); an entry may also list the mis-hearings it usually produces (`Plaud Bridge = Plogged Bridge`) and those are corrected in every new transcript with any engine, whole words only. `contrib/vocab_from_obsidian.py --vault <path> --url <server>` imports names from an Obsidian vault (a `_names.md` gazetteer, People frontmatter aliases, project/topic titles; the folder names it expects are constants at the top of the script, adjust them to your vault); run it by hand or from an agent whenever you like, it merges and never deletes. Add `--deep` to also mine people pages anywhere in the vault, frequently linked pages, products and acronyms, weighted by how often they are mentioned; the decoder prompt only fits roughly 60 to 80 names, so the heaviest terms are the ones it gets, while every entry with aliases still drives corrections.
 
 **LLM cleanup** (`PB_CLEANUP_ENABLED=true`, any engine) — after recognition, one chat completion per `PB_CLEANUP_MAX_CHARS` (30k) of transcript fixes what the recognizer misheard: names, products, acronyms and numbers ("Voltum" → Voltium, "VM two" → VM2, "X seven Ks" → X7Ks), using the whole custom vocabulary as a glossary (aliases included, so the model knows the usual mis-hearings) plus `PB_CLEANUP_CONTEXT`, free text about whose recordings these are ("works in cloud infrastructure; recordings are work meetings and personal voice memos"). With `PB_CLEANUP_FILLERS=true` (default) it also drops "uh", "um", stutters and false starts, which turns a verbatim Parakeet transcript into readable prose. The model sees numbered segments and returns only the ones it changed, so timestamps and speaker labels are untouched; a reply that is not JSON is ignored, a rewrite that changes a segment's length too much is rejected, and each edit is checked token by token: a capitalized word the vocabulary does not know is the model guessing at a name and is refused (so add people and products to the vocabulary to have them corrected), as are inserted words; glossary spellings, digits for spoken numbers ("VM two" → VM2), case fixes, filler removal and lower-case word swaps go through. The transcript records what happened under `cleanup` (`segments_changed`, `rejected`, `calls`, `seconds`, and the old text of each changed segment). Uses the summary endpoint unless `PB_CLEANUP_BASE_URL` / `PB_CLEANUP_MODEL` / `PB_CLEANUP_API_KEY` point elsewhere; the recording shows "Cleaning up" while it runs. Best-effort: any failure keeps the recognizer's text.
 
@@ -110,7 +113,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 **Update-check contract for the app:** `GET /api/v1/apk/info` returns `{version_code, version_name, filename, sha256, size_bytes, uploaded_at, min_sdk, notes}` (or `404` if nothing is hosted). The app compares `version_code` against its own; when the server's is higher, it downloads `GET /api/v1/apk/file` (served as `application/vnd.android.package-archive`) and verifies `sha256` before installing.
 
-**Bundled releases:** release docker images ship the matching APK preinstalled under `PB_BUNDLED_APK_DIR` (default `/srv/plaud-bridge/bundled-apk`: one `*.apk` plus a `manifest.json` with `version_code`/`version_name`/`notes`). At startup the server auto-publishes it as the hosted APK whenever nothing is hosted yet or the hosted `version_code` is lower — so a fresh server hosts the app out of the box, and `docker compose pull` keeps the hosted APK current with the image. Manually uploaded releases with an equal or higher `version_code` are never overwritten, and a malformed bundle directory only logs a warning.
+**Bundled releases:** release docker images can ship the matching APK preinstalled under `PB_BUNDLED_APK_DIR` (the release workflow fetches it only when the `APK_RELEASE_URL` repository variable points at a published `plaud-bridge.apk` + `manifest.json` pair; a fork without that variable builds an image with no APK, and you upload one by hand instead) (default `/srv/plaud-bridge/bundled-apk`: one `*.apk` plus a `manifest.json` with `version_code`/`version_name`/`notes`). At startup the server auto-publishes it as the hosted APK whenever nothing is hosted yet or the hosted `version_code` is lower — so a fresh server hosts the app out of the box, and recreating the container from a newer image keeps the hosted APK current with it. Manually uploaded releases with an equal or higher `version_code` are never overwritten, and a malformed bundle directory only logs a warning.
 
 ## AI summaries (optional)
 
@@ -206,12 +209,26 @@ See [.env.example](.env.example) — every setting is an environment variable wi
 
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt -r requirements-stt.txt pytest
+pip install -r requirements.txt -r requirements-stt.txt -r requirements-dev.txt
 PB_DATA_DIR=./data PB_AUTH_TOKENS=dev uvicorn app.main:app --reload --port 8090
 
 pytest -m "not integration"   # unit tests (fast, no models)
 pytest                        # + integration tests (real whisper-tiny inference)
+
+cd web && npm ci && npm test  # dashboard tests; `npm run build` writes app/static
 ```
+
+The web dashboard has its own [README](web/README.md). The optional agent runner under
+[contrib/agent-runner](contrib/agent-runner/README.md) turns routing webhooks into Claude Code or
+Codex sessions; it reflects one maintainer's setup and is a starting point, not a requirement.
+
+## Documentation
+
+- [docs/end-to-end.md](docs/end-to-end.md): the whole pipeline from recorder to filed note, in
+  build order, with the traps marked. Hostnames and paths are placeholders.
+- [AGENTS.md](AGENTS.md): layout, conventions, GPU gotchas and the release process, written for
+  coding agents and new contributors. [CLAUDE.md](CLAUDE.md) points Claude Code at it.
+- [.env.example](.env.example): every setting, documented inline.
 
 ## Disclaimer
 
