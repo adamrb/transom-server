@@ -102,6 +102,32 @@ timeout_seconds = 30
 # timeout_seconds = 30
 # completion = "child"
 
+# --- Running under Paseo (see README "Paseo execution") --------------------------
+# start-paseo-session.py starts a detached Claude Code session in Paseo seeded
+# with the memo and returns; the session reports back via report-result.sh.
+# [actions."Ask Claude"]
+# command = ["/usr/bin/python3", "/path/to/agent-runner/start-paseo-session.py"]
+# stdin_template = """TITLE: {title}
+# RECORDING: {recording_id}
+#
+# {text}"""
+# timeout_seconds = 120     # above the launcher's 90 s creation budget, with headroom
+# completion = "child"
+#
+# paseo-agent.py runs a filing prompt as a Paseo agent, waits for it and prints
+# its final line (Filed:/Created:/Skipped:) as the outcome. Keep --timeout a
+# little under timeout_seconds so a stuck agent is stopped and reported. Override
+# provider/model or permission mode per action with --provider / --mode (the
+# runner passes an action's `env` only to completion = "child" commands).
+# [actions."Vault notes"]
+# command = ["/usr/bin/python3", "/path/to/agent-runner/paseo-agent.py", "--route", "Vault notes", "--cwd", "/home/you/obsidian/vault", "--timeout", "870"]
+# timeout_seconds = 900
+# cwd = "/home/you/obsidian/vault"
+# stdin_template = """TITLE: {title}
+# RECORDING: {recording_id}
+#
+# <your filing prompt, ending with the Filed:/Created:/Skipped: instruction>"""
+
 # An agent that files a work meeting as a real note in an Obsidian vault:
 # a meeting page in the vault's meetings folder, an entry on that day's daily
 # log page, and links to the people/project pages that already exist. Route

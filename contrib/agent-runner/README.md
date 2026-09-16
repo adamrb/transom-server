@@ -68,6 +68,36 @@ putting `{text}`/`{summary}`/`{prompt}`/`{route_description}` directly in the
 argv is rejected at config load unless the action sets
 `allow_unsafe_interpolation = true` (see Security).
 
+### Paseo execution (command actions)
+
+If you run your agents under [Paseo](https://paseo.sh) (a daemon plus phone/desktop
+app that shows every agent with its full transcript), two `command` helpers in
+this directory hand jobs to it instead of speaking ACP, so each memo's work is
+visible and steerable in the app:
+
+- `start-paseo-session.py` — for an "ask the assistant" route: starts a NEW
+  detached Claude Code session seeded with the transcript (`paseo run
+  --background`), picks the working directory from a repo the memo names, and
+  returns at once. Use with `completion = "child"`; the session reports its
+  outcome with `report-result.sh` (the callback goes into a 0600 file, only the
+  path travels to the agent as `PB_RESULT_FILE`).
+- `paseo-agent.py --route <name> --cwd <dir> --timeout <s>` — for filing
+  recipes: runs the rendered prompt as a Paseo agent, waits (`paseo agent
+  wait`), and prints the agent's final line, which the runner shows as the
+  outcome. A timed-out agent is stopped and the delivery stays retryable.
+
+Both read a header block on stdin (`TITLE: ...`, `RECORDING: ...`, blank line,
+body) so the agent title can name the recording; the body is the transcript
+or the full prompt. Provider, model and mode default to
+`claude/claude-fable-5-1` and `bypassPermissions` (`paseo_common.py`); override
+them per action with the `--provider` and `--mode` flags of either script (an
+action's `env` only reaches `completion = "child"` commands, so flags are the
+reliable channel). Give a launcher action `timeout_seconds` above the 90 s
+creation budget, and a filing action a `--timeout` a little under its
+`timeout_seconds`. The daemon password is read from
+`~/.config/secrets/paseo.env`. Prompts over ~60 KB are spilled to a 0600 file
+the agent is told to read first (argv has a per-element cap).
+
 ### OpenAI-compat chat shim
 
 `POST /v1/chat/completions` (non-streaming) flattens `messages` into one
