@@ -218,36 +218,84 @@ def create_agent(*, title: str, cwd: Path, prompt: str, labels: dict[str, str],
     or times out AFTER the daemon accepted the request, the agent exists and is
     working; rather than report a failure that would make the delivery
     retryable (a second agent doing the same filing), look it up by that label
-    and carry on with it. Only a launch that cannot be found is a failure."""
+    and carry on with it. Only a launch that cannot be found is a failure.
+
+    The agent runs in its own workspace created here WITH the title. A bare
+    `paseo run` mints an untitled workspace and (CLI 0.8.0, see the TODO in
+    commands/agent/run.js) never hands the prompt to the daemon's workspace
+    naming, so in the app the agent sat under a row that just showed the
+    directory name while app-started agents get a titled row each. The
+    workspace is cosmetic: if creating it fails the agent still launches
+    untitled rather than failing the delivery."""
     launch_id = uuid.uuid4().hex[:16]
+    # One creation deadline covers the workspace, the launch AND the recovery lookup.
+    deadline = time.monotonic() + timeout
+    lookup_reserve = min(20.0, timeout / 4)
+    workspace_id = create_workspace(title, cwd, env, timeout=min(20.0, max(5.0, timeout / 4)))
     args = ["run", "--background", "--json", "--title", title, "--provider", provider or PROVIDER,
             "--mode", mode or MODE, "--cwd", str(cwd), "--label", f"launch={launch_id}"]
+    if workspace_id:
+        args += ["--workspace", workspace_id]
     for k, v in labels.items():
         args += ["--label", f"{label_value(k, 30)}={label_value(v)}"]
     for k, v in (agent_env or {}).items():
         args += ["--env", f"{k}={v}"]
     args += ["--", prompt]  # end of options: a prompt starting with '-' is still positional
-    # One creation deadline covers the launch AND the recovery lookup.
-    deadline = time.monotonic() + timeout
-    lookup_reserve = min(20.0, timeout / 4)
     proc = None
     try:
-        proc = _run(args, env, timeout=max(5.0, timeout - lookup_reserve))
+        proc = _run(args, env, timeout=max(5.0, deadline - lookup_reserve - time.monotonic()))
         data = _json_tail(proc.stdout)
     except (PaseoError, ValueError) as e:
         found = find_agent_by_label("launch", launch_id, env, timeout=max(5.0, deadline - time.monotonic()))
         if found:
             return found
+        _archive_workspace(workspace_id, env, deadline)
         raise PaseoError(f"paseo run failed: {_cli_failure_detail(proc, e)}")
     if isinstance(data, dict) and data.get("error"):
+        _archive_workspace(workspace_id, env, deadline)
         raise PaseoError(f"paseo run failed: {data['error'].get('message', 'unknown error')}")
     agent_id = data.get("agentId") if isinstance(data, dict) else None
     if not agent_id:
         found = find_agent_by_label("launch", launch_id, env, timeout=max(5.0, deadline - time.monotonic()))
         if found:
             return found
+        _archive_workspace(workspace_id, env, deadline)
         raise PaseoError("paseo run returned no agentId")
     return agent_id
+
+
+def create_workspace(title: str, cwd: Path, env: dict[str, str], timeout: float = 20.0) -> str | None:
+    """A new local workspace for `cwd` titled `title` (what the Paseo app
+    shows as the row the agent lives under); None if it could not be created,
+    which callers treat as cosmetic."""
+    args = ["workspace", "create", "--isolation", "local", "--path", str(cwd), "--title", title, "--json"]
+    try:
+        proc = _run(args, env, timeout=timeout)
+        data = _json_tail(proc.stdout)
+    except (PaseoError, ValueError) as e:
+        print(f"paseo_common: workspace not created, agent will sit in an untitled one ({e})", file=sys.stderr)
+        return None
+    if isinstance(data, dict) and not data.get("error") and data.get("workspaceId"):
+        return str(data["workspaceId"])
+    print(f"paseo_common: workspace not created, agent will sit in an untitled one "
+          f"({_cli_failure_detail(proc, ValueError('no workspaceId'))})", file=sys.stderr)
+    return None
+
+
+def _archive_workspace(workspace_id: str | None, env: dict[str, str], deadline: float) -> None:
+    """Best effort: do not leave an empty titled workspace behind when the
+    agent never launched. Stays inside the caller's creation deadline (the
+    runner's watchdog sits just above it); with no budget left the empty
+    workspace is the lesser evil and is skipped."""
+    if not workspace_id:
+        return
+    remaining = deadline - time.monotonic()
+    if remaining < 3.0:
+        return
+    try:
+        _run(["workspace", "archive", workspace_id, "--json"], env, timeout=min(15.0, remaining))
+    except PaseoError:
+        pass
 
 
 def _cli_failure_detail(proc: subprocess.CompletedProcess | None, exc: Exception) -> str:
