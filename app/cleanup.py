@@ -265,7 +265,7 @@ def alias_tokens(entries: list[VocabEntry]) -> set[str]:
 
 # How alike a replaced span and its replacement must look (difflib ratio on the
 # lower-cased text) unless the span is a known mis-hearing. "Voltum"→"Voltium"
-# 0.77, "Tomaszewski"→"Tomashefsky" 0.73, "critical"→"Physical" 0.5; "capacity"→
+# 0.92, "Tomaszewski"→"Tomashefsky" 0.73, "critical"→"Physical" 0.5; "capacity"→
 # "Voltium" 0.25 (a content word swapped for a glossary term) fails.
 MIN_REPLACE_SIMILARITY = 0.4
 
