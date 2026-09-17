@@ -98,7 +98,7 @@ This project was called Plaud Bridge until September 2026. Everything on disk is
 
 1. **The compose service is now `transom`.** Compose treats that as a new service, so on an existing checkout run `docker rm -f plaud-bridge` before `docker compose up -d --build`, or the new container cannot bind port 8090. Your `data/` directory is untouched; the server keeps using an existing `plaud-bridge.sqlite3` and only creates `transom.sqlite3` on a fresh data dir.
 2. **Local `docker-compose.override.yml` files** (gitignored) must rename their `plaud-bridge:` service key to `transom:` too.
-3. **The Android app has a new package id** (`io.github.adamrb.transom`), so the old app cannot self-update into it. In the old app, unpair the recorder first (its binding is tied to the old install's user id), then uninstall it, install the new APK and onboard again with the same server. Recordings already on the server are unaffected.
+3. **The Android app has a new package id** (`io.github.adamrb.transom`), so the old app cannot self-update into it. Copy the User ID from the old app (Settings → Advanced → User ID → Copy), install the new APK, connect it to the same server, then paste that User ID under Settings → Advanced before pairing so the recorder's binding carries over without an unpair. Uninstall the old app afterwards. Recordings already on the server are unaffected.
 
 ## Web dashboard
 
