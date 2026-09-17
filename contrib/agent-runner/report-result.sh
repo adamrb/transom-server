@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Report a delivery's outcome to plaud-bridge from a child process the runner
+# Report a delivery's outcome to transom from a child process the runner
 # started with `completion = "child"` (see config.example.toml): the runner
 # itself only reports "queued", and whatever the command launched (a Claude
 # session, a long import) calls this once when it is done.
@@ -65,10 +65,10 @@ PY
 case "$code" in
   2*|409)
     [ -n "$file" ] && rm -f "$file"
-    echo "Reported '$status' to plaud-bridge (HTTP $code)"
+    echo "Reported '$status' to transom (HTTP $code)"
     ;;
   *)
-    echo "report-result.sh: plaud-bridge answered HTTP $code; not reported, try again" >&2
+    echo "report-result.sh: transom answered HTTP $code; not reported, try again" >&2
     exit 1
     ;;
 esac

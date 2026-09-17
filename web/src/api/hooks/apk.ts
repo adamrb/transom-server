@@ -27,7 +27,7 @@ export async function fetchApkBlob(): Promise<{ blob: Blob; filename: string }> 
   const r = await apiRequest('/apk/file');
   const cd = r.headers.get('content-disposition') ?? '';
   const m = cd.match(/filename="([^"]+)"/i);
-  return { blob: await r.blob(), filename: m?.[1] ?? 'plaud-bridge.apk' };
+  return { blob: await r.blob(), filename: m?.[1] ?? 'transom.apk' };
 }
 
 export interface UploadApkArgs {

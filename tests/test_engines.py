@@ -481,7 +481,7 @@ def test_parakeet_ignores_forced_language_and_says_so(monkeypatch, caplog):
     import logging
 
     engine = _parakeet_with_fakes(monkeypatch, [_Chunk(0.0, 1.0, "ciao")], duration_s=1.0, language="en")
-    with caplog.at_level(logging.WARNING, logger="plaud-bridge.engine.parakeet"):
+    with caplog.at_level(logging.WARNING, logger="transom.engine.parakeet"):
         result = asyncio.run(engine.transcribe(Path("a.mp3")))
         asyncio.run(engine.transcribe(Path("b.mp3")))
     assert result.language is None  # never claims the configured language

@@ -1,13 +1,13 @@
 # AGENTS.md
 
-Guide for coding agents (and humans) working on **plaud-bridge-server**. Read this before
+Guide for coding agents (and humans) working on **transom-server**. Read this before
 changing anything. The user-facing documentation is [README.md](README.md); the whole pipeline,
 end to end, is in [docs/end-to-end.md](docs/end-to-end.md).
 
 ## What this is
 
 A self-hosted FastAPI service that receives recordings from the
-[Plaud Bridge Android app](https://github.com/adamrb/plaud-bridge-android), transcribes them
+[Transom Android app](https://github.com/adamrb/transom-android), transcribes them
 (built-in engines or an external OpenAI-compatible endpoint), optionally summarizes and routes
 them with an LLM, and hands results to the user's own automations via webhooks. It also serves
 the React web dashboard and hosts the Android APK for in-app updates. Plaud's cloud is used for
@@ -81,6 +81,11 @@ Run the unit suite and the web tests before every commit. Both must be green.
   no data). `PB_TRUSTED_PROXIES` defaults to empty; never trust `X-Forwarded-For` without it.
 - **No secrets, personal names, hostnames, or private paths in the repo.** Test fixtures use
   fictional names. Deployment specifics belong in `.env` (gitignored) or the user's own notes.
+- **Naming.** The project is Transom. "Plaud" appears only to name the vendor's recorder, SDK,
+  developer portal or cloud (nominative use); never in product names, package ids, image names
+  or sample vocabulary (the samples use the fictional "Parrot Deck"). The `PB_` env prefix, the
+  `pb_` user-id prefix and the `plaud-bridge.sqlite3` fallback in `config.db_path` are
+  historical and kept so existing deployments upgrade in place.
 - **Dependencies are pinned for a reason.** Read the comment above a pin (torch, starlette,
   CTranslate2) before changing it; several pins exist for old-GPU or security reasons.
 
@@ -103,7 +108,7 @@ Run the unit suite and the web tests before every commit. Both must be green.
 
 1. Bump `VERSION` in `app/main.py` (reported by `/api/v1/health` and the OpenAPI schema), then
    tag `vX.Y.Z` on `main`.
-2. `.github/workflows/release.yml` builds and pushes `ghcr.io/<owner>/plaud-bridge-server`
+2. `.github/workflows/release.yml` builds and pushes `ghcr.io/<owner>/transom-server`
    (`:latest` CPU and `-cuda:latest` GPU). If the repo variable `APK_RELEASE_URL` is set, the
    matching Android APK plus `manifest.json` is baked into the image so a fresh server hosts it.
 3. The Android app's `versionCode` must increase for every APK hosted here; the server rejects a

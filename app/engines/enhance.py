@@ -45,7 +45,7 @@ from .base import EngineError
 if TYPE_CHECKING:  # numpy is an STT dependency; config validation imports this module without it
     import numpy as np
 
-log = logging.getLogger("plaud-bridge.engine.enhance")
+log = logging.getLogger("transom.engine.enhance")
 
 SAMPLE_RATE = 16_000
 FRAME_SAMPLES = 480  # 30 ms at 16 kHz, the Silero VAD frame

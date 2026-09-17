@@ -22,7 +22,7 @@ from .config import Settings
 from .db import Store, utcnow_iso
 from .formatting import build_paragraphs, paragraphs_markdown
 
-log = logging.getLogger("plaud-bridge.router")
+log = logging.getLogger("transom.router")
 
 SYSTEM_PROMPT = (
     "You route voice-recording transcripts to configured destinations. "
@@ -459,7 +459,7 @@ class Router:
             f"duration_s: {yq(rec.get('duration_s'))}",
             f"language: {yq(transcript.get('language'))}",
             f"route: {yq(route_name)}",
-            "source: plaud-bridge",
+            "source: transom",
             "---",
             "",
         ]

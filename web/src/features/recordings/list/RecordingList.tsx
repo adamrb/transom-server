@@ -113,7 +113,7 @@ export function RecordingList({
       <EmptyState
         icon="graphic_eq"
         headline="No recordings yet"
-        description="Recordings sync from the Plaud Bridge app on your phone and show up here a few seconds later."
+        description="Recordings sync from the Transom app on your phone and show up here a few seconds later."
         action={
           <Button variant="tonal" icon="qr_code" onClick={onConnectPhone}>
             Connect a phone

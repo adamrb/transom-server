@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build a custom-vocabulary list from an Obsidian vault and (optionally) push
-it to a plaud-bridge server. Run on demand (by hand or by an agent); nothing
+it to a transom server. Run on demand (by hand or by an agent); nothing
 syncs automatically.
 
 Sources, in order of trust:
@@ -300,7 +300,7 @@ def push(url: str, token: str, entries: list[dict]) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--vault", required=True, type=Path)
-    ap.add_argument("--url", help="plaud-bridge base URL; omit for a dry run")
+    ap.add_argument("--url", help="transom base URL; omit for a dry run")
     ap.add_argument("--token-env", default="PB_AUTH_TOKENS", help="env var holding the bearer token")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--deep", action="store_true",

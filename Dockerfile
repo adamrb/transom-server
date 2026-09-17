@@ -11,7 +11,7 @@ RUN npm run build
 # Stage 2: the Python server.
 FROM python:3.12-slim
 
-WORKDIR /srv/plaud-bridge
+WORKDIR /srv/transom
 
 COPY requirements.txt requirements-stt.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-stt.txt

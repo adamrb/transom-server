@@ -34,7 +34,7 @@ export function ConnectPhoneDialog({ open, onClose, token, origin }: ConnectPhon
       size="md"
       actions={<Button onClick={onClose}>Done</Button>}
     >
-      <p>Scan this code with the Plaud Bridge app to link it to this server.</p>
+      <p>Scan this code with the Transom app to link it to this server.</p>
       <div className="mt-4 flex flex-col gap-4">
         <QrCard payload={connectPayload(o, t)} label="Connection QR code" />
         <CopyField label="Server address" value={o} copiedMessage="Server address copied" />
@@ -61,7 +61,7 @@ export function ConnectPhoneSection() {
       <SettingsRow
         icon="qr_code"
         headline="Connect a phone"
-        supporting="Link the Plaud Bridge app on a phone to this server."
+        supporting="Link the Transom app on a phone to this server."
         trailing={
           // On phone a labelled button would squeeze the row's text; the icon button carries the name.
           desktop ? (

@@ -132,8 +132,8 @@ describe('AndroidAppSection', () => {
     // Validation runs in the old order.
     await userEvent.click(within(dialog).getByRole('button', { name: 'Upload' }));
     expect(within(dialog).getByRole('alert')).toHaveTextContent('Choose an .apk file.');
-    await userEvent.upload(within(dialog).getByLabelText('APK file'), apkFile('plaud-bridge.apk'));
-    expect(within(dialog).getByText('plaud-bridge.apk')).toBeInTheDocument();
+    await userEvent.upload(within(dialog).getByLabelText('APK file'), apkFile('transom.apk'));
+    expect(within(dialog).getByText('transom.apk')).toBeInTheDocument();
     await userEvent.type(within(dialog).getByLabelText('Version code'), '3');
     await userEvent.type(within(dialog).getByLabelText('Version name'), '0.6.0');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Upload' }));
@@ -147,7 +147,7 @@ describe('AndroidAppSection', () => {
 
     await waitFor(() => expect(posted).toBe(1));
     const fields = Object.fromEntries(append.mock.calls.map(([k, v]) => [k, v]));
-    expect((fields.file as File).name).toBe('plaud-bridge.apk');
+    expect((fields.file as File).name).toBe('transom.apk');
     expect(JSON.parse(String(fields.metadata))).toEqual({
       version_code: 16,
       version_name: '0.6.0',

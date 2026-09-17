@@ -533,26 +533,26 @@ def test_vocabulary_hotwords_and_corrections(tmp_path, monkeypatch):
     settings = make_env(tmp_path, monkeypatch, PB_MARKDOWN_EXPORT_DIR=str(tmp_path / "notes"))
     store = Store(settings.db_path)
     store.replace_vocabulary([
-        {"term": "Plaud Bridge", "aliases": ["Plogged Bridge", "plod bridge"], "source": "manual"},
+        {"term": "Parrot Deck", "aliases": ["Parted Deck", "carrot deck"], "source": "manual"},
         {"term": "Obsidian", "aliases": [], "source": "obsidian"},
     ])
     engine = FakeEngine(result=EngineResult(
-        text="Speaker 1: Hello this is a Plogged Bridge test.\nSpeaker 2: plod bridge works",
-        segments=[Segment(0, 2, "Hello this is a Plogged Bridge test.", speaker="Speaker 1"),
-                  Segment(2, 4, "plod bridge works", speaker="Speaker 2")],
+        text="Speaker 1: Hello this is a Parted Deck test.\nSpeaker 2: carrot deck works",
+        segments=[Segment(0, 2, "Hello this is a Parted Deck test.", speaker="Speaker 1"),
+                  Segment(2, 4, "carrot deck works", speaker="Speaker 2")],
         language="en", duration=4.0, model="tiny", stats={},
     ))
     t = Transcriber(settings, store, engine=engine)
     rec_id = insert_recording(store, tmp_path)
     asyncio.run(t._process(store.get(rec_id)))
 
-    assert engine.last_hotwords == "Plaud Bridge, Obsidian"   # manual first, then imported
+    assert engine.last_hotwords == "Parrot Deck, Obsidian"   # manual first, then imported
     rec = store.get(rec_id)
-    assert rec["transcript_text"] == "Speaker 1: Hello this is a Plaud Bridge test.\nSpeaker 2: Plaud Bridge works"
+    assert rec["transcript_text"] == "Speaker 1: Hello this is a Parrot Deck test.\nSpeaker 2: Parrot Deck works"
     transcript = json.loads(Path(rec["transcript_path"]).read_text())
-    assert transcript["segments"][1]["text"] == "Plaud Bridge works"
+    assert transcript["segments"][1]["text"] == "Parrot Deck works"
     md = next((tmp_path / "notes").glob("*.md")).read_text()
-    assert "**Speaker 1:** Hello this is a Plaud Bridge test.\n\n**Speaker 2:** Plaud Bridge works" in md
+    assert "**Speaker 1:** Hello this is a Parrot Deck test.\n\n**Speaker 2:** Parrot Deck works" in md
 
 
 def test_marks_patched_mid_transcription_are_used_at_commit(tmp_path, monkeypatch):

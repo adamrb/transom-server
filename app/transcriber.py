@@ -25,7 +25,7 @@ from .formatting import apply_speaker_renames, build_paragraphs, paragraphs_mark
 from .vocabulary import VocabEntry, apply_corrections, correct_segments, hotwords_string, normalize
 from .router import Router
 
-log = logging.getLogger("plaud-bridge.transcriber")
+log = logging.getLogger("transom.transcriber")
 
 POLL_INTERVAL_S = 5
 
@@ -598,7 +598,7 @@ class Transcriber:
                 f"uploaded: {yq(rec['uploaded_at'])}",
                 f"duration_s: {yq(transcript.get('duration_s'))}",
                 f"language: {yq(transcript.get('language'))}",
-                "source: plaud-bridge",
+                "source: transom",
                 "---",
                 "",
             ]

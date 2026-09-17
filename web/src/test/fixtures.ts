@@ -203,11 +203,11 @@ export const logRun: LogRun = {
 
 export const vocabulary: Vocabulary = {
   entries: [
-    { term: 'Plaud Bridge', aliases: ['Plogged Bridge', 'Plod Bridge'], source: 'manual', weight: 0 },
+    { term: 'Parrot Deck', aliases: ['Parted Deck', 'Carrot Deck'], source: 'manual', weight: 0 },
     { term: 'Obsidian', aliases: [], source: 'manual', weight: 0 },
   ],
-  editor_text: 'Plaud Bridge = Plogged Bridge, Plod Bridge\nObsidian',
-  hotwords: 'Plaud Bridge, Obsidian',
+  editor_text: 'Parrot Deck = Parted Deck, Carrot Deck\nObsidian',
+  hotwords: 'Transom, Obsidian',
 };
 
 export const sessionCurrent: Session = {

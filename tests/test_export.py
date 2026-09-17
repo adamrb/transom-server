@@ -5,7 +5,7 @@ def test_markdown_without_summary_omits_block_and_ends_with_newline():
     md = transcript_markdown("T", "2026-09-07T05:27:31Z", 17, None, "hello\n")
     assert "## Summary" not in md
     assert md.endswith("## Transcript\n\nhello\n")
-    assert md.startswith('---\ntitle: "T"\nrecorded: "2026-09-07T05:27:31Z"\nduration_s: "17"\nsource: plaud-bridge\n---\n# T\n')
+    assert md.startswith('---\ntitle: "T"\nrecorded: "2026-09-07T05:27:31Z"\nduration_s: "17"\nsource: transom\n---\n# T\n')
 
 
 def test_safe_filename_strips_unsafe_chars_and_caps_length():

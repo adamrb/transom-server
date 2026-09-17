@@ -3,7 +3,7 @@
 This document describes the complete path a voice memo takes, from pressing the button on a
 Plaud recorder to a note filed in a wiki or a coding agent doing what the memo asked, and it
 describes it in enough detail to rebuild from scratch. The component READMEs
-([server](../README.md), [Android app](https://github.com/adamrb/plaud-bridge-android),
+([server](../README.md), [Android app](https://github.com/adamrb/transom-android),
 [agent runner](../contrib/agent-runner/README.md)) are the reference for each part. This is the
 map that says how the parts fit, what order to build them in, which decisions matter, and where
 the traps are.
@@ -33,11 +33,11 @@ authentication handshake, which the firmware requires.
   [ Plaud Note Pro / NotePin S ]
              │  BLE (or WiFi fast transfer), encrypted, keyed to a Plaud user JWT
              ▼
-  [ Android app: plaud-bridge-android ]────────────► [ Plaud platform API ]
+  [ Android app: transom-android ]────────────► [ Plaud platform API ]
              │  MP3 export, decrypt, queue           (token + key exchange, firmware only)
              │  HTTPS multipart upload                        ▲
              ▼                                                │ partner credentials
-  [ plaud-bridge-server (Docker, behind your reverse proxy) ]─┘
+  [ transom-server (Docker, behind your reverse proxy) ]─┘
              │
              ├── transcription engine (local whisper / parakeet / qwen3 / remote worker)
              │      └── noise measure → DeepFilterNet copy → VAD → decode → diarize
@@ -171,7 +171,7 @@ bridge app keeps it:
   origin (`WebViewOriginPolicy`, `TokenInjection`), so the app does not have to reimplement the
   automations editor.
 
-Mock managers behind `PlaudBridgeApp.USE_MOCK` let you work on the UI with no hardware.
+Mock managers behind `TransomApp.USE_MOCK` let you work on the UI with no hardware.
 
 ### The upload contract
 
@@ -238,7 +238,7 @@ the reasoning.
 ## Stage 3: the server
 
 ```bash
-git clone <your fork of plaud-bridge-server> && cd plaud-bridge-server
+git clone <your fork of transom-server> && cd transom-server
 cp .env.example .env          # Plaud credentials, PB_AUTH_TOKENS, engine settings
 mkdir -p data && sudo chown 1000:1000 data   # bind-mounted /data; the container runs as UID 1000
 docker compose up -d --build
@@ -255,7 +255,7 @@ Data layout under `PB_DATA_DIR`:
 ```
 recordings/YYYY/MM/<hash>_<name>.mp3        the audio
 recordings/YYYY/MM/<hash>_<name>.transcript.json
-plaud-bridge.sqlite3                         recordings, routes, router_runs, deliveries,
+transom.sqlite3                         recordings, routes, router_runs, deliveries,
                                              vocabulary, sessions, login_requests
 apk/latest.json + the APK files              hosted app release
 models/                                      HF_HOME, so model downloads survive a rebuild
@@ -355,7 +355,7 @@ whisper on clean speech. The custom vocabulary rides in as a context prompt, and
 Qwen3-ForcedAligner-0.6B supplies word timestamps for speaker assignment.
 
 **`openai`** points at any external OpenAI-compatible `/v1/audio/transcriptions`, including
-another plaud-bridge in worker mode (see [stage 5](#stage-5-running-the-recognizer-somewhere-else)).
+another transom in worker mode (see [stage 5](#stage-5-running-the-recognizer-somewhere-else)).
 
 Measured error rates from that shootout, scored against existing Whisper transcripts (which
 flatters Whisper on the clean clips), on an L40S:
@@ -433,7 +433,7 @@ dashboard under Settings → Vocabulary or over `GET/PUT /api/v1/vocabulary`. Tw
 
 - Terms are passed to the decoder as hotwords so it prefers those spellings (whisper only; the
   Qwen3 engine takes them as a context prompt instead).
-- An entry can list the mis-hearings it usually produces (`Plaud Bridge = Plogged Bridge`), and
+- An entry can list the mis-hearings it usually produces (`Parrot Deck = Parted Deck`), and
   those are corrected in every new transcript with any engine, whole words only.
 
 Two practical notes. A decoder prompt fits roughly 60 to 100 names, so **an entry's weight decides
@@ -480,7 +480,7 @@ keeps the recognizer's text.
 
 ## Stage 5: running the recognizer somewhere else
 
-Every plaud-bridge exposes `POST /v1/audio/transcriptions` (multipart `file`, optional `language`,
+Every transom exposes `POST /v1/audio/transcriptions` (multipart `file`, optional `language`,
 `prompt` as hotwords, `response_format` = `json` | `verbose_json` | `text`) and answers it with
 its own engine and the whole pipeline above, including speaker labels, `stats` and `consensus`. So
 a second instance on a machine with a big GPU can be the recognizer for the instance that holds
@@ -661,14 +661,14 @@ low-privilege user.
 
 ### Reaching the runner from the container
 
-The runner runs on the Docker host, so `127.0.0.1` inside the plaud-bridge container does not
+The runner runs on the Docker host, so `127.0.0.1` inside the transom container does not
 reach it. Either bind the runner to the compose network's gateway IP (`docker network inspect
 <project>_default --format '{{(index .IPAM.Config 0).Gateway}}'`) and use that as the webhook URL,
 or add `extra_hosts: ["host.docker.internal:host-gateway"]` and bind to `0.0.0.0`, or run the
 runner as a second compose service and let the network resolve it by name. Verify from inside:
 
 ```bash
-docker exec plaud-bridge python -c "import httpx; print(httpx.get('http://<ip>:8091/healthz').status_code)"
+docker exec transom python -c "import httpx; print(httpx.get('http://<ip>:8091/healthz').status_code)"
 ```
 
 ## Stage 9: the actions themselves
@@ -754,7 +754,7 @@ recorded: "2026-09-15T16:04:00Z"
 uploaded: "2026-09-15T16:04:31Z"
 duration_s: "21.0"
 language: "en"
-source: plaud-bridge
+source: transom
 ---
 
 # Documenting the Plaud Voice Recorder Workflow
@@ -790,7 +790,7 @@ The deployment these notes come from, as of September 2026:
 | Phone app | one Android phone, sideloaded | self-updates from the server, versionCode 18 |
 | Server | home server, Docker, CUDA image | behind Nginx Proxy Manager: forced HTTPS with a wildcard cert, HSTS, HTTP/2, websockets allowed |
 | Local GPU | GTX 980 Ti, 6 GB, Maxwell | whisper large-v3-turbo float32 plus pyannote fits only if nothing else is on the card; onnxruntime has no kernels for it, so Parakeet would run on the CPU |
-| Primary recognizer | a second plaud-bridge in worker mode on a rented L40S, reached through a Cloudflare tunnel | `PB_STT_ENGINE=qwen3`, whisper large-v3 + Parakeet + Cohere Transcribe as consensus voices, `PB_STT_IDLE_UNLOAD_S=600`, `PB_STT_MIN_FREE_VRAM_MB=8000`, because a training job shares the card |
+| Primary recognizer | a second transom in worker mode on a rented L40S, reached through a Cloudflare tunnel | `PB_STT_ENGINE=qwen3`, whisper large-v3 + Parakeet + Cohere Transcribe as consensus voices, `PB_STT_IDLE_UNLOAD_S=600`, `PB_STT_MIN_FREE_VRAM_MB=8000`, because a training job shares the card |
 | Fallback recognizer | the local engine | `PB_STT_FALLBACK_ENGINE=local` |
 | LLM for summaries, routing, cleanup | the agent runner's chat shim on the home server, and a LiteLLM container next to the remote worker for its consensus pass | subscription auth locally, cloud provider credentials through an instance role remotely |
 | Agent runner | systemd user service on the host, bound to the Docker bridge gateway so only the container can reach it | restart on failure, because binding to that gateway fails until the Docker network exists |

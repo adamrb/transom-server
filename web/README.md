@@ -1,4 +1,4 @@
-# Plaud Bridge web dashboard
+# Transom web dashboard
 
 React 18 + TypeScript (strict) + Vite + Tailwind v4, following Material 3. The design system
 lives in `src/components` and `src/theme`; the component gallery (below) is the visual reference.
@@ -169,7 +169,7 @@ WebView. Contract:
 - Sign-in: the app injects the token through a `#token=<token>` login link, which `main.tsx`
   consumes and scrubs from the URL before anything renders; the token is adopted only after the
   server confirms it.
-- Native bridge: the app injects `window.PlaudBridgeApp` with `copyText(text)` (WebViews often
+- Native bridge: the app injects `window.TransomApp` with `copyText(text)` (WebViews often
   cannot reach `navigator.clipboard`; the app shows its own toast) and
   `shareMarkdown(name, markdown)` (WebViews cannot download blobs; the app opens its share sheet).
   Use `copyText` / `shareMarkdown` / `downloadBlob` from `@/lib/bridge` (re-exported by

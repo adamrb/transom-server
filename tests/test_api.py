@@ -174,10 +174,10 @@ def test_dashboard_served(client, tmp_path, monkeypatch):
 
     built = tmp_path / "static"
     built.mkdir()
-    (built / "index.html").write_text("<!doctype html><title>Plaud Bridge</title><div id=root></div>")
+    (built / "index.html").write_text("<!doctype html><title>Transom</title><div id=root></div>")
     monkeypatch.setattr(m, "STATIC_DIR", built)
     r = client.get("/")
-    assert r.status_code == 200 and "Plaud Bridge" in r.text
+    assert r.status_code == 200 and "Transom" in r.text
     assert r.headers.get("cache-control") == "no-cache"
 
     monkeypatch.setattr(m, "STATIC_DIR", tmp_path / "missing")

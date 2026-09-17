@@ -2,7 +2,7 @@
 #
 # Build:  docker build -t plaud-agent-runner .
 # Run (compose snippet in README.md):
-#   docker run -d --network plaud-bridge-server_default \
+#   docker run -d --network transom-server_default \
 #     -v ./runner-config:/config \
 #     -v ~/.claude:/home/node/.claude \
 #     plaud-agent-runner

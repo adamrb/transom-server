@@ -122,11 +122,11 @@ describe('vocabulary', () => {
     const { result } = renderHook(() => useVocabulary(), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.data?.entries).toHaveLength(2));
     const parsed = parseVocabularyText(
-      '# People\nAlex\n\nPlaud Bridge = Plogged Bridge, Plod Bridge\n = orphan',
+      '# People\nAlex\n\nParrot Deck = Parted Deck, Carrot Deck\n = orphan',
     );
     expect(parsed.entries).toEqual([
       { term: 'Alex', aliases: [] },
-      { term: 'Plaud Bridge', aliases: ['Plogged Bridge', 'Plod Bridge'] },
+      { term: 'Parrot Deck', aliases: ['Parted Deck', 'Carrot Deck'] },
     ]);
     // Only the line with nothing before the equals sign is "ignored"; `#` notes are kept, like the
     // old dashboard's ignoredVocabLines().

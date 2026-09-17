@@ -129,13 +129,13 @@ describe('AppShell', () => {
 
 describe('native bridge', () => {
   afterEach(() => {
-    delete window.PlaudBridgeApp;
+    delete window.TransomApp;
   });
 
   it('detects the Android bridge exactly like the old dashboard', () => {
     expect(appBridge()).toBeNull();
-    window.PlaudBridgeApp = { copyText: vi.fn(), shareMarkdown: vi.fn() };
-    expect(appBridge()).toBe(window.PlaudBridgeApp);
+    window.TransomApp = { copyText: vi.fn(), shareMarkdown: vi.fn() };
+    expect(appBridge()).toBe(window.TransomApp);
   });
 
   it('copies through the clipboard, else the bridge; shares through the bridge, else downloads', async () => {
@@ -147,13 +147,13 @@ describe('native bridge', () => {
     Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
     const copy = vi.fn();
     const share = vi.fn();
-    window.PlaudBridgeApp = { copyText: copy, shareMarkdown: share };
+    window.TransomApp = { copyText: copy, shareMarkdown: share };
     expect(await copyText('hi')).toBe('bridge');
     expect(copy).toHaveBeenCalledWith('hi');
     expect(shareMarkdown('t.md', '# T')).toBe('bridge');
     expect(share).toHaveBeenCalledWith('t.md', '# T');
 
-    delete window.PlaudBridgeApp;
+    delete window.TransomApp;
     const createObjectURL = vi.fn(() => 'blob:x');
     const revokeObjectURL = vi.fn();
     Object.assign(URL, { createObjectURL, revokeObjectURL });

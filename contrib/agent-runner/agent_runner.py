@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""agent-runner: webhook-to-agent bridge for plaud-bridge routes, over ACP.
+"""agent-runner: webhook-to-agent bridge for transom routes, over ACP.
 
-Receives `route.matched` webhook payloads from plaud-bridge and dispatches
+Receives `route.matched` webhook payloads from transom and dispatches
 them to a coding agent via ACP (Agent Client Protocol,
 https://agentclientprotocol.com — JSON-RPC 2.0, newline-delimited JSON over
 the agent child process's stdio). Works with `claude-code-acp`, `codex acp`,
@@ -10,7 +10,7 @@ keys. Plain argv `command` actions are also supported for non-agent work
 (append-to-file scripts etc.).
 
 Also exposes a minimal OpenAI-compatible `POST /v1/chat/completions` shim so
-plaud-bridge's AI router/summarizer can point at this runner instead of a
+transom's AI router/summarizer can point at this runner instead of a
 hosted API.
 
 Python 3.11+ standard library only. See README.md and config.example.toml.
@@ -261,7 +261,7 @@ def load_config(path: str) -> dict:
     callback = cfg.get("callback")
     if callback is not None:
         if not isinstance(callback, dict) or not isinstance(callback.get("base_url"), str) or not callback["base_url"]:
-            raise ConfigError("[callback] must define base_url (the plaud-bridge server, e.g. http://127.0.0.1:8090)")
+            raise ConfigError("[callback] must define base_url (the transom server, e.g. http://127.0.0.1:8090)")
         # No bridge credential here on purpose: each payload carries a one-shot
         # result token that is only good for its own delivery's result URL.
         hb = callback.get("heartbeat_seconds", DEFAULT_HEARTBEAT_S)
@@ -695,7 +695,7 @@ class Runner:
         threading.Thread(target=self._heartbeat_loop, daemon=True, name="result-heartbeat").start()
 
     def report_result(self, payload: dict, status: str, summary: str) -> None:
-        """Tell plaud-bridge what this job did (POST delivery.result_url) so the
+        """Tell transom what this job did (POST delivery.result_url) so the
         app and dashboard can show the outcome instead of 'handed off'. Best
         effort: a failed report is logged, never raised; nothing is sent when
         the payload has no delivery block or no [callback] is configured."""

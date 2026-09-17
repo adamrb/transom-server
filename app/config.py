@@ -68,7 +68,7 @@ class Settings:
     # manifest.json that gets auto-published at startup if newer than hosted.
     apk_max_upload_mb: int = field(default_factory=lambda: int(_env("PB_APK_MAX_UPLOAD_MB", "300")))
     bundled_apk_dir: Path = field(
-        default_factory=lambda: Path(_env("PB_BUNDLED_APK_DIR", "/srv/plaud-bridge/bundled-apk"))
+        default_factory=lambda: Path(_env("PB_BUNDLED_APK_DIR", "/srv/transom/bundled-apk"))
     )
 
     # Transcription. PB_STT_ENGINE selects the backend:
@@ -313,7 +313,12 @@ class Settings:
 
     @property
     def db_path(self) -> Path:
-        return self.data_dir / "plaud-bridge.sqlite3"
+        # Deployments created before the project was renamed keep using the
+        # database they already have; a fresh data dir gets the new name.
+        new, legacy = self.data_dir / "transom.sqlite3", self.data_dir / "plaud-bridge.sqlite3"
+        if not new.exists() and legacy.exists():
+            return legacy
+        return new
 
     def validate(self) -> list[str]:
         """Return a list of human-readable configuration warnings."""

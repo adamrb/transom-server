@@ -20,7 +20,7 @@ export function guarded(resolver: HttpResponseResolver): HttpResponseResolver {
 
 export const handlers: HttpHandler[] = [
   http.get('/api/v1/health', () =>
-    HttpResponse.json({ status: 'ok', service: 'plaud-bridge', version: '0.1.0' }),
+    HttpResponse.json({ status: 'ok', service: 'transom', version: '0.1.0' }),
   ),
 
   // auth (public halves)

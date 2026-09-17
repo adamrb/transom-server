@@ -126,7 +126,7 @@ export function ImportDialog({ open, onClose }: ImportDialogProps) {
             setText(e.target.value);
             setError(null);
           }}
-          placeholder={'Plaud\nPlaud Bridge = Plogged Bridge'}
+          placeholder={'Plaud\nParrot Deck = Parted Deck'}
           spellCheck={false}
           disabled={busy}
           error={!!error}

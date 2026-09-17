@@ -330,7 +330,7 @@ export default function ComponentGallery() {
                   shape="flat"
                   leading={<Avatar kind="icon" icon="qr_code" size={40} shape="rounded" />}
                   headline="Connect a phone"
-                  supporting="Link the Plaud Bridge app on a phone to this server."
+                  supporting="Link the Transom app on a phone to this server."
                   trailing={
                     <Button variant="tonal" size="sm" icon="qr_code">
                       Connect
@@ -375,7 +375,7 @@ export default function ComponentGallery() {
               tonal
               mono
               aria-label="Vocabulary"
-              defaultValue={'# People\nAlex\nPlaud Bridge = Plogged Bridge, Plod Bridge'}
+              defaultValue={'# People\nAlex\nParrot Deck = Parted Deck, Carrot Deck'}
               className="w-full max-w-[400px]"
             />
             <Switch checked={sw} onChange={setSw} label="Turn the rule on or off" />
@@ -677,7 +677,7 @@ export default function ComponentGallery() {
             <div className="flex w-full">
               <EmptyState
                 headline="No recordings yet"
-                description="Recordings sync from the Plaud Bridge app on your phone and show up here a few seconds later."
+                description="Recordings sync from the Transom app on your phone and show up here a few seconds later."
                 action={
                   <Button variant="tonal" icon="qr_code">
                     Connect a phone

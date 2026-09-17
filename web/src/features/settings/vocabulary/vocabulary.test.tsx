@@ -43,7 +43,7 @@ function oldIgnoredVocabLines(text: string): number {
 }
 
 const SAMPLE =
-  '# People\nAlex\nMorgan\n\n# Places and things\nPlaud\nPlaud Bridge = Plogged Bridge, Plod Bridge\n = orphan\nScriberr = Scribber, Scriber\nA=B=C = x=y, z';
+  '# People\nAlex\nMorgan\n\n# Places and things\nPlaud\nParrot Deck = Parted Deck, Carrot Deck\n = orphan\nScriberr = Scribber, Scriber\nA=B=C = x=y, z';
 
 describe('vocabulary text format', () => {
   it('parses exactly like the old dashboard', () => {
@@ -60,7 +60,7 @@ describe('vocabulary text format', () => {
     expect(serializeVocabularyText(fx.vocabulary.entries)).toBe(text);
     // The server writes editor_text sorted by lower-cased term (vocabulary.to_editor_text).
     expect(serializeVocabularyText(fx.vocabulary.entries, { sorted: true })).toBe(
-      'Obsidian\nPlaud Bridge = Plogged Bridge, Plod Bridge',
+      'Obsidian\nParrot Deck = Parted Deck, Carrot Deck',
     );
     const serverText = 'alex\nMorgan = Morgen\nPlaud';
     expect(serializeVocabularyText(parseVocabularyText(serverText).entries, { sorted: true })).toBe(
@@ -87,8 +87,8 @@ describe('VocabularySection', () => {
     const list = await screen.findByRole('list', { name: 'Vocabulary terms' });
     const items = within(list).getAllByRole('listitem');
     expect(items).toHaveLength(2);
-    expect(items[0]).toHaveTextContent('Plaud Bridge');
-    expect(items[0]).toHaveTextContent('Heard as Plogged Bridge, Plod Bridge');
+    expect(items[0]).toHaveTextContent('Parrot Deck');
+    expect(items[0]).toHaveTextContent('Heard as Parted Deck, Carrot Deck');
     expect(items[1]).toHaveTextContent('Obsidian');
     expect(items[1]).not.toHaveTextContent('Heard as');
     expect(screen.getByText('2 terms · 1 with corrections')).toBeInTheDocument();
@@ -100,10 +100,10 @@ describe('VocabularySection', () => {
   it('filters rows by term or mis-hearing', async () => {
     renderWithProviders(<VocabularySection />);
     await screen.findByRole('list', { name: 'Vocabulary terms' });
-    await userEvent.type(screen.getByRole('searchbox', { name: 'Find a term' }), 'plod');
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Find a term' }), 'carrot');
     const items = screen.getAllByRole('listitem');
     expect(items).toHaveLength(1);
-    expect(items[0]).toHaveTextContent('Plaud Bridge');
+    expect(items[0]).toHaveTextContent('Parrot Deck');
     await userEvent.clear(screen.getByRole('searchbox', { name: 'Find a term' }));
     await userEvent.type(screen.getByRole('searchbox', { name: 'Find a term' }), 'zzz');
     expect(screen.getByText('No terms match.')).toBeInTheDocument();
@@ -140,7 +140,7 @@ describe('VocabularySection', () => {
 
     await waitFor(() => expect(put).not.toBeNull());
     expect(put!.entries).toEqual([
-      { term: 'Plaud Bridge', aliases: ['Plogged Bridge', 'Plod Bridge'], source: 'obsidian' },
+      { term: 'Parrot Deck', aliases: ['Parted Deck', 'Carrot Deck'], source: 'obsidian' },
       { term: 'Obsidian', aliases: ['Obsidion', 'Absidian'], source: 'manual' },
     ]);
     expect(
@@ -340,7 +340,7 @@ describe('VocabularySection', () => {
   it('locks other rows while one is being edited', async () => {
     renderWithProviders(<VocabularySection />);
     await screen.findByRole('list', { name: 'Vocabulary terms' });
-    await userEvent.click(screen.getByRole('button', { name: 'Edit Plaud Bridge' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Parrot Deck' }));
     expect(screen.getByRole('button', { name: 'Remove Obsidian' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Edit Obsidian' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Add a term' })).toBeDisabled();

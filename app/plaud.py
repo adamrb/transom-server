@@ -15,7 +15,7 @@ import time
 
 import httpx
 
-log = logging.getLogger("plaud-bridge.plaud")
+log = logging.getLogger("transom.plaud")
 
 
 class PlaudAuthError(Exception):

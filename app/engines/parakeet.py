@@ -38,7 +38,7 @@ from .base import EngineError, EngineResult, ProgressCallback, Segment, render_t
 from .diarization import DiarizationMixin, mark_cuda_used, probe_duration
 from .enhance import Enhancer
 
-log = logging.getLogger("plaud-bridge.engine.parakeet")
+log = logging.getLogger("transom.engine.parakeet")
 
 SAMPLE_RATE = 16_000
 # Silence kept on both sides of a VAD chunk so word onsets aren't clipped.

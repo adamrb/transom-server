@@ -6,7 +6,7 @@ Two mechanisms, both driven by the same list the user edits:
   is biased toward them ("Plaud" instead of "plot"). Whisper's prompt window
   is small, so the list is capped; manual entries win over imported ones.
 * corrections: an entry may carry aliases, the mis-hearings it is usually
-  transcribed as ("Plogged Bridge" -> "Plaud Bridge"). Those are replaced in
+  transcribed as ("Parted Deck" -> "Parrot Deck"). Those are replaced in
   the finished transcript, whole words only, case-insensitively. Aliases are
   for proper nouns and product names, never ordinary words.
 
@@ -158,7 +158,7 @@ def acronym_pattern(term: str) -> re.Pattern | None:
 def casing_pattern(term: str) -> re.Pattern | None:
     """Canonical casing for brand-like terms Whisper lowercases or splits:
     CamelCase ('ModelForge' from 'modelforge'/'Modelforge') and multi-word names
-    ('Plaud Bridge' from 'plaud bridge'). Plain single words are left alone:
+    ('Parrot Deck' from 'parrot deck'). Plain single words are left alone:
     'drive', 'edge' or 'delta' are ordinary words as often as products."""
     if ACRONYM_RE.match(term):
         return None

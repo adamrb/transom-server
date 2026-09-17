@@ -33,7 +33,7 @@ def client():
         yield c
 
 
-def upload(client, content=APK_BYTES, name="plaud-bridge.apk", **meta):
+def upload(client, content=APK_BYTES, name="transom.apk", **meta):
     meta.setdefault("version_code", 1)
     meta.setdefault("version_name", "1.0.0")
     return client.post(
@@ -96,7 +96,7 @@ def test_upload_info_file_roundtrip(client):
     assert manifest["notes"] == "BLE reconnect fixes"
     assert manifest["sha256"] == hashlib.sha256(APK_BYTES).hexdigest()
     assert manifest["size_bytes"] == len(APK_BYTES)
-    assert manifest["filename"] == "2-plaud-bridge.apk"
+    assert manifest["filename"] == "2-transom.apk"
 
     r = client.get("/api/v1/apk/info", headers=AUTH)
     assert r.status_code == 200 and r.json() == manifest
@@ -106,7 +106,7 @@ def test_upload_info_file_roundtrip(client):
     assert r.content == APK_BYTES
     assert hashlib.sha256(r.content).hexdigest() == manifest["sha256"]
     assert r.headers["content-type"] == "application/vnd.android.package-archive"
-    assert "2-plaud-bridge.apk" in r.headers.get("content-disposition", "")
+    assert "2-transom.apk" in r.headers.get("content-disposition", "")
 
 
 def test_manifest_survives_re_read(client):
@@ -135,11 +135,11 @@ def test_equal_version_code_reupload_accepted(client):
 
 def test_new_version_keeps_prior_apk_on_disk(client):
     r = upload(client, content=APK_BYTES_V2, version_code=3, version_name="1.3.0",
-               name="plaud-bridge-1.3.apk")
+               name="transom-1.3.apk")
     assert r.status_code == 201
-    assert (settings.apk_dir / "3-plaud-bridge-1.3.apk").is_file()
+    assert (settings.apk_dir / "3-transom-1.3.apk").is_file()
     # Prior release file stays on disk (only the manifest moved on)
-    assert (settings.apk_dir / "2-plaud-bridge.apk").is_file()
+    assert (settings.apk_dir / "2-transom.apk").is_file()
 
 
 def test_oversize_rejected(client, monkeypatch):
@@ -181,7 +181,7 @@ def bundled_env(tmp_path, monkeypatch, apk=APK_BYTES, meta=None, write_meta=True
     bundle.mkdir(parents=True)
     monkeypatch.setattr(settings, "bundled_apk_dir", bundle)
     if apk is not None:
-        (bundle / "plaud-bridge.apk").write_bytes(apk)
+        (bundle / "transom.apk").write_bytes(apk)
     if write_meta:
         (bundle / "manifest.json").write_text(
             json.dumps(meta or {"version_code": 5, "version_name": "1.5.0", "notes": "bundled"})
@@ -214,7 +214,7 @@ def test_bundled_installs_on_empty_state(tmp_path, monkeypatch):
     assert m["sha256"] == hashlib.sha256(APK_BYTES).hexdigest()
     assert (settings.apk_dir / m["filename"]).read_bytes() == APK_BYTES
     # bundle source untouched
-    assert (settings.bundled_apk_dir / "plaud-bridge.apk").is_file()
+    assert (settings.bundled_apk_dir / "transom.apk").is_file()
 
 
 def test_bundled_skipped_when_hosted_newer_or_equal(tmp_path, monkeypatch):

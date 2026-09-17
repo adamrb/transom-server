@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .base import EngineError, EngineResult, Segment, TranscriptionEngine, render_text
 
-log = logging.getLogger("plaud-bridge.engine")
+log = logging.getLogger("transom.engine")
 
 
 class FallbackEngine:

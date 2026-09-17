@@ -22,7 +22,7 @@ from pathlib import Path
 
 from .base import EngineError, Segment
 
-log = logging.getLogger("plaud-bridge.engine.diarization")
+log = logging.getLogger("transom.engine.diarization")
 
 
 def probe_duration(audio_path: Path) -> float | None:

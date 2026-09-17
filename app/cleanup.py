@@ -33,7 +33,7 @@ from typing import Awaitable, Callable
 from .engines.base import Segment
 from .vocabulary import VocabEntry
 
-log = logging.getLogger("plaud-bridge.cleanup")
+log = logging.getLogger("transom.cleanup")
 
 # Segments changed are remembered (with their old text) up to this many, so the
 # transcript JSON stays a reasonable size on a two-hour recording.

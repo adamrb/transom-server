@@ -24,14 +24,14 @@ def _segs(*texts):
 
 def test_glossary_orders_by_weight_and_lists_aliases_within_budget():
     entries = [
-        VocabEntry("Plaud Bridge", ["Plogged Bridge", "Plot Bridge"], weight=5000),
+        VocabEntry("Parrot Deck", ["Parted Deck", "Parrott Deck"], weight=5000),
         VocabEntry("Voltium", ["Voltum", "Volteum"], weight=6000),
         VocabEntry("zebra", [], weight=0),
     ]
     g = build_glossary(entries)
     lines = g.splitlines()
     assert lines[0] == "Voltium (often misheard as: Voltum, Volteum)"
-    assert lines[1].startswith("Plaud Bridge (often misheard as: Plogged Bridge")
+    assert lines[1].startswith("Parrot Deck (often misheard as: Parted Deck")
     assert lines[2] == "zebra"
     # Budget cuts whole lines from the light end
     short = build_glossary(entries, max_chars=len(lines[0]) + 1)
@@ -204,7 +204,7 @@ def test_cleanup_logs_when_reply_is_unusable(caplog):
     async def complete(system, user):
         return "I could not process this."
 
-    with caplog.at_level(logging.INFO, logger="plaud-bridge.cleanup"):
+    with caplog.at_level(logging.INFO, logger="transom.cleanup"):
         result = asyncio.run(cleanup_segments(segs, [], complete))
     assert result.changed == 0 and result.calls == 1
     assert any("no usable changes" in r.message and "I could not" in r.message for r in caplog.records)

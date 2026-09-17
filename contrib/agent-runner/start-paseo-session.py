@@ -8,7 +8,7 @@ and steer. The agent lives in the Paseo daemon, so it outlives this webhook
 call; we return as soon as it exists.
 
 Working directory: if the transcript names an existing repo under ~/git or
-~/tools ("start a session in plaud-bridge-server ..."), the session opens
+~/tools ("start a session in transom-server ..."), the session opens
 there; otherwise $HOME. The user can always redirect it from the app.
 
 Result callback: the runner (completion = "child") hands us PB_RESULT_URL and

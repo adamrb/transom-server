@@ -28,12 +28,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       # Optional: bake the matching Android APK into the image so a fresh
       # server auto-hosts it. Provide a repo variable APK_RELEASE_URL pointing
-      # at a plaud-bridge-android release asset pair (app.apk + manifest.json);
+      # at a transom-android release asset pair (app.apk + manifest.json);
       # skipped when unset.
       - name: Fetch bundled APK
         if: vars.APK_RELEASE_URL != ''
         run: |
-          curl -fsSL "${{ vars.APK_RELEASE_URL }}/plaud-bridge.apk" -o bundled-apk/plaud-bridge.apk
+          curl -fsSL "${{ vars.APK_RELEASE_URL }}/transom.apk" -o bundled-apk/transom.apk
           curl -fsSL "${{ vars.APK_RELEASE_URL }}/manifest.json" -o bundled-apk/manifest.json
       - uses: docker/build-push-action@v6
         with:

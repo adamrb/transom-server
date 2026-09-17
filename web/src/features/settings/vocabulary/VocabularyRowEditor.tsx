@@ -73,7 +73,7 @@ export function VocabularyRowEditor({
             setTerm(e.target.value);
             setError(null);
           }}
-          placeholder="Plaud Bridge"
+          placeholder="Parrot Deck"
           maxLength={VOCAB_LIMITS.term}
           autoComplete="off"
           spellCheck={false}
@@ -86,7 +86,7 @@ export function VocabularyRowEditor({
             setAliases(e.target.value);
             setError(null);
           }}
-          placeholder="Plogged Bridge, Plod Bridge"
+          placeholder="Parted Deck, Carrot Deck"
           autoComplete="off"
           spellCheck={false}
           className="min-w-[220px] flex-[2]"

@@ -1,19 +1,19 @@
 # agent-runner
 
-A single-file, stdlib-only HTTP service that turns plaud-bridge
+A single-file, stdlib-only HTTP service that turns transom
 `route.matched` webhooks into agent runs: pipe a voice memo transcript into
 Claude Code or Codex via **ACP** ([Agent Client
 Protocol](https://agentclientprotocol.com)), or into any plain command. The
 agents run on your local Claude Code / Codex subscription auth — no LLM API
 keys anywhere. It also exposes a minimal OpenAI-compatible chat endpoint so
-plaud-bridge's AI router and summarizer can use the same subscription.
+transom's AI router and summarizer can use the same subscription.
 
 Requires Python 3.11+ (uses `tomllib`) for the service. ACP agents are
 separate installs (Node for `claude-code-acp`).
 
 ## How it works
 
-plaud-bridge POSTs a route webhook payload:
+transom POSTs a route webhook payload:
 
 ```json
 {
@@ -105,7 +105,7 @@ prompt (system content first), wraps it in the `[chat]` section's
 `prompt_template` (default: "Answer directly. Do not use tools or modify
 files.\n\n{prompt}"), runs a one-shot ACP session, and returns a standard
 `chat.completion` object. The `model` field is logged and otherwise ignored —
-pick the agent-side model with `[chat] model` instead. Point plaud-bridge at
+pick the agent-side model with `[chat] model` instead. Point transom at
 it:
 
 ```
@@ -178,11 +178,11 @@ endpoint with the token) holds that power. The layers below narrow how much.
 3. Run it: `python3 agent_runner.py --config config.toml`
    (or install `agent-runner.service` as a systemd user unit — see the
    comments in that file; make sure the unit's PATH covers node/npx).
-4. In plaud-bridge, add a webhook destination/route pointing at the runner,
+4. In transom, add a webhook destination/route pointing at the runner,
    e.g. URL `http://<host>:8091/` with auth header
    `X-Runner-Token: <your token>`.
 
-### Reaching the runner from the plaud-bridge container
+### Reaching the runner from the transom container
 
 The runner runs on the Docker **host**, so `127.0.0.1` inside the container
 will not reach it. Options:
@@ -191,14 +191,14 @@ will not reach it. Options:
   `docker network inspect <project>_default --format '{{(index .IPAM.Config 0).Gateway}}'`,
   e.g. `172.18.0.1`), and use `http://<gateway-ip>:8091/` as the webhook URL.
 - Or add `extra_hosts: ["host.docker.internal:host-gateway"]` to the
-  plaud-bridge service, bind the runner to `0.0.0.0` (token-guarded), and use
+  transom service, bind the runner to `0.0.0.0` (token-guarded), and use
   `http://host.docker.internal:8091/`.
 - Or bind to the host's LAN IP and use that.
 
 Verify from inside the container:
 
 ```bash
-docker exec plaud-bridge python -c \
+docker exec transom python -c \
   "import httpx; print(httpx.get('http://<ip>:8091/healthz').status_code)"
 ```
 
@@ -211,7 +211,7 @@ mounted at the container user's HOME:
 
 ```yaml
 services:
-  plaud-bridge:
+  transom:
     # ... existing service ...
     environment:
       PB_WEBHOOK_URL: http://agent-runner:8091/
@@ -230,7 +230,7 @@ services:
 ```
 
 Set `listen = "0.0.0.0:8091"` in the container's config.toml; the services
-share the compose network, so plaud-bridge reaches it as
+share the compose network, so transom reaches it as
 `http://agent-runner:8091` and nothing needs publishing to the host.
 
 Trade-off: host systemd is the simplest auth story (the agent sees your real
@@ -255,7 +255,7 @@ network is needed.
 ## Reporting outcomes back
 
 Every `route.matched` payload carries `delivery.result_url`. With a `[callback]`
-section configured (`base_url` = the plaud-bridge server; no credential, the payload's
+section configured (`base_url` = the transom server; no credential, the payload's
 `delivery.result_token` authorizes exactly that delivery's result) the runner POSTs `{"status": "done"|"failed", "summary": "..."}`
 there when a job ends: for command actions the last non-empty stdout line is the
 summary (so scripts should print a one-line human-readable result, e.g.

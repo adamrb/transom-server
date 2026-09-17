@@ -8,7 +8,7 @@
 #   loginctl enable-linger $USER   # keep it running when logged out
 
 [Unit]
-Description=plaud-bridge agent runner (webhook -> commands)
+Description=transom agent runner (webhook -> commands)
 After=network.target docker.service
 
 [Service]

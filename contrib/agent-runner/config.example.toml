@@ -3,7 +3,7 @@
 #   python3 agent_runner.py --config config.toml
 
 [server]
-# Bind address. When plaud-bridge runs in Docker and this runner runs on the
+# Bind address. When transom runs in Docker and this runner runs on the
 # host, 127.0.0.1 is NOT reachable from the container -- bind to the Docker
 # network's gateway IP (see README.md) or 0.0.0.0. Inside the runner
 # container, use 0.0.0.0.
@@ -15,7 +15,7 @@ token = "CHANGE-ME"
 # log_file = "/var/log/agent-runner.jobs.jsonl"   # default: next to this file
 
 # ---------------------------------------------------------------------------
-# Webhook actions. Action names match plaud-bridge route names;
+# Webhook actions. Action names match transom route names;
 # [actions.default] is the fallback for any route without its own action.
 #
 # Each action runs EITHER an ACP agent (`agent = [...]` -- the runner speaks
@@ -168,7 +168,7 @@ Skipped: <one-line reason>"""
 
 # ---------------------------------------------------------------------------
 # OpenAI-compatible chat shim: POST /v1/chat/completions runs a one-shot ACP
-# session and returns the agent's answer. Point plaud-bridge's AI router or
+# session and returns the agent's answer. Point transom's AI router or
 # summarizer at it:
 #   PB_ROUTER_BASE_URL=http://<runner>:8091/v1
 #   PB_ROUTER_API_KEY=<this token>
@@ -183,7 +183,7 @@ auto_approve = false
 # model = "haiku"
 # prompt_template default: "Answer directly. Do not use tools or modify files.\n\n{prompt}"
 
-# Optional: report each job's outcome back to plaud-bridge so the recording
+# Optional: report each job's outcome back to transom so the recording
 # page can show what the agent did. No credential needed: every payload carries
 # a one-shot result token valid only for its own delivery.
 # [callback]

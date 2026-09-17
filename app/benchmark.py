@@ -5,7 +5,7 @@ Usage (inside the container or a venv with requirements-stt.txt):
     python -m app.benchmark audio.mp3 --models tiny,base,small,distil-large-v3
     python -m app.benchmark audio.mp3 --models base --device cpu --compute int8
     python -m app.benchmark audio.mp3 --models base --reference ref.txt --json out.json
-    docker compose exec plaud-bridge python -m app.benchmark /data/recordings/....mp3 --models base,small
+    docker compose exec transom python -m app.benchmark /data/recordings/....mp3 --models base,small
 
 For each model it reports load time, transcription time, real-time factor
 (RTF — how many seconds of audio are processed per wall-clock second; higher

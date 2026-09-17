@@ -38,7 +38,7 @@ export function NavRail<K extends string = string>({
     >
       <div
         className="mb-6 grid size-11 place-items-center rounded-[14px] bg-primary text-on-primary"
-        title="Plaud Bridge"
+        title="Transom"
       >
         {brand ?? <Icon name="graphic_eq" size={24} />}
       </div>

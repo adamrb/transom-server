@@ -39,7 +39,7 @@ from .base import Alternate, EngineError, EngineResult, ProgressCallback, Segmen
 from .diarization import DiarizationMixin, cuda_used, mark_cuda_used, probe_duration
 from .enhance import Enhancer, decode_waveform, speech_chunks
 
-log = logging.getLogger("plaud-bridge.engine.qwen3")
+log = logging.getLogger("transom.engine.qwen3")
 
 SAMPLE_RATE = 16_000
 DEFAULT_MODEL = "Qwen/Qwen3-ASR-1.7B-hf"

@@ -3,16 +3,16 @@
 # container GPU access, e.g.:
 #
 #   services:
-#     plaud-bridge:
+#     transom:
 #       build: { context: ., dockerfile: Dockerfile.cuda }
 #       gpus: all            # or `runtime: nvidia` with the NVIDIA runtime in
 #                            # CDI mode (survives systemd daemon-reload)
 #       environment:
 #         - PB_STT_DEVICE=cuda
 services:
-  plaud-bridge:
+  transom:
     build: .
-    container_name: plaud-bridge
+    container_name: transom
     restart: unless-stopped
     # Bound to localhost by default — put your reverse proxy in front for
     # remote access. Change to "8090:8090" only if you understand the exposure.

@@ -35,10 +35,10 @@ def test_merge_keeps_existing_and_adds():
 
 
 def test_editor_text_roundtrip():
-    text = "Plaud Bridge = Plogged Bridge, plod bridge\n# comment\nObsidian\n"
+    text = "Parrot Deck = Parted Deck, carrot deck\n# comment\nObsidian\n"
     entries = parse_editor_text(text)
-    assert [e.term for e in entries] == ["Plaud Bridge", "Obsidian"]
-    assert to_editor_text(entries) == "Obsidian\nPlaud Bridge = Plogged Bridge, plod bridge"
+    assert [e.term for e in entries] == ["Parrot Deck", "Obsidian"]
+    assert to_editor_text(entries) == "Obsidian\nParrot Deck = Parted Deck, carrot deck"
 
 
 def test_weight_survives_normalize_and_merge():
@@ -62,9 +62,9 @@ def test_acronym_normalization_collapses_spelled_out_forms():
 
 
 def test_acronym_plural_and_brand_casing():
-    v = [VocabEntry("GPU"), VocabEntry("ModelForge"), VocabEntry("Plaud Bridge"), VocabEntry("Delta"), VocabEntry("MegaNode")]
-    out = apply_corrections("eight G P Us and two GPU's on modelforge mega-node; plaud bridge; a delta moment", v)
-    assert out == "eight GPUs and two GPU's on ModelForge mega-node; Plaud Bridge; a delta moment"
+    v = [VocabEntry("GPU"), VocabEntry("ModelForge"), VocabEntry("Parrot Deck"), VocabEntry("Delta"), VocabEntry("MegaNode")]
+    out = apply_corrections("eight G P Us and two GPU's on modelforge mega-node; parrot deck; a delta moment", v)
+    assert out == "eight GPUs and two GPU's on ModelForge mega-node; Parrot Deck; a delta moment"
 
 
 def test_acronym_rule_skips_ordinary_words_and_two_letter_terms():

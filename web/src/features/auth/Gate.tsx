@@ -72,7 +72,7 @@ export function Gate() {
         <div className="mx-auto mb-4 grid size-14 place-items-center rounded-[18px] bg-primary text-on-primary">
           <Icon name="graphic_eq" size={32} />
         </div>
-        <h1 className="m-0 mb-1 text-center font-display text-headline-m text-on-surface">Plaud Bridge</h1>
+        <h1 className="m-0 mb-1 text-center font-display text-headline-m text-on-surface">Transom</h1>
         <p className="m-0 mb-6 text-center text-body-m text-on-surface-variant">Sign in with your phone</p>
 
         {qr.request && qr.phase !== 'unsupported' ? (
@@ -92,7 +92,7 @@ export function Gate() {
           <span className={waiting ? 'whitespace-nowrap' : 'text-center'}>{qr.message}</span>
         </div>
         <p className="m-0 mt-4 mb-5 text-center text-body-m text-on-surface-variant">
-          In the Plaud Bridge app open <b className="font-medium text-on-surface">Settings</b>, tap{' '}
+          In the Transom app open <b className="font-medium text-on-surface">Settings</b>, tap{' '}
           <b className="font-medium text-on-surface">Sign in on a computer</b> and scan this code.
         </p>
 

@@ -10,7 +10,7 @@ describe('App', () => {
 
   it('shows the sign-in gate without a token', async () => {
     render(<App />);
-    expect(await screen.findByRole('heading', { name: 'Plaud Bridge' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Transom' })).toBeInTheDocument();
     expect(screen.getByText('Sign in with your phone')).toBeInTheDocument();
   });
 

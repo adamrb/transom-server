@@ -11,7 +11,7 @@ import httpx
 
 from .base import EngineError, EngineResult, Segment, render_text
 
-log = logging.getLogger("plaud-bridge.engine.openai")
+log = logging.getLogger("transom.engine.openai")
 
 
 def sse_payload(text: str) -> str:
@@ -71,7 +71,7 @@ class OpenAICompatEngine:
                         files={"file": (audio_path.name, fh, mime)},
                     )
                 if resp.status_code == 200:
-                    # A plaud-bridge worker answers long jobs as Server-Sent
+                    # A transom worker answers long jobs as Server-Sent
                     # Events (keepalive comments, then one data event with the
                     # JSON) and reports a late failure as {"error": ...}.
                     text = resp.text.strip()
@@ -95,7 +95,7 @@ class OpenAICompatEngine:
         raise EngineError("unreachable")
 
     def _parse(self, body: dict, elapsed: float) -> EngineResult:
-        # A plaud-bridge worker (its own /v1/audio/transcriptions) labels
+        # A transom worker (its own /v1/audio/transcriptions) labels
         # segments with speakers and reports what it did (enhancement,
         # consensus); plain whisper servers send neither and that is fine.
         segments = [

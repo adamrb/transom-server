@@ -30,7 +30,7 @@ def transcript_markdown(title: str, recorded: str | None, duration_s: float | in
         f"title: {yq(title)}",
         f"recorded: {yq(recorded)}",
         f"duration_s: {yq(duration_s)}",
-        "source: plaud-bridge",
+        "source: transom",
         "---",
         f"# {title}",
         "",

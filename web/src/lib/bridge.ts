@@ -1,16 +1,18 @@
 /**
- * Inside the Android app the page gets a tiny native bridge (window.PlaudBridgeApp) because a
+ * Inside the Android app the page gets a tiny native bridge (window.TransomApp) because a
  * WebView can neither download a blob nor, on some builds, reach navigator.clipboard. Elsewhere
  * the web APIs are used. Detection mirrors the vanilla dashboard exactly.
  *
  * Lives in lib/ (below components/) so design-system pieces such as CopyField can copy through
  * the bridge without reaching into a feature. `@/features/shell` re-exports it.
  */
-export function appBridge(): PlaudBridgeNative | null {
-  return (
-    (typeof window !== 'undefined' && typeof window.PlaudBridgeApp === 'object' && window.PlaudBridgeApp) ||
-    null
-  );
+export function appBridge(): TransomNative | null {
+  if (typeof window === 'undefined') return null;
+  // App builds before the 0.6.0 rename inject the bridge under its old name; keep accepting it
+  // for one release so upgrading the server does not break copy/share in an older app.
+  const legacy = (window as unknown as { PlaudBridgeApp?: TransomNative }).PlaudBridgeApp;
+  const b = window.TransomApp ?? legacy;
+  return typeof b === 'object' && b ? b : null;
 }
 
 export type CopyResult = 'copied' | 'bridge' | 'failed';

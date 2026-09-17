@@ -38,7 +38,7 @@ const PAD: Record<ButtonSize, Record<'default' | 'text', string>> = {
   },
 };
 
-/** M3 button, 12 px corners like the app's Widget.PlaudBridge.Button. */
+/** M3 button, 12 px corners like the app's Widget.Transom.Button. */
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   {
     variant = 'filled',

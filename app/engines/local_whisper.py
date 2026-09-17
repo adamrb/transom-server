@@ -24,7 +24,7 @@ from .base import Alternate, EngineError, EngineResult, ProgressCallback, Segmen
 from .diarization import DiarizationMixin, cuda_used, mark_cuda_used, probe_duration
 from .enhance import Enhancer
 
-log = logging.getLogger("plaud-bridge.engine.local")
+log = logging.getLogger("transom.engine.local")
 
 # Minimum wall-clock gap between two progress reports while decoding.
 PROGRESS_INTERVAL_S = 2.0

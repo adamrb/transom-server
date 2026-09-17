@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get remove -y --purge cuda-compat-12-6 2>/dev/null; \
     rm -rf /usr/local/cuda-12.6/compat /usr/local/cuda/compat && ldconfig
 
-WORKDIR /srv/plaud-bridge
+WORKDIR /srv/transom
 
 RUN python3.12 -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH

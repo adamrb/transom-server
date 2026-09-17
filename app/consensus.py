@@ -38,7 +38,7 @@ from typing import Awaitable, Callable
 from .cleanup import acceptable, parse_reply
 from .engines.base import Alternate, Segment
 
-log = logging.getLogger("plaud-bridge.consensus")
+log = logging.getLogger("transom.consensus")
 
 CHANGES_KEPT = 400
 

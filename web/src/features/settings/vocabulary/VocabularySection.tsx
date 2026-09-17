@@ -82,7 +82,7 @@ export function VocabularySection() {
             </div>
             <div className="mt-0.5 text-body-m text-on-surface-variant">
               Add a term and the ways it usually comes out wrong, and every new transcript is corrected. In
-              the text view each line is <Code>Plaud Bridge = Plogged Bridge, Plod Bridge</Code>; lines
+              the text view each line is <Code>Parrot Deck = Parted Deck, Carrot Deck</Code>; lines
               starting with <Code>#</Code> are notes.
             </div>
           </div>
@@ -170,7 +170,7 @@ export function VocabularySection() {
                 rows={8}
                 spellCheck={false}
                 disabled={save.isPending}
-                placeholder={'Plaud\nPlaud Bridge = Plogged Bridge\nObsidian'}
+                placeholder={'Plaud\nParrot Deck = Parted Deck\nObsidian'}
               />
             )}
 

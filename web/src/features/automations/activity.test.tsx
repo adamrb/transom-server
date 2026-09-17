@@ -205,7 +205,12 @@ describe('ActivitySection', () => {
   it('puts cards under day headings', async () => {
     const now = new Date();
     const today = new Date(now.getTime() - 60_000).toISOString();
-    const yesterday = new Date(now.getTime() - 26 * 3600_000).toISOString();
+    // Noon local time yesterday: "now minus 26 hours" lands two calendar days back when the
+    // test runs in the first hours after local midnight.
+    const y = new Date(now);
+    y.setDate(y.getDate() - 1);
+    y.setHours(12, 0, 0, 0);
+    const yesterday = y.toISOString();
     const older = '2025-12-24T10:00:00Z';
     server.use(
       http.get('/api/v1/routing/log', () =>

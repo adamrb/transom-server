@@ -1,4 +1,4 @@
-"""Plaud Bridge server — self-hosted sync target for the Plaud Bridge Android app.
+"""Transom server — self-hosted sync target for the Transom Android app.
 
 Endpoints (all under /api/v1, Bearer-token auth except /health):
   GET  /health                          liveness check
@@ -62,7 +62,7 @@ from .router import Router, folder_error
 from .transcriber import Transcriber
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-log = logging.getLogger("plaud-bridge")
+log = logging.getLogger("transom")
 
 VERSION = "0.1.0"
 
@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
     await transcriber.stop()
 
 
-app = FastAPI(title="Plaud Bridge", version=VERSION, lifespan=lifespan)
+app = FastAPI(title="Transom", version=VERSION, lifespan=lifespan)
 
 PUBLIC_PATHS = {"/api/v1/health"}
 LOGIN_REQUEST_TTL_S = 180
@@ -167,7 +167,7 @@ _AUDIO_LINK_EXPIRED = "This audio link has expired. Reload the recording to get 
 
 
 def _audio_link_key(token: str) -> bytes:
-    return hmac.new(token.encode(), b"plaud-bridge:audio-link:v1", hashlib.sha256).digest()
+    return hmac.new(token.encode(), b"transom:audio-link:v1", hashlib.sha256).digest()
 
 
 def _audio_link_sig(rec_id: str, exp: int, token: str) -> str:
@@ -252,7 +252,7 @@ def require_auth(request: Request) -> None:
 
 @app.get("/api/v1/health")
 async def health():
-    return {"status": "ok", "service": "plaud-bridge", "version": VERSION}
+    return {"status": "ok", "service": "transom", "version": VERSION}
 
 
 class LoginRequestBody(BaseModel):
@@ -851,7 +851,7 @@ async def retranscribe(rec_id: str):
 
 # ── OpenAI-compatible transcription (worker mode) ───────────────────────────
 #
-# Another plaud-bridge (or anything speaking the OpenAI audio API) can send a
+# Another transom (or anything speaking the OpenAI audio API) can send a
 # file here and get this server's engine — enhancement, consensus alternates
 # and speaker diarization included — as verbose_json. This is how a GPU box
 # elsewhere becomes the transcription worker for the server that holds the
@@ -1614,9 +1614,9 @@ else:
     log.warning("web app not built: %s is missing (run `npm run build` in web/)", STATIC_DIR)
 
 _UNBUILT_HTML = (
-    "<!doctype html><meta charset='utf-8'><title>Plaud Bridge</title>"
+    "<!doctype html><meta charset='utf-8'><title>Transom</title>"
     "<body style='font-family:system-ui;padding:32px;max-width:520px'>"
-    "<h1>Plaud Bridge</h1><p>The web app has not been built on this server yet. "
+    "<h1>Transom</h1><p>The web app has not been built on this server yet. "
     "Run <code>npm ci &amp;&amp; npm run build</code> in <code>web/</code>, or rebuild the Docker image.</p>"
 )
 
